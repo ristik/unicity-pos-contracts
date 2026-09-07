@@ -1,0 +1,22 @@
+name: ci
+
+# Mirrors bft-core's F1 decision: checks run and are visible on every push and PR, and merging
+# stays a human decision — no branch protection, no required-check rules.
+on:
+  push:
+  pull_request:
+
+jobs:
+  build-and-test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+      - uses: foundry-rs/foundry-toolchain@v1
+      - name: forge fmt
+        run: forge fmt --check
+      - name: forge build
+        run: forge build --sizes
+      - name: forge test
+        run: forge test -vvv
