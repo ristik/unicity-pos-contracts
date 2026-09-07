@@ -57,8 +57,8 @@ measured against the pinned execution client bind anything written here — see
 [`ureth`](https://github.com/ristik/ureth)'s `UNICITY.md` and bft-core's
 `docs/design/f1-baseline.md` §4:
 
-- The base fee currently has no floor (decays 7/8 per empty block), and
-- the block gas limit is not pinned by configuration (drifts +1/1024 per block).
+- The genesis base fee is not preserved (it descends to a 7-wei integer-division fixed point, which is *not* a configurable floor), and
+- the block gas limit is unpinned under the default builder (a standard `--builder.gaslimit` flag pins our own builder; follower enforcement against peer blocks is unevidenced).
 
 Both are open, owned by [F5 (#13)](https://github.com/ristik/bft-core/issues/13). Do not write a
 contract whose economics assume either is already fixed; if you depend on one, say so explicitly and
