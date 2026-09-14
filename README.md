@@ -5,8 +5,9 @@ precondition on [bft-core F4 (#12)](https://github.com/ristik/bft-core/issues/12
 repository/toolchain and ownership must be recorded before implementation; no complete PoS contract
 package is assumed to exist in BFT Core."*
 
-**Nothing is implemented yet.** This is the recorded home and toolchain, not a delivery. The first
-contract lands with F4.
+**Implemented so far:** the fixed-profile SealRegistry (`src/SealRegistry.sol`, see
+[below](#sealregistry-v1)). Nothing here is deployed, and no genesis, activation or PoS feature follows
+from merging it.
 
 ## Ownership and process
 
@@ -44,11 +45,17 @@ merging here.
 this class of work expect.
 
 ```bash
-curl -L https://foundry.paradigm.xyz | bash && foundryup   # install
+curl -L https://foundry.paradigm.xyz | bash && foundryup --install v1.8.1   # the pinned version CI uses
+git submodule update --init                                                 # forge-std v1.16.2
 forge build
 forge test
 forge fmt --check
+bash script/seal-registry-artifact.sh && git diff --exit-code artifacts/    # artifact is current
 ```
+
+Foundry's macOS release binaries link `libusb` at the Homebrew path. On a MacPorts host, run them with
+`DYLD_FALLBACK_LIBRARY_PATH=/opt/local/lib`, and run the artifact script with a non-system `bash`
+(macOS strips `DYLD_*` variables when it starts `/bin/bash`).
 
 ## Execution environment
 
@@ -70,3 +77,48 @@ whose profile is
 Read that before designing storage layout: the system call writes `sealRegistryCommitment` into this
 contract's storage, authenticated by the block's `stateRoot` and proved with `eth_getProof`, so the
 layout is protocol surface, not an implementation detail.
+
+## SealRegistry v1
+
+`src/SealRegistry.sol` implements profile `sealRegistry/v1` exactly as specified in bft-core
+[`docs/design/f4a-seal-registry-contract.md`](https://github.com/ristik/bft-core/blob/integration/enshrined-evm/docs/design/f4a-seal-registry-contract.md)
+(#153): one shard configuration, one shard configuration epoch, one root epoch, no pending transitions
+and no forced transactions.
+
+- **Layout.** No Solidity state variables. The 22 fields of §4.2 live at
+  `keccak256("unicity.seal-registry.v1/" || name)`. A test requires the compiled storage layout to be empty.
+- **Genesis.** No constructor. Genesis places the runtime code at `a_sr` and writes the six §5.4 words.
+- **Transitions.** `open` and `finalize` carry the §6.1 signatures and selectors, preconditions O1 to
+  O10 and F1 to F3 (one custom error each), and the §6.2 and §6.3 effects. The only caller is
+  `a_sys = 0xff00000000000000000000000000000000000001`. Nothing is payable, and the code makes no
+  external calls.
+- **Compiler.** Solidity 0.8.37 with the IR pipeline (owner decision on bft-core #12): the sixteen-argument
+  `open` signature exceeds the legacy code generator's stack in the ABI decoder. No metadata hash or CBOR
+  trailer is emitted, so the code hash depends only on the source and these settings.
+- **Artifact.** `artifacts/seal-registry-v1.json` records the compiler settings, ABI, runtime bytecode,
+  code hash, slot keys and genesis word names. `script/seal-registry-artifact.sh` regenerates it, and CI
+  fails if it is stale. It is **not** a deployable genesis record: `genesisCommitment` and
+  `fullShardConfHash` come from the Go construction of #153 §5.3 over this code hash.
+
+**What the contract enforces, and what it does not.** It enforces its caller, its own state machine and
+bounded checks on its arguments. These belong to the execution client (bft-core #11) and are not claimed
+here:
+
+- a reverted or out-of-gas system call invalidates the block;
+- `open` runs first, and `finalize` runs after the forced prefix, each exactly once;
+- the post-block `phase` check;
+- `g_sys` accounting;
+- the header `extraData` check;
+- rejection of any other transaction from `a_sys`;
+- the calldata is a faithful projection of the authenticated `rootInput`. Solidity's decoder ignores
+  trailing calldata, which a test records.
+
+**Tests** (`forge test`):
+
+| file | covers |
+| --- | --- |
+| `test/SealRegistry.t.sol` | unit, boundary and fuzzed malicious-caller tests |
+| `test/SealRegistryInvariant.t.sol` | stateful invariants driven by `a_sys` and arbitrary senders |
+| `test/SealRegistryArtifact.t.sol` | the committed artifact against the compiled contract |
+
+The slot keys are checked against the independent vector from bft-core's `f4aregistry` model.

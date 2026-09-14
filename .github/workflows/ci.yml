@@ -14,9 +14,16 @@ jobs:
         with:
           submodules: recursive
       - uses: foundry-rs/foundry-toolchain@v1
+        with:
+          # Pinned: the registry's runtime bytecode and code hash are protocol surface.
+          version: v1.8.1
       - name: forge fmt
         run: forge fmt --check
       - name: forge build
         run: forge build --sizes
+      - name: SealRegistry artifact is current
+        run: |
+          bash script/seal-registry-artifact.sh
+          git diff --exit-code artifacts/
       - name: forge test
         run: forge test -vvv
