@@ -47,7 +47,9 @@ int_types = "long"
 [invariant]
 runs = 256
 depth = 128
-fail_on_revert = false
+# Expected registry refusals are caught by the handler through low-level calls. A handler revert
+# is therefore a harness/assertion failure: ignoring it would roll back and hide a bad transition.
+fail_on_revert = true
 
 [fuzz]
 runs = 1024
