@@ -34,6 +34,7 @@ fs_permissions = [{ access = "read", path = "./out" }, { access = "read", path =
 deny_warnings = true
 
 [lint]
+exclude_lints = ["reentrancy-events"] # all registry calls are private sload/sstore wrappers
 # Linting is enforced on contract sources. Tests use low-level calls, cheatcodes and helper casts on
 # purpose, and deny_warnings would otherwise turn those lint findings into build failures.
 ignore = ["test/**/*.sol"]

@@ -22,7 +22,7 @@ abstract contract SealRegistryBase is Test {
     uint64 internal constant SHARD_EPOCH = 0;
     uint64 internal constant ROOT_EPOCH = 1;
 
-    uint256 internal constant FIELD_COUNT = 22;
+    uint256 internal constant FIELD_COUNT = 28;
 
     /// @dev The §6.1 open arguments, in order. Every field is a static type, so abi.encode of this
     /// struct is exactly the sixteen argument words of the flat signature.
@@ -43,10 +43,16 @@ abstract contract SealRegistryBase is Test {
         bytes32 blockHash;
         bytes32 inputCommitment;
         uint64 transitionCount;
+        bytes32 bodyID;
+        bytes32 genesisID;
+        bytes32 frozenID;
+        bytes32 commitID;
+        bytes32 frozenParent;
+        bytes32 successorTR;
     }
 
     string internal constant OPEN_SIGNATURE =
-        "open(uint64,uint64,uint64,uint64,bytes32,bytes32,bytes32,bytes32,uint64,uint64,uint64,bytes32,bool,bytes32,bytes32,uint64)";
+        "open(uint64,uint64,uint64,uint64,bytes32,bytes32,bytes32,bytes32,uint64,uint64,uint64,bytes32,bool,bytes32,bytes32,uint64,bytes32,bytes32,bytes32,bytes32,bytes32,bytes32)";
     string internal constant FINALIZE_SIGNATURE = "finalize(uint64,bytes32)";
 
     function setUp() public virtual {
@@ -88,7 +94,13 @@ abstract contract SealRegistryBase is Test {
             "outcomes.round",
             "outcomes.commitment",
             "transition.cursor",
-            "inbox.consumed"
+            "inbox.consumed",
+            "transition.bodyID",
+            "transition.genesisID",
+            "transition.frozenID",
+            "transition.commitID",
+            "transition.frozenParent",
+            "transition.successorTR"
         ];
     }
 
@@ -156,7 +168,13 @@ abstract contract SealRegistryBase is Test {
             hasBlockHash: false,
             blockHash: bytes32(0),
             inputCommitment: keccak256("X1"),
-            transitionCount: 0
+            transitionCount: 0,
+            bodyID: bytes32(0),
+            genesisID: bytes32(0),
+            frozenID: bytes32(0),
+            commitID: bytes32(0),
+            frozenParent: bytes32(0),
+            successorTR: bytes32(0)
         });
     }
 

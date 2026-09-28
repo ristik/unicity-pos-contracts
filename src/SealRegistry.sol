@@ -77,6 +77,20 @@ contract SealRegistry {
         keccak256("unicity.seal-registry.v1/outcomes.round");
     bytes32 internal constant SLOT_OUTCOMES_COMMITMENT =
         keccak256("unicity.seal-registry.v1/outcomes.commitment");
+    bytes32 internal constant SLOT_TRANSITION_CURSOR =
+        keccak256("unicity.seal-registry.v1/transition.cursor");
+    bytes32 internal constant SLOT_TRANSITION_BODY_ID =
+        keccak256("unicity.seal-registry.v1/transition.bodyID");
+    bytes32 internal constant SLOT_TRANSITION_GENESIS_ID =
+        keccak256("unicity.seal-registry.v1/transition.genesisID");
+    bytes32 internal constant SLOT_TRANSITION_FROZEN_ID =
+        keccak256("unicity.seal-registry.v1/transition.frozenID");
+    bytes32 internal constant SLOT_TRANSITION_COMMIT_ID =
+        keccak256("unicity.seal-registry.v1/transition.commitID");
+    bytes32 internal constant SLOT_TRANSITION_FROZEN_PARENT =
+        keccak256("unicity.seal-registry.v1/transition.frozenParent");
+    bytes32 internal constant SLOT_TRANSITION_SUCCESSOR_TR =
+        keccak256("unicity.seal-registry.v1/transition.successorTR");
     // transition.cursor and inbox.consumed (§4.2) are written by genesis only and never by this code.
 
     /// O1, F1: the caller is not a_sys.
@@ -97,12 +111,23 @@ contract SealRegistry {
     error RootEpochMismatch();
     /// O9: pending transitions are not supported in v1.
     error TransitionsUnsupported();
+    error InvalidTransition();
     /// O10: a null block hash is not encoded as the zero word.
     error NonCanonicalNullBlockHash();
     /// F2: no open round to finalize.
     error NotOpen();
     /// F3: the round is not the one that was opened.
     error WrongOutcomeRound();
+
+    event EpochAcknowledged(
+        uint64 indexed rootEpoch,
+        bytes32 indexed bodyID,
+        bytes32 indexed genesisID,
+        bytes32 frozenID,
+        bytes32 commitID,
+        bytes32 frozenParent,
+        bytes32 successorTR
+    );
 
     /// @notice The privileged open step (§6.1, §6.2). Arguments are the projection of the verified
     /// rootInput; the contract checks only what §6.2 lists. The ABI decoder refuses any uint64 or bool
@@ -123,7 +148,13 @@ contract SealRegistry {
         bool hasBlockHash,
         bytes32 blockHash,
         bytes32 inputCommitment,
-        uint64 transitionCount
+        uint64 transitionCount,
+        bytes32 bodyID,
+        bytes32 genesisID,
+        bytes32 frozenID,
+        bytes32 commitID,
+        bytes32 frozenParent,
+        bytes32 successorTR
     ) external {
         if (msg.sender != A_SYS) revert NotSystemCaller(); // O1
         if (_load(SLOT_LAYOUT_VERSION) != LAYOUT_VERSION || _load(SLOT_GENESIS_COMMITMENT) == 0) {
@@ -131,14 +162,42 @@ contract SealRegistry {
         }
         if (_load(SLOT_PHASE) != PHASE_FINALIZED) revert PreviousNotFinalized(); // O3
         if (n <= _load(SLOT_ROUND_AUTHORIZED)) revert RoundNotAhead(); // O4
-        if (rootRound < _load(SLOT_CLOCK_ROOT_ROUND)) revert StaleRootRound(); // O5
         if (uint256(shardConfHash) != _load(SLOT_CONFIG_SHARD_CONF_HASH)) {
             revert ConfigurationMismatch(); // O6
         }
         uint256 epoch = _load(SLOT_ASSIGNMENT_EPOCH);
         if (certEpoch != epoch || authEpoch != epoch) revert ShardEpochMismatch(); // O7
-        if (rootEpoch != _load(SLOT_ASSIGNMENT_ROOT_EPOCH)) revert RootEpochMismatch(); // O8
-        if (transitionCount != 0) revert TransitionsUnsupported(); // O9
+        uint256 assignedRootEpoch = _load(SLOT_ASSIGNMENT_ROOT_EPOCH);
+        if (transitionCount == 0) {
+            if (rootEpoch != assignedRootEpoch) revert RootEpochMismatch(); // O8
+            if (rootRound < _load(SLOT_CLOCK_ROOT_ROUND)) revert StaleRootRound(); // O5
+            if (
+                bodyID != 0 || genesisID != 0 || frozenID != 0 || commitID != 0 || frozenParent != 0
+                    || successorTR != 0
+            ) revert InvalidTransition();
+        } else if (transitionCount == 1) {
+            if (assignedRootEpoch == type(uint64).max || rootEpoch != assignedRootEpoch + 1) {
+                revert RootEpochMismatch();
+            }
+            if (
+                bodyID == 0 || genesisID == 0 || frozenID == 0 || commitID == 0 || frozenParent == 0
+                    || successorTR == 0
+            ) revert InvalidTransition();
+            if (_load(SLOT_TRANSITION_CURSOR) == type(uint64).max) revert InvalidTransition();
+            _store(SLOT_TRANSITION_CURSOR, _load(SLOT_TRANSITION_CURSOR) + 1);
+            _store(SLOT_TRANSITION_BODY_ID, uint256(bodyID));
+            _store(SLOT_TRANSITION_GENESIS_ID, uint256(genesisID));
+            _store(SLOT_TRANSITION_FROZEN_ID, uint256(frozenID));
+            _store(SLOT_TRANSITION_COMMIT_ID, uint256(commitID));
+            _store(SLOT_TRANSITION_FROZEN_PARENT, uint256(frozenParent));
+            _store(SLOT_TRANSITION_SUCCESSOR_TR, uint256(successorTR));
+            _store(SLOT_ASSIGNMENT_ROOT_EPOCH, rootEpoch);
+            emit EpochAcknowledged(
+                rootEpoch, bodyID, genesisID, frozenID, commitID, frozenParent, successorTR
+            );
+        } else {
+            revert TransitionsUnsupported(); // O9
+        }
         if (!hasBlockHash && blockHash != 0) revert NonCanonicalNullBlockHash(); // O10
 
         // §6.2 effects, in order.
