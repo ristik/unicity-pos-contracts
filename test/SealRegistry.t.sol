@@ -3,6 +3,7 @@ pragma solidity 0.8.37;
 
 import {SealRegistry} from "../src/SealRegistry.sol";
 import {SealRegistryBase} from "./SealRegistryBase.sol";
+import {Vm} from "forge-std/Vm.sol";
 
 /// @notice Unit, boundary and malicious-caller tests for bft-core #153 §4 to §6 and the §9 examples.
 /// Each refusal test first establishes that the unmodified call would succeed, so a refusal cannot come
@@ -34,7 +35,13 @@ contract SealRegistryTest is SealRegistryBase {
             0xa6dfb02f4e0457f6dc0ca8f4fd82b31c4a0df5261e0214610377f2af855a5ee5,
             0x435c00c3e0bb551759ef849ef59de7b0a62c300b5c1aa3011d4363b09ddef85a,
             0x9071048d24ef915056944fc390854c5afc82c7b780af60912f32c98b8a009850,
-            0x902fa8def05f8c67caa8c59344f53ee4ebbc428d5073e5fbf37e23543232cae5
+            0x902fa8def05f8c67caa8c59344f53ee4ebbc428d5073e5fbf37e23543232cae5,
+            0xf64ae08ca348865e7c42acf81d3a418af899eeafa1c21504ea348c15d212c4b8,
+            0xdedd17782b4935024a9ff293bbd39d406d127447bf3b1d6ed496032fa0cd58e5,
+            0xa17f343c4f400f901a88319ee38011c1770dfd251fb8f2afb0e66b3ac0e3d1a5,
+            0xecd1c378aba52fc330dbbc613de4db55413282426cdedf09fd6ed57a76bc90b5,
+            0xf4f5ae5954831b1d1559d70dc2cabdc751ef64cc34ab0750efbd97479665f06a,
+            0xaf0d5400378db3d13018c5af67f324d41d95126cd3f97f3e3b4ac05ba9afdaeb
         ];
         string[FIELD_COUNT] memory names = fieldNames();
         for (uint256 i = 0; i < FIELD_COUNT; i++) {
@@ -47,8 +54,8 @@ contract SealRegistryTest is SealRegistryBase {
         assertEq(SealRegistry.finalize.selector, bytes4(keccak256(bytes(FINALIZE_SIGNATURE))));
     }
 
-    function test_openCalldataIsSixteenStaticWords() public pure {
-        assertEq(openCalldata(firstPayload()).length, 4 + 16 * 32);
+    function test_openCalldataIsTwentyTwoStaticWords() public pure {
+        assertEq(openCalldata(firstPayload()).length, 4 + 22 * 32);
     }
 
     function test_genesisIsExactlySixWords() public view {
@@ -266,7 +273,48 @@ contract SealRegistryTest is SealRegistryBase {
         OpenArgs memory a = firstPayload();
         premiseOpenSucceeds(a);
         a.transitionCount = 1;
+        a.rootEpoch = ROOT_EPOCH + 1;
+        assertRefused(A_SYS, openCalldata(a), SealRegistry.InvalidTransition.selector);
+        a.transitionCount = 2;
         assertRefused(A_SYS, openCalldata(a), SealRegistry.TransitionsUnsupported.selector);
+    }
+
+    function test_epochAcknowledgementRecordsTransitionAndAllowsNextRound() public {
+        openAsSystem(firstPayload());
+        finalizeAsSystem(1, keccak256("R1"));
+        OpenArgs memory a = firstPayload();
+        a.n = 2;
+        a.rootEpoch = ROOT_EPOCH + 1;
+        a.rootRound = 1;
+        a.transitionCount = 1;
+        a.bodyID = keccak256("body");
+        a.genesisID = keccak256("genesis");
+        a.frozenID = keccak256("frozen");
+        a.commitID = keccak256("commit");
+        a.frozenParent = keccak256("parent");
+        a.successorTR = keccak256("tr");
+        vm.recordLogs();
+        openAsSystem(a);
+        Vm.Log[] memory logs = vm.getRecordedLogs();
+        assertEq(logs.length, 1);
+        assertEq(
+            logs[0].topics[0],
+            keccak256("EpochAcknowledged(uint64,bytes32,bytes32,bytes32,bytes32,bytes32,bytes32)")
+        );
+        assertEq(uintWord("assignment.rootEpoch"), 2);
+        assertEq(uintWord("transition.cursor"), 1);
+        assertEq(word("transition.bodyID"), a.bodyID);
+        assertEq(word("transition.genesisID"), a.genesisID);
+        assertEq(word("transition.frozenID"), a.frozenID);
+        assertEq(word("transition.commitID"), a.commitID);
+        assertEq(word("transition.frozenParent"), a.frozenParent);
+        assertEq(word("transition.successorTR"), a.successorTR);
+        finalizeAsSystem(2, keccak256("R2"));
+        a = firstPayload();
+        a.n = 3;
+        a.rootEpoch = 2;
+        a.rootRound = 2;
+        openAsSystem(a);
     }
 
     function test_O10_nonCanonicalNullBlockHashIsRefused() public {
