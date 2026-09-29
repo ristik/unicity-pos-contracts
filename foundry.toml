@@ -28,13 +28,16 @@ cbor_metadata = false
 
 # The SealRegistry declares no Solidity state variables; a test reads the storage layout to prove it.
 extra_output = ["storageLayout"]
-fs_permissions = [{ access = "read", path = "./out" }, { access = "read", path = "./artifacts" }]
+fs_permissions = [
+    { access = "read-write", path = "./out" },
+    { access = "read-write", path = "./artifacts" },
+]
 
 # Custody and registry code must not silently truncate.
 deny_warnings = true
 
 [lint]
-exclude_lints = ["reentrancy-events"] # all registry calls are private sload/sstore wrappers
+exclude_lints = ["reentrancy-events", "reentrancy-eth"] # registry uses fixed slots; payouts use CEI plus ReentrancyGuard
 # Linting is enforced on contract sources. Tests use low-level calls, cheatcodes and helper casts on
 # purpose, and deny_warnings would otherwise turn those lint findings into build failures.
 ignore = ["test/**/*.sol"]

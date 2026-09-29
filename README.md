@@ -5,9 +5,9 @@ precondition on [bft-core F4 (#12)](https://github.com/ristik/bft-core/issues/12
 repository/toolchain and ownership must be recorded before implementation; no complete PoS contract
 package is assumed to exist in BFT Core."*
 
-**Implemented so far:** the fixed-profile SealRegistry (`src/SealRegistry.sol`, see
-[below](#sealregistry-v1)). Nothing here is deployed, and no genesis, activation or PoS feature follows
-from merging it.
+**Implemented so far:** the fixed-profile SealRegistry, WUCT native wrapper and simplified
+FeeCollector (`src/`). Nothing here is deployed, and no genesis, activation, issuance or PoS feature
+follows from merging it.
 
 ## Ownership and process
 
@@ -51,7 +51,13 @@ forge build
 forge test
 forge fmt --check
 bash script/seal-registry-artifact.sh && git diff --exit-code artifacts/    # artifact is current
+bash script/t2t3-artifact.sh && git diff --exit-code artifacts/t2t3-test-v1.json
 ```
+
+OpenZeppelin Contracts is pinned as a submodule at v5.4.0 (commit recorded in `foundry.lock`). The
+T2T3 artifact script deploys canonical test instances in Foundry's local VM and records the actual
+runtime bytes, including FeeCollector's immutable treasury and split ratio. These test values are
+fixtures, not a production allocation or fee policy.
 
 Foundry's macOS release binaries link `libusb` at the Homebrew path. On a MacPorts host, run them with
 `DYLD_FALLBACK_LIBRARY_PATH=/opt/local/lib`, and run the artifact script with a non-system `bash`
@@ -122,3 +128,25 @@ here:
 | `test/SealRegistryArtifact.t.sol` | the committed artifact against the compiled contract |
 
 The slot keys are checked against the independent vector from bft-core's `f4aregistry` model.
+
+## WUCT and FeeCollector test profiles
+
+`src/WUCT.sol` follows the WETH9 deposit/withdraw flow on OpenZeppelin's ERC20 base. Deposits mint
+one WUCT per wei. Withdrawals burn before sending native coin, and `ReentrancyGuard` protects the
+external transfer. There is no privileged mint or permit surface. Forced native transfers can add
+excess backing; they cannot create WUCT.
+
+`src/FeeCollector.sol` is intended as the configured fee beneficiary. Anyone may call `split()` to
+classify the balance above treasury-credit and reward-pot liabilities. The constructor pins the
+treasury address and treasury share in basis points; integer remainder stays in the retained reward
+pot. The treasury pulls its credit with `withdraw()`. There is no per-assignment attribution or
+reward payout implementation; the reward pot is retained while T8 is disabled.
+
+| file | covers |
+| --- | --- |
+| `test/T2T3.t.sol` | deposit/withdraw boundaries, fuzzed backing and ratio accounting, absent mint/permit, forced transfers, malicious receivers, reentrancy and pull-credit limits |
+| `test/T2T3Invariant.t.sol` | stateful WUCT backing/supply and FeeCollector liability/accounting invariants |
+| `test/T2T3Artifact.t.sol` | canonical test-instance runtime, hashes, constructor values and compiler settings |
+
+These contracts and artifacts are test-profile material only. They do not select production
+allocation amounts, a fee split, or a production treasury authority.
