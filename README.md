@@ -5,9 +5,9 @@ precondition on [bft-core F4 (#12)](https://github.com/ristik/bft-core/issues/12
 repository/toolchain and ownership must be recorded before implementation; no complete PoS contract
 package is assumed to exist in BFT Core."*
 
-**Implemented so far:** the fixed-profile SealRegistry, WUCT native wrapper and simplified
-FeeCollector (`src/`). Nothing here is deployed, and no genesis, activation, issuance or PoS feature
-follows from merging it.
+**Implemented so far:** the fixed-profile SealRegistry, WUCT native wrapper, simplified FeeCollector,
+and immutable timestamp vesting vault (`src/`). Nothing here is deployed, and no genesis, activation,
+issuance or PoS feature follows from merging it.
 
 ## Ownership and process
 
@@ -52,12 +52,19 @@ forge test
 forge fmt --check
 bash script/seal-registry-artifact.sh && git diff --exit-code artifacts/    # artifact is current
 bash script/t2t3-artifact.sh && git diff --exit-code artifacts/t2t3-test-v1.json
+bash script/vesting-vault-artifact.sh && git diff --exit-code artifacts/vesting-vault-test-v1.json
 ```
 
 OpenZeppelin Contracts is pinned as a submodule at v5.4.0 (commit recorded in `foundry.lock`). The
 T2T3 artifact script deploys canonical test instances in Foundry's local VM and records the actual
 runtime bytes, including FeeCollector's immutable treasury and split ratio. These test values are
 fixtures, not a production allocation or fee policy.
+
+The vesting vault fixes principal, recipient, start, cliff, and duration at construction. Its linear
+timestamp schedule follows OpenZeppelin VestingWallet's cliff gate and cumulative vested arithmetic;
+it does not derive entitlement from balance. Donations and forced transfers are reported as surplus
+and never increase the claim. `script/vesting-vault-artifact.sh` records its canonical runtime,
+including constructor immutables, under the same pinned compiler profile.
 
 Foundry's macOS release binaries link `libusb` at the Homebrew path. On a MacPorts host, run them with
 `DYLD_FALLBACK_LIBRARY_PATH=/opt/local/lib`, and run the artifact script with a non-system `bash`
