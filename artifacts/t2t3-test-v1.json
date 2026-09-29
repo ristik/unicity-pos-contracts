@@ -1,0 +1,768 @@
+{
+  "profile": "t2t3/test-v1",
+  "compiler": {
+    "solc": "0.8.37",
+    "evm_version": "cancun",
+    "optimizer": true,
+    "optimizer_runs": 200,
+    "via_ir": true,
+    "bytecode_hash": "none",
+    "cbor_metadata": false
+  },
+  "dependency": {
+    "name": "OpenZeppelin Contracts",
+    "revision": "c64a1edb67b6e3f4a15cca8909c9482ad33a02b0"
+  },
+  "sourceSha256": {
+    "wuct": "4174a2a3d6bc1bfef031a42d59a147dee59b670cfe2e5537491c7a5dbb18a7f3",
+    "feeCollector": "0285f442f05107492241d4aa446de5b4e32cc6adca8f7f1f31a4220ba8e036f8"
+  },
+  "wuct": {
+    "abi": [
+      {
+        "type": "constructor",
+        "inputs": [],
+        "stateMutability": "nonpayable"
+      },
+      {
+        "type": "receive",
+        "stateMutability": "payable"
+      },
+      {
+        "type": "function",
+        "name": "allowance",
+        "inputs": [
+          {
+            "name": "owner",
+            "type": "address",
+            "internalType": "address"
+          },
+          {
+            "name": "spender",
+            "type": "address",
+            "internalType": "address"
+          }
+        ],
+        "outputs": [
+          {
+            "name": "",
+            "type": "uint256",
+            "internalType": "uint256"
+          }
+        ],
+        "stateMutability": "view"
+      },
+      {
+        "type": "function",
+        "name": "approve",
+        "inputs": [
+          {
+            "name": "spender",
+            "type": "address",
+            "internalType": "address"
+          },
+          {
+            "name": "value",
+            "type": "uint256",
+            "internalType": "uint256"
+          }
+        ],
+        "outputs": [
+          {
+            "name": "",
+            "type": "bool",
+            "internalType": "bool"
+          }
+        ],
+        "stateMutability": "nonpayable"
+      },
+      {
+        "type": "function",
+        "name": "balanceOf",
+        "inputs": [
+          {
+            "name": "account",
+            "type": "address",
+            "internalType": "address"
+          }
+        ],
+        "outputs": [
+          {
+            "name": "",
+            "type": "uint256",
+            "internalType": "uint256"
+          }
+        ],
+        "stateMutability": "view"
+      },
+      {
+        "type": "function",
+        "name": "decimals",
+        "inputs": [],
+        "outputs": [
+          {
+            "name": "",
+            "type": "uint8",
+            "internalType": "uint8"
+          }
+        ],
+        "stateMutability": "view"
+      },
+      {
+        "type": "function",
+        "name": "deposit",
+        "inputs": [],
+        "outputs": [],
+        "stateMutability": "payable"
+      },
+      {
+        "type": "function",
+        "name": "name",
+        "inputs": [],
+        "outputs": [
+          {
+            "name": "",
+            "type": "string",
+            "internalType": "string"
+          }
+        ],
+        "stateMutability": "view"
+      },
+      {
+        "type": "function",
+        "name": "symbol",
+        "inputs": [],
+        "outputs": [
+          {
+            "name": "",
+            "type": "string",
+            "internalType": "string"
+          }
+        ],
+        "stateMutability": "view"
+      },
+      {
+        "type": "function",
+        "name": "totalSupply",
+        "inputs": [],
+        "outputs": [
+          {
+            "name": "",
+            "type": "uint256",
+            "internalType": "uint256"
+          }
+        ],
+        "stateMutability": "view"
+      },
+      {
+        "type": "function",
+        "name": "transfer",
+        "inputs": [
+          {
+            "name": "to",
+            "type": "address",
+            "internalType": "address"
+          },
+          {
+            "name": "value",
+            "type": "uint256",
+            "internalType": "uint256"
+          }
+        ],
+        "outputs": [
+          {
+            "name": "",
+            "type": "bool",
+            "internalType": "bool"
+          }
+        ],
+        "stateMutability": "nonpayable"
+      },
+      {
+        "type": "function",
+        "name": "transferFrom",
+        "inputs": [
+          {
+            "name": "from",
+            "type": "address",
+            "internalType": "address"
+          },
+          {
+            "name": "to",
+            "type": "address",
+            "internalType": "address"
+          },
+          {
+            "name": "value",
+            "type": "uint256",
+            "internalType": "uint256"
+          }
+        ],
+        "outputs": [
+          {
+            "name": "",
+            "type": "bool",
+            "internalType": "bool"
+          }
+        ],
+        "stateMutability": "nonpayable"
+      },
+      {
+        "type": "function",
+        "name": "withdraw",
+        "inputs": [
+          {
+            "name": "amount",
+            "type": "uint256",
+            "internalType": "uint256"
+          }
+        ],
+        "outputs": [],
+        "stateMutability": "nonpayable"
+      },
+      {
+        "type": "event",
+        "name": "Approval",
+        "inputs": [
+          {
+            "name": "owner",
+            "type": "address",
+            "indexed": true,
+            "internalType": "address"
+          },
+          {
+            "name": "spender",
+            "type": "address",
+            "indexed": true,
+            "internalType": "address"
+          },
+          {
+            "name": "value",
+            "type": "uint256",
+            "indexed": false,
+            "internalType": "uint256"
+          }
+        ],
+        "anonymous": false
+      },
+      {
+        "type": "event",
+        "name": "Deposit",
+        "inputs": [
+          {
+            "name": "account",
+            "type": "address",
+            "indexed": true,
+            "internalType": "address"
+          },
+          {
+            "name": "amount",
+            "type": "uint256",
+            "indexed": false,
+            "internalType": "uint256"
+          }
+        ],
+        "anonymous": false
+      },
+      {
+        "type": "event",
+        "name": "Transfer",
+        "inputs": [
+          {
+            "name": "from",
+            "type": "address",
+            "indexed": true,
+            "internalType": "address"
+          },
+          {
+            "name": "to",
+            "type": "address",
+            "indexed": true,
+            "internalType": "address"
+          },
+          {
+            "name": "value",
+            "type": "uint256",
+            "indexed": false,
+            "internalType": "uint256"
+          }
+        ],
+        "anonymous": false
+      },
+      {
+        "type": "event",
+        "name": "Withdrawal",
+        "inputs": [
+          {
+            "name": "account",
+            "type": "address",
+            "indexed": true,
+            "internalType": "address"
+          },
+          {
+            "name": "amount",
+            "type": "uint256",
+            "indexed": false,
+            "internalType": "uint256"
+          }
+        ],
+        "anonymous": false
+      },
+      {
+        "type": "error",
+        "name": "ERC20InsufficientAllowance",
+        "inputs": [
+          {
+            "name": "spender",
+            "type": "address",
+            "internalType": "address"
+          },
+          {
+            "name": "allowance",
+            "type": "uint256",
+            "internalType": "uint256"
+          },
+          {
+            "name": "needed",
+            "type": "uint256",
+            "internalType": "uint256"
+          }
+        ]
+      },
+      {
+        "type": "error",
+        "name": "ERC20InsufficientBalance",
+        "inputs": [
+          {
+            "name": "sender",
+            "type": "address",
+            "internalType": "address"
+          },
+          {
+            "name": "balance",
+            "type": "uint256",
+            "internalType": "uint256"
+          },
+          {
+            "name": "needed",
+            "type": "uint256",
+            "internalType": "uint256"
+          }
+        ]
+      },
+      {
+        "type": "error",
+        "name": "ERC20InvalidApprover",
+        "inputs": [
+          {
+            "name": "approver",
+            "type": "address",
+            "internalType": "address"
+          }
+        ]
+      },
+      {
+        "type": "error",
+        "name": "ERC20InvalidReceiver",
+        "inputs": [
+          {
+            "name": "receiver",
+            "type": "address",
+            "internalType": "address"
+          }
+        ]
+      },
+      {
+        "type": "error",
+        "name": "ERC20InvalidSender",
+        "inputs": [
+          {
+            "name": "sender",
+            "type": "address",
+            "internalType": "address"
+          }
+        ]
+      },
+      {
+        "type": "error",
+        "name": "ERC20InvalidSpender",
+        "inputs": [
+          {
+            "name": "spender",
+            "type": "address",
+            "internalType": "address"
+          }
+        ]
+      },
+      {
+        "type": "error",
+        "name": "NativeTransferFailed",
+        "inputs": []
+      },
+      {
+        "type": "error",
+        "name": "ReentrancyGuardReentrantCall",
+        "inputs": []
+      }
+    ],
+    "runtimeBytecode": "0x6080806040526004361015610024575b50361561001a575f80fd5b610022610689565b005b5f3560e01c90816306fdde031461055957508063095ea7b3146104d757806318160ddd146104ba57806323b872dd146103db5780632e1a7d4d14610297578063313ce5671461027c57806370a082311461024557806395d89b4114610141578063a9059cbb14610110578063d0e30db0146100fd5763dd62ed3e146100a9575f61000f565b346100f95760403660031901126100f9576100c261063b565b6100ca610651565b6001600160a01b039182165f908152600160209081526040808320949093168252928352819020549051908152f35b5f80fd5b5f3660031901126100f957610022610689565b346100f95760403660031901126100f95761013661012c61063b565b602435903361073f565b602060405160018152f35b346100f9575f3660031901126100f9576040515f6004548060011c9060018116801561023b575b6020831081146102275782855290811561020357506001146101a5575b6101a18361019581850382610667565b60405191829182610611565b0390f35b91905060045f527f8a35acfbc15ff81a39ae7d344fd709f28e8600b4aa8c65c6b64bfe7fe36bd19b915f905b8082106101e957509091508101602001610195610185565b9192600181602092548385880101520191019092916101d1565b60ff191660208086019190915291151560051b840190910191506101959050610185565b634e487b7160e01b5f52602260045260245ffd5b91607f1691610168565b346100f95760203660031901126100f9576001600160a01b0361026661063b565b165f525f602052602060405f2054604051908152f35b346100f9575f3660031901126100f957602060405160128152f35b346100f95760203660031901126100f9576004356102b36107d6565b33156103c857335f525f6020528060405f20548181106103af57335f525f6020520360405f205580600254036002555f6040518281527fddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef60203392a35f80808084335af13d156103aa573d67ffffffffffffffff81116103965760405190610345601f8201601f191660200183610667565b81525f60203d92013e5b15610387576040519081527f7fcf532c15f0a6db0bd6d0e038bea71d30d808c7d98cb3bf7268a95bf5081b6560203392a26001600555005b633d2cec6f60e21b5f5260045ffd5b634e487b7160e01b5f52604160045260245ffd5b61034f565b63391434e360e21b5f523360045260245260445260645ffd5b634b637e8f60e11b5f525f60045260245ffd5b346100f95760603660031901126100f9576103f461063b565b6103fc610651565b6001600160a01b0382165f818152600160209081526040808320338452909152902054909260443592915f19811061043a575b50610136935061073f565b83811061049f57841561048c57331561047957610136945f52600160205260405f2060018060a01b0333165f526020528360405f20910390558461042f565b634a1406b160e11b5f525f60045260245ffd5b63e602df0560e01b5f525f60045260245ffd5b8390637dc7a0d960e11b5f523360045260245260445260645ffd5b346100f9575f3660031901126100f9576020600254604051908152f35b346100f95760403660031901126100f9576104f061063b565b60243590331561048c576001600160a01b031690811561047957335f52600160205260405f20825f526020528060405f20556040519081527f8c5be1e5ebec7d5bd14f71427d1e84f3dd0314c0f7b2291e5b200ac8c7c3b92560203392a3602060405160018152f35b346100f9575f3660031901126100f9575f6003548060011c90600181168015610607575b6020831081146102275782855290811561020357506001146105a9576101a18361019581850382610667565b91905060035f527fc2575a0e9e593c00f959f8c92f12db2869c3395a3b0502d05e2516446f71f85b915f905b8082106105ed57509091508101602001610195610185565b9192600181602092548385880101520191019092916105d5565b91607f169161057d565b602060409281835280519182918282860152018484015e5f828201840152601f01601f1916010190565b600435906001600160a01b03821682036100f957565b602435906001600160a01b03821682036100f957565b90601f8019910116810190811067ffffffffffffffff82111761039657604052565b6106916107d6565b331561072c5760025434810180911161071857600255335f525f60205260405f203481540190556040513481525f7fddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef60203393a36040513481527fe1fffcc4923d04b559f4d29a8bfc6cda04eb5b0d3c460751c2402c5c5cc9109c60203392a26001600555565b634e487b7160e01b5f52601160045260245ffd5b63ec442f0560e01b5f525f60045260245ffd5b6001600160a01b03169081156103c8576001600160a01b031691821561072c57815f525f60205260405f20548181106107bd57817fddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef92602092855f525f84520360405f2055845f525f825260405f20818154019055604051908152a3565b8263391434e360e21b5f5260045260245260445260645ffd5b6002600554146107e7576002600555565b633ee5aeb560e01b5f5260045ffd",
+    "codeHash": "0x551f2bd38d5574ba25f42a217d22c85f468794c5d18365410340bf115c291e5f",
+    "storageLayout": {
+      "storage": [
+        {
+          "astId": 41162,
+          "contract": "src/WUCT.sol:WUCT",
+          "label": "_balances",
+          "offset": 0,
+          "slot": "0",
+          "type": "t_mapping(t_address,t_uint256)"
+        },
+        {
+          "astId": 41168,
+          "contract": "src/WUCT.sol:WUCT",
+          "label": "_allowances",
+          "offset": 0,
+          "slot": "1",
+          "type": "t_mapping(t_address,t_mapping(t_address,t_uint256))"
+        },
+        {
+          "astId": 41170,
+          "contract": "src/WUCT.sol:WUCT",
+          "label": "_totalSupply",
+          "offset": 0,
+          "slot": "2",
+          "type": "t_uint256"
+        },
+        {
+          "astId": 41172,
+          "contract": "src/WUCT.sol:WUCT",
+          "label": "_name",
+          "offset": 0,
+          "slot": "3",
+          "type": "t_string_storage"
+        },
+        {
+          "astId": 41174,
+          "contract": "src/WUCT.sol:WUCT",
+          "label": "_symbol",
+          "offset": 0,
+          "slot": "4",
+          "type": "t_string_storage"
+        },
+        {
+          "astId": 41851,
+          "contract": "src/WUCT.sol:WUCT",
+          "label": "_status",
+          "offset": 0,
+          "slot": "5",
+          "type": "t_uint256"
+        }
+      ],
+      "types": {
+        "t_address": {
+          "encoding": "inplace",
+          "label": "address",
+          "numberOfBytes": "20"
+        },
+        "t_mapping(t_address,t_mapping(t_address,t_uint256))": {
+          "encoding": "mapping",
+          "key": "t_address",
+          "label": "mapping(address => mapping(address => uint256))",
+          "numberOfBytes": "32",
+          "value": "t_mapping(t_address,t_uint256)"
+        },
+        "t_mapping(t_address,t_uint256)": {
+          "encoding": "mapping",
+          "key": "t_address",
+          "label": "mapping(address => uint256)",
+          "numberOfBytes": "32",
+          "value": "t_uint256"
+        },
+        "t_string_storage": {
+          "encoding": "bytes",
+          "label": "string",
+          "numberOfBytes": "32"
+        },
+        "t_uint256": {
+          "encoding": "inplace",
+          "label": "uint256",
+          "numberOfBytes": "32"
+        }
+      }
+    }
+  },
+  "feeCollector": {
+    "abi": [
+      {
+        "type": "constructor",
+        "inputs": [
+          {
+            "name": "treasury_",
+            "type": "address",
+            "internalType": "address payable"
+          },
+          {
+            "name": "treasuryShareBps_",
+            "type": "uint16",
+            "internalType": "uint16"
+          }
+        ],
+        "stateMutability": "nonpayable"
+      },
+      {
+        "type": "receive",
+        "stateMutability": "payable"
+      },
+      {
+        "type": "function",
+        "name": "BPS",
+        "inputs": [],
+        "outputs": [
+          {
+            "name": "",
+            "type": "uint256",
+            "internalType": "uint256"
+          }
+        ],
+        "stateMutability": "view"
+      },
+      {
+        "type": "function",
+        "name": "rewardPot",
+        "inputs": [],
+        "outputs": [
+          {
+            "name": "",
+            "type": "uint256",
+            "internalType": "uint256"
+          }
+        ],
+        "stateMutability": "view"
+      },
+      {
+        "type": "function",
+        "name": "split",
+        "inputs": [],
+        "outputs": [],
+        "stateMutability": "nonpayable"
+      },
+      {
+        "type": "function",
+        "name": "totalTreasuryCredits",
+        "inputs": [],
+        "outputs": [
+          {
+            "name": "",
+            "type": "uint256",
+            "internalType": "uint256"
+          }
+        ],
+        "stateMutability": "view"
+      },
+      {
+        "type": "function",
+        "name": "totalTreasuryPaid",
+        "inputs": [],
+        "outputs": [
+          {
+            "name": "",
+            "type": "uint256",
+            "internalType": "uint256"
+          }
+        ],
+        "stateMutability": "view"
+      },
+      {
+        "type": "function",
+        "name": "treasury",
+        "inputs": [],
+        "outputs": [
+          {
+            "name": "",
+            "type": "address",
+            "internalType": "address payable"
+          }
+        ],
+        "stateMutability": "view"
+      },
+      {
+        "type": "function",
+        "name": "treasuryCredit",
+        "inputs": [],
+        "outputs": [
+          {
+            "name": "",
+            "type": "uint256",
+            "internalType": "uint256"
+          }
+        ],
+        "stateMutability": "view"
+      },
+      {
+        "type": "function",
+        "name": "treasuryShareBps",
+        "inputs": [],
+        "outputs": [
+          {
+            "name": "",
+            "type": "uint16",
+            "internalType": "uint16"
+          }
+        ],
+        "stateMutability": "view"
+      },
+      {
+        "type": "function",
+        "name": "unallocatedBalance",
+        "inputs": [],
+        "outputs": [
+          {
+            "name": "",
+            "type": "uint256",
+            "internalType": "uint256"
+          }
+        ],
+        "stateMutability": "view"
+      },
+      {
+        "type": "function",
+        "name": "withdraw",
+        "inputs": [],
+        "outputs": [
+          {
+            "name": "amount",
+            "type": "uint256",
+            "internalType": "uint256"
+          }
+        ],
+        "stateMutability": "nonpayable"
+      },
+      {
+        "type": "event",
+        "name": "Split",
+        "inputs": [
+          {
+            "name": "unallocated",
+            "type": "uint256",
+            "indexed": false,
+            "internalType": "uint256"
+          },
+          {
+            "name": "treasuryCredit",
+            "type": "uint256",
+            "indexed": false,
+            "internalType": "uint256"
+          },
+          {
+            "name": "rewardPot",
+            "type": "uint256",
+            "indexed": false,
+            "internalType": "uint256"
+          }
+        ],
+        "anonymous": false
+      },
+      {
+        "type": "event",
+        "name": "TreasuryWithdrawn",
+        "inputs": [
+          {
+            "name": "treasury",
+            "type": "address",
+            "indexed": true,
+            "internalType": "address"
+          },
+          {
+            "name": "amount",
+            "type": "uint256",
+            "indexed": false,
+            "internalType": "uint256"
+          }
+        ],
+        "anonymous": false
+      },
+      {
+        "type": "error",
+        "name": "InvalidTreasury",
+        "inputs": []
+      },
+      {
+        "type": "error",
+        "name": "InvalidTreasuryShare",
+        "inputs": []
+      },
+      {
+        "type": "error",
+        "name": "NativeTransferFailed",
+        "inputs": []
+      },
+      {
+        "type": "error",
+        "name": "ReentrancyGuardReentrantCall",
+        "inputs": []
+      },
+      {
+        "type": "error",
+        "name": "TreasuryOnly",
+        "inputs": []
+      }
+    ],
+    "runtimeBytecode": "0x608080604052600436101561001c575b50361561001a575f80fd5b005b5f3560e01c90816322f7f0f9146103b857508063249d39e91461039c57806330654a471461035e5780633ccfd60b146102245780636133d1dd1461020757806361d027b3146101c357806393ad7440146101a65780639583612e1461017c578063d08e89081461015f5763f765417614610096575f61000f565b3461015b575f36600319011261015b577fcf0974dfd867840133a0d4b02f1672f24017796fb8892d1e0d587692e4da90ab60606100e26100d947600154906103f3565b600254906103f3565b61011061ffff7f00000000000000000000000000000000000000000000000000000000000017701682610400565b61011a81836103f3565b90610127816001546103d2565b600155610136816003546103d2565b600355610145826002546103d2565b60025560405192835260208301526040820152a1005b5f80fd5b3461015b575f36600319011261015b576020600154604051908152f35b3461015b575f36600319011261015b57602061019e6100d947600154906103f3565b604051908152f35b3461015b575f36600319011261015b576020600254604051908152f35b3461015b575f36600319011261015b576040517f000000000000000000000000000000000000000000000000000000000000beef6001600160a01b03168152602090f35b3461015b575f36600319011261015b576020600354604051908152f35b3461015b575f36600319011261015b5760025f541461034f5760025f557f000000000000000000000000000000000000000000000000000000000000beef6001600160a01b031633819003610340576001545f600155610286816004546103d2565b6004555f80808084865af13d1561033b573d67ffffffffffffffff81116103275760405190601f8101601f19908116603f0116820167ffffffffffffffff8111838210176103275760405281525f60203d92013e5b15610318576020917f41fdd680478135993bc53fb2ffaf9560951b57ef62ff6badd02b61e018b4f17f83604051848152a260015f55604051908152f35b633d2cec6f60e21b5f5260045ffd5b634e487b7160e01b5f52604160045260245ffd5b6102db565b635353c48f60e01b5f5260045ffd5b633ee5aeb560e01b5f5260045ffd5b3461015b575f36600319011261015b57602060405161ffff7f0000000000000000000000000000000000000000000000000000000000001770168152f35b3461015b575f36600319011261015b5760206040516127108152f35b3461015b575f36600319011261015b576020906004548152f35b919082018092116103df57565b634e487b7160e01b5f52601160045260245ffd5b919082039182116103df57565b9091905f905f1984820990848102928380841093039280840393146104775782612710111561046557507fbc01a36e2eb1c432ca57a786c226809d495182a9930be0ded288ce703afb7e919394612710910990828211900360fc1b910360041c170290565b634e487b71905260116020526024601cfd5b505050612710919250049056",
+    "codeHash": "0x8f7a71464b28d3e5173ee4a2a4ed62a15995378225f113e7419c24e669d55b9b",
+    "constructorTestValues": {
+      "treasury": "0x000000000000000000000000000000000000bEEF",
+      "treasuryShareBps": 6000
+    },
+    "storageLayout": {
+      "storage": [
+        {
+          "astId": 41851,
+          "contract": "src/FeeCollector.sol:FeeCollector",
+          "label": "_status",
+          "offset": 0,
+          "slot": "0",
+          "type": "t_uint256"
+        },
+        {
+          "astId": 45475,
+          "contract": "src/FeeCollector.sol:FeeCollector",
+          "label": "treasuryCredit",
+          "offset": 0,
+          "slot": "1",
+          "type": "t_uint256"
+        },
+        {
+          "astId": 45477,
+          "contract": "src/FeeCollector.sol:FeeCollector",
+          "label": "rewardPot",
+          "offset": 0,
+          "slot": "2",
+          "type": "t_uint256"
+        },
+        {
+          "astId": 45479,
+          "contract": "src/FeeCollector.sol:FeeCollector",
+          "label": "totalTreasuryCredits",
+          "offset": 0,
+          "slot": "3",
+          "type": "t_uint256"
+        },
+        {
+          "astId": 45481,
+          "contract": "src/FeeCollector.sol:FeeCollector",
+          "label": "totalTreasuryPaid",
+          "offset": 0,
+          "slot": "4",
+          "type": "t_uint256"
+        }
+      ],
+      "types": {
+        "t_uint256": {
+          "encoding": "inplace",
+          "label": "uint256",
+          "numberOfBytes": "32"
+        }
+      }
+    }
+  }
+}
