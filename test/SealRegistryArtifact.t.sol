@@ -4,11 +4,11 @@ pragma solidity 0.8.37;
 import {SealRegistry} from "../src/SealRegistry.sol";
 import {SealRegistryBase} from "./SealRegistryBase.sol";
 
-/// @notice The committed artifact is the compiled contract: same runtime bytecode, same code hash, the
-/// same 22 slot keys in §4.2 order, and the §5.4 genesis word names. CI also regenerates the artifact
+/// @notice The committed artifact is the compiled contract: same runtime bytecode, same code hash,
+/// the v2 slot keys and seven genesis words. CI regenerates the artifact
 /// with script/seal-registry-artifact.sh and fails on any difference.
 contract SealRegistryArtifactTest is SealRegistryBase {
-    string internal constant ARTIFACT = "artifacts/seal-registry-v1.json";
+    string internal constant ARTIFACT = "artifacts/seal-registry-v2.json";
 
     function test_artifactRuntimeBytecodeAndCodeHashAreTheCompiledContract() public view {
         string memory json = vm.readFile(ARTIFACT);
@@ -31,14 +31,15 @@ contract SealRegistryArtifactTest is SealRegistryBase {
         }
     }
 
-    function test_artifactNamesExactlyTheSixGenesisWords() public view {
+    function test_artifactNamesExactlyTheSevenGenesisWords() public view {
         string memory json = vm.readFile(ARTIFACT);
-        string[6] memory genesis = [
+        string[7] memory genesis = [
             "layoutVersion",
             "genesisCommitment",
             "config.shardConfHash",
             "assignment.epoch",
             "assignment.rootEpoch",
+            "assignment.activeConfHash",
             "phase"
         ];
         for (uint256 i = 0; i < genesis.length; i++) {
@@ -50,6 +51,7 @@ contract SealRegistryArtifactTest is SealRegistryBase {
             A_SYS,
             "the artifact records the caller the code checks"
         );
+        assertEq(vm.parseJsonString(json, ".profile"), "sealRegistry/v2");
     }
 
     function test_artifactRecordsThePinnedCompilerSettings() public view {

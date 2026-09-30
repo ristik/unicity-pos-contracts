@@ -2,6 +2,7 @@
 pragma solidity 0.8.37;
 
 import {Test} from "forge-std/Test.sol";
+import {SealRegistry} from "../src/SealRegistry.sol";
 import {SealRegistryBase} from "./SealRegistryBase.sol";
 
 /// @notice Drives the registry with a_sys and arbitrary other senders. System calls are built from the
@@ -11,8 +12,11 @@ contract SealRegistryHandler is SealRegistryBase {
     uint256 public strangerCallsThatChangedState;
     uint256 public successfulOpens;
     uint256 public successfulFinalizes;
+    uint256 public successfulAcknowledgements;
     uint256 public maxRoundSeen;
     uint256 public maxClockSeen;
+    uint256 public maxAssignmentRootEpoch;
+    uint256 public maxAssignmentShardEpoch;
 
     constructor() {
         // The invariant contract installs the registry; the handler only calls it.
@@ -47,6 +51,66 @@ contract SealRegistryHandler is SealRegistryBase {
         uint64 n = uint64(uintWord("outcomes.round"));
         if (wrongRound % 5 == 0) n += 1;
         (bool ok,) = callAs(A_SYS, finalizeCalldata(n, commitment));
+        if (ok) {
+            successfulFinalizes++;
+            record();
+        }
+    }
+
+    /// Generates root-only, ordinary assignment and multi-step supersession acknowledgements from
+    /// the current storage base. This keeps valid transitions reachable under the invariant fuzzer.
+    function systemAssignmentAck(uint8 kind, uint8 spanSelector, bytes32 seed) external {
+        if (uintWord("phase") != 2) return;
+        uint64 oldRoot = uint64(uintWord("assignment.rootEpoch"));
+        uint64 oldShard = uint64(uintWord("assignment.epoch"));
+        uint64 rootDelta = kind % 3 == 2 ? uint64(2 + spanSelector % 3) : 1;
+        uint64 shardDelta = kind % 3 == 0 ? 0 : rootDelta;
+        if (
+            oldRoot > type(uint64).max - rootDelta || oldShard > type(uint64).max - shardDelta
+                || uintWord("round.authorized") >= type(uint64).max
+                || uintWord("clock.rootRound") >= type(uint64).max
+        ) return;
+
+        bytes32 oldHash = word("assignment.activeConfHash");
+        bytes32 newHash = shardDelta == 0 ? oldHash : keccak256(abi.encode(seed, oldRoot, oldShard));
+        if (shardDelta != 0 && newHash == oldHash) {
+            newHash = keccak256(abi.encode(seed, "changed"));
+        }
+        uint64 span = rootDelta > 1 ? rootDelta : 0;
+        bytes32 spanCommitment = span == 0 ? bytes32(0) : keccak256(abi.encode(seed, oldRoot, span));
+        SealRegistry.AssignmentProjection memory p = assignmentProjection(
+            oldRoot,
+            oldShard,
+            oldHash,
+            oldRoot + rootDelta,
+            oldShard + shardDelta,
+            newHash,
+            span,
+            spanCommitment
+        );
+        OpenArgs memory a = firstPayload();
+        a.n = uint64(uintWord("round.authorized") + 1);
+        a.rootRound = uint64(uintWord("clock.rootRound") + 1);
+        a.rootEpoch = oldRoot + rootDelta;
+        a.certEpoch = oldShard;
+        a.authEpoch = oldShard + shardDelta;
+        a.hasBlockHash = true;
+        a.blockHash = keccak256(abi.encode(seed, a.n));
+        a.transitionCount = 1;
+        a.bodyID = keccak256(abi.encode("body", seed));
+        a.genesisID = keccak256(abi.encode("genesis", seed));
+        a.frozenID = keccak256(abi.encode("frozen", seed));
+        a.commitID = keccak256(abi.encode("commit", seed));
+        a.frozenParent = keccak256(abi.encode("parent", seed));
+        a.successorTR = keccak256(abi.encode("successor", seed));
+        a.activeConfHash = newHash;
+        a.assignment = p;
+        (bool ok,) = callAs(A_SYS, openCalldata(a));
+        if (!ok) return;
+        successfulOpens++;
+        successfulAcknowledgements++;
+        record();
+        (ok,) = callAs(A_SYS, finalizeCalldata(a.n, keccak256(abi.encode("outcome", seed))));
         if (ok) {
             successfulFinalizes++;
             record();
@@ -92,6 +156,8 @@ contract SealRegistryHandler is SealRegistryBase {
         require(clock >= maxClockSeen, "clock decreased");
         maxRoundSeen = round;
         maxClockSeen = clock;
+        maxAssignmentRootEpoch = uintWord("assignment.rootEpoch");
+        maxAssignmentShardEpoch = uintWord("assignment.epoch");
     }
 }
 
@@ -102,24 +168,40 @@ contract SealRegistryInvariantTest is SealRegistryBase {
         super.setUp();
         handler = new SealRegistryHandler();
         targetContract(address(handler));
-        bytes4[] memory selectors = new bytes4[](4);
+        bytes4[] memory selectors = new bytes4[](5);
         selectors[0] = SealRegistryHandler.systemOpen.selector;
         selectors[1] = SealRegistryHandler.systemFinalize.selector;
         selectors[2] = SealRegistryHandler.strangerOpen.selector;
         selectors[3] = SealRegistryHandler.strangerFinalize.selector;
+        selectors[4] = SealRegistryHandler.systemAssignmentAck.selector;
         targetSelector(FuzzSelector({addr: address(handler), selectors: selectors}));
     }
 
-    function invariant_genesisWordsNeverChange() public view {
-        assertEq(uintWord("layoutVersion"), 1);
+    function invariant_genesisIdentityAndActiveHashStayValid() public view {
+        assertEq(uintWord("layoutVersion"), 2);
         assertEq(word("genesisCommitment"), GENESIS_COMMITMENT);
         assertEq(word("config.shardConfHash"), FULL_SHARD_CONF_HASH);
-        assertEq(uintWord("assignment.epoch"), SHARD_EPOCH);
-        assertEq(uintWord("assignment.rootEpoch"), ROOT_EPOCH);
+        assertTrue(word("assignment.activeConfHash") != bytes32(0));
     }
 
-    function invariant_inertCursorsStayZero() public view {
-        assertEq(word("transition.cursor"), bytes32(0));
+    function invariant_assignmentEpochsNeverRegressAndStayOrdered() public view {
+        uint256 rootEpoch = uintWord("assignment.rootEpoch");
+        uint256 shardEpoch = uintWord("assignment.epoch");
+        assertGe(rootEpoch, handler.maxAssignmentRootEpoch());
+        assertGe(shardEpoch, handler.maxAssignmentShardEpoch());
+        assertGe(rootEpoch - ROOT_EPOCH, shardEpoch - SHARD_EPOCH);
+    }
+
+    function invariant_supersessionCommitmentHasAdvancedAssignment() public view {
+        if (word("assignment.spanCommitment") != bytes32(0)) {
+            assertGt(uintWord("assignment.rootEpoch"), ROOT_EPOCH);
+            assertGt(uintWord("assignment.epoch"), SHARD_EPOCH);
+            assertTrue(word("assignment.activeConfHash") != FULL_SHARD_CONF_HASH);
+        }
+    }
+
+    function invariant_ackCursorMatchesSuccessfulAcknowledgements() public view {
+        assertEq(uintWord("transition.cursor"), handler.successfulAcknowledgements());
         assertEq(word("inbox.consumed"), bytes32(0));
     }
 

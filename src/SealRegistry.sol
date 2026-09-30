@@ -2,25 +2,25 @@
 // License not yet chosen: contract licensing is an explicit owner decision (bft-core #1), not a default.
 pragma solidity 0.8.37;
 
-/// @title SealRegistry, profile sealRegistry/v1
+/// @title SealRegistry, profile sealRegistry/v2
 /// @notice Fixed-profile registry of the imported root origin and certified round clock for the
 /// enshrined EVM. Specification: bft-core docs/design/f4a-seal-registry-contract.md, as accepted in
 /// #153 (last changed by 9545881e). Section numbers below refer to that document.
 ///
-/// Profile (§0): one shard configuration, one shard configuration epoch, one root epoch, an empty
-/// transition list and an empty forced-inclusion prefix. Every other input is refused.
+/// Profile: immutable genesis configuration identity plus an authenticated active EVM assignment.
+/// The paired BFT/Ureth verifier supplies the canonical acknowledgement projection; this contract
+/// checks its stored old context, target context and bounded epoch/span arithmetic.
 ///
 /// Layout (§4): no Solidity state variables. Every field lives at the fixed key
 /// keccak256("unicity.seal-registry.v1/" || name) and is read and written with sload and sstore, so
 /// the compiler cannot move a field. Scalars are uint64 values in a 32-byte word.
 ///
-/// Genesis (§5.4): there is no constructor. The genesis allocation places this runtime code at the
-/// registry address and writes exactly six words: layoutVersion, genesisCommitment,
-/// config.shardConfHash, assignment.epoch, assignment.rootEpoch and phase = 2. The code does not
-/// depend on the address it is placed at.
+/// Genesis: there is no constructor. The genesis allocation places this runtime code at the
+/// registry address and writes seven words, adding assignment.activeConfHash (initialized to the
+/// immutable config.shardConfHash). The old config slot remains immutable after genesis.
 ///
-/// Compiler (foundry.toml): solc 0.8.37 with the IR pipeline, so the sixteen-argument open signature of
-/// §6.1 decodes as specified. The only inline assembly is the sload and sstore in _load and _store,
+/// Compiler (foundry.toml): solc 0.8.37 with the IR pipeline for the expanded static open projection.
+/// The only inline assembly is the sload and sstore in _load and _store,
 /// which read and write whole words at constant keys and touch no memory.
 ///
 /// What this contract enforces is local: the caller (O1, F1), its own state machine (O2 to O5, F2,
@@ -33,7 +33,7 @@ contract SealRegistry {
     /// @notice a_sys, the only caller of open and finalize (§2.1).
     address internal constant A_SYS = 0xff00000000000000000000000000000000000001;
 
-    uint256 internal constant LAYOUT_VERSION = 1;
+    uint256 internal constant LAYOUT_VERSION = 2;
     uint256 internal constant PHASE_OPEN = 1;
     uint256 internal constant PHASE_FINALIZED = 2;
 
@@ -48,6 +48,12 @@ contract SealRegistry {
         keccak256("unicity.seal-registry.v1/assignment.epoch");
     bytes32 internal constant SLOT_ASSIGNMENT_ROOT_EPOCH =
         keccak256("unicity.seal-registry.v1/assignment.rootEpoch");
+    bytes32 internal constant SLOT_ASSIGNMENT_ACTIVE_CONF_HASH =
+        keccak256("unicity.seal-registry.v1/assignment.activeConfHash");
+    bytes32 internal constant SLOT_ASSIGNMENT_SPAN_COMMITMENT =
+        keccak256("unicity.seal-registry.v1/assignment.spanCommitment");
+    bytes32 internal constant ASSIGNMENT_PROJECTION_DOMAIN =
+        keccak256("unicity.seal-registry.v2/assignment-ack-projection");
     bytes32 internal constant SLOT_CLOCK_ROOT_ROUND =
         keccak256("unicity.seal-registry.v1/clock.rootRound");
     bytes32 internal constant SLOT_ORIGIN_ROOT_EPOCH =
@@ -91,11 +97,11 @@ contract SealRegistry {
         keccak256("unicity.seal-registry.v1/transition.frozenParent");
     bytes32 internal constant SLOT_TRANSITION_SUCCESSOR_TR =
         keccak256("unicity.seal-registry.v1/transition.successorTR");
-    // transition.cursor and inbox.consumed (§4.2) are written by genesis only and never by this code.
+    // inbox.consumed remains genesis-only. transition.cursor advances on each accepted acknowledgement.
 
     /// O1, F1: the caller is not a_sys.
     error NotSystemCaller();
-    /// O2: layoutVersion is not 1, or genesisCommitment is zero.
+    /// O2: layoutVersion is not 2, or genesisCommitment is zero.
     error NotInitialized();
     /// O3: the previous block's finalize has not run.
     error PreviousNotFinalized();
@@ -109,9 +115,15 @@ contract SealRegistry {
     error ShardEpochMismatch();
     /// O8: the root epoch is not the assignment root epoch.
     error RootEpochMismatch();
-    /// O9: pending transitions are not supported in v1.
+    /// O9: more than one transition is unsupported in this profile.
     error TransitionsUnsupported();
     error InvalidTransition();
+    /// A supplied assignment context does not match the stored or projected transition context.
+    error AssignmentContextMismatch();
+    /// An assignment acknowledgement carries a malformed or unverified supersession span.
+    error InvalidSupersessionSpan();
+    /// This assignment acknowledgement was already imported.
+    error DuplicateAcknowledgement();
     /// O10: a null block hash is not encoded as the zero word.
     error NonCanonicalNullBlockHash();
     /// F2: no open round to finalize.
@@ -121,13 +133,33 @@ contract SealRegistry {
 
     event EpochAcknowledged(
         uint64 indexed rootEpoch,
-        bytes32 indexed bodyID,
-        bytes32 indexed genesisID,
+        uint64 indexed shardEpoch,
+        bytes32 indexed activeConfHash,
+        uint64 supersessionSpan,
+        bytes32 supersessionCommitment,
+        bytes32 bodyID,
+        bytes32 genesisID,
         bytes32 frozenID,
         bytes32 commitID,
         bytes32 frozenParent,
         bytes32 successorTR
     );
+
+    /// @notice Canonical context authenticated by the paired verifier for one root acknowledgement.
+    /// `supersessionCommitment` commits to the consecutive committed handoffs when span > 1. BFT
+    /// verifies those records and Ureth verifies the projected span before this system call; the
+    /// registry enforces that the projection is bound to its old state and exact new assignment.
+    struct AssignmentProjection {
+        uint64 oldRootEpoch;
+        uint64 oldShardEpoch;
+        bytes32 oldActiveConfHash;
+        uint64 newRootEpoch;
+        uint64 newShardEpoch;
+        bytes32 newActiveConfHash;
+        uint64 supersessionSpan;
+        bytes32 supersessionCommitment;
+        bytes32 projectionHash;
+    }
 
     /// @notice The privileged open step (§6.1, §6.2). Arguments are the projection of the verified
     /// rootInput; the contract checks only what §6.2 lists. The ABI decoder refuses any uint64 or bool
@@ -154,7 +186,9 @@ contract SealRegistry {
         bytes32 frozenID,
         bytes32 commitID,
         bytes32 frozenParent,
-        bytes32 successorTR
+        bytes32 successorTR,
+        bytes32 activeConfHash,
+        AssignmentProjection calldata assignment
     ) external {
         if (msg.sender != A_SYS) revert NotSystemCaller(); // O1
         if (_load(SLOT_LAYOUT_VERSION) != LAYOUT_VERSION || _load(SLOT_GENESIS_COMMITMENT) == 0) {
@@ -162,27 +196,43 @@ contract SealRegistry {
         }
         if (_load(SLOT_PHASE) != PHASE_FINALIZED) revert PreviousNotFinalized(); // O3
         if (n <= _load(SLOT_ROUND_AUTHORIZED)) revert RoundNotAhead(); // O4
+        // `config.shardConfHash` is the immutable genesis identity. The active assignment hash is
+        // separately checked below and changes only on a privileged acknowledgement.
         if (uint256(shardConfHash) != _load(SLOT_CONFIG_SHARD_CONF_HASH)) {
             revert ConfigurationMismatch(); // O6
         }
         uint256 epoch = _load(SLOT_ASSIGNMENT_EPOCH);
-        if (certEpoch != epoch || authEpoch != epoch) revert ShardEpochMismatch(); // O7
         uint256 assignedRootEpoch = _load(SLOT_ASSIGNMENT_ROOT_EPOCH);
+        bytes32 assignedConfHash = bytes32(_load(SLOT_ASSIGNMENT_ACTIVE_CONF_HASH));
         if (transitionCount == 0) {
             if (rootEpoch != assignedRootEpoch) revert RootEpochMismatch(); // O8
+            if (certEpoch != epoch || authEpoch != epoch) revert ShardEpochMismatch(); // O7
+            if (activeConfHash != assignedConfHash) revert ConfigurationMismatch();
             if (rootRound < _load(SLOT_CLOCK_ROOT_ROUND)) revert StaleRootRound(); // O5
             if (
                 bodyID != 0 || genesisID != 0 || frozenID != 0 || commitID != 0 || frozenParent != 0
-                    || successorTR != 0
+                    || successorTR != 0 || !_isZeroProjection(assignment)
             ) revert InvalidTransition();
         } else if (transitionCount == 1) {
-            if (assignedRootEpoch == type(uint64).max || rootEpoch != assignedRootEpoch + 1) {
-                revert RootEpochMismatch();
-            }
             if (
                 bodyID == 0 || genesisID == 0 || frozenID == 0 || commitID == 0 || frozenParent == 0
                     || successorTR == 0
             ) revert InvalidTransition();
+            if (assignment.newRootEpoch <= assignedRootEpoch) revert DuplicateAcknowledgement();
+            if (
+                assignment.oldRootEpoch != assignedRootEpoch || assignment.oldShardEpoch != epoch
+                    || assignment.oldActiveConfHash != assignedConfHash
+                    || assignment.newRootEpoch != rootEpoch || assignment.newShardEpoch != authEpoch
+                    || assignment.newActiveConfHash != activeConfHash
+                    || certEpoch != assignment.oldShardEpoch
+            ) revert AssignmentContextMismatch();
+            if (
+                activeConfHash == 0
+                    || _assignmentProjectionHash(assignment) != assignment.projectionHash
+            ) {
+                revert AssignmentContextMismatch();
+            }
+            _validateAssignmentAdvance(assignment);
             if (_load(SLOT_TRANSITION_CURSOR) == type(uint64).max) revert InvalidTransition();
             _store(SLOT_TRANSITION_CURSOR, _load(SLOT_TRANSITION_CURSOR) + 1);
             _store(SLOT_TRANSITION_BODY_ID, uint256(bodyID));
@@ -191,9 +241,22 @@ contract SealRegistry {
             _store(SLOT_TRANSITION_COMMIT_ID, uint256(commitID));
             _store(SLOT_TRANSITION_FROZEN_PARENT, uint256(frozenParent));
             _store(SLOT_TRANSITION_SUCCESSOR_TR, uint256(successorTR));
-            _store(SLOT_ASSIGNMENT_ROOT_EPOCH, rootEpoch);
+            _store(SLOT_ASSIGNMENT_EPOCH, assignment.newShardEpoch);
+            _store(SLOT_ASSIGNMENT_ROOT_EPOCH, assignment.newRootEpoch);
+            _store(SLOT_ASSIGNMENT_ACTIVE_CONF_HASH, uint256(assignment.newActiveConfHash));
+            _store(SLOT_ASSIGNMENT_SPAN_COMMITMENT, uint256(assignment.supersessionCommitment));
             emit EpochAcknowledged(
-                rootEpoch, bodyID, genesisID, frozenID, commitID, frozenParent, successorTR
+                assignment.newRootEpoch,
+                assignment.newShardEpoch,
+                assignment.newActiveConfHash,
+                assignment.supersessionSpan,
+                assignment.supersessionCommitment,
+                bodyID,
+                genesisID,
+                frozenID,
+                commitID,
+                frozenParent,
+                successorTR
             );
         } else {
             revert TransitionsUnsupported(); // O9
@@ -216,6 +279,76 @@ contract SealRegistry {
         _store(SLOT_OUTCOMES_ROUND, n);
         _store(SLOT_OUTCOMES_COMMITMENT, 0);
         _store(SLOT_PHASE, PHASE_OPEN);
+    }
+
+    /// @notice Reproducible, domain-separated hash for the acknowledgement projection carried in
+    /// open(). Chain validity itself is established by the paired verifier before the system call.
+    function assignmentProjectionHash(AssignmentProjection calldata assignment)
+        external
+        pure
+        returns (bytes32)
+    {
+        return _assignmentProjectionHash(assignment);
+    }
+
+    function _assignmentProjectionHash(AssignmentProjection calldata assignment)
+        private
+        pure
+        returns (bytes32)
+    {
+        return keccak256(
+            abi.encode(
+                ASSIGNMENT_PROJECTION_DOMAIN,
+                assignment.oldRootEpoch,
+                assignment.oldShardEpoch,
+                assignment.oldActiveConfHash,
+                assignment.newRootEpoch,
+                assignment.newShardEpoch,
+                assignment.newActiveConfHash,
+                assignment.supersessionSpan,
+                assignment.supersessionCommitment
+            )
+        );
+    }
+
+    function _validateAssignmentAdvance(AssignmentProjection calldata assignment) private pure {
+        uint64 rootDelta = assignment.newRootEpoch - assignment.oldRootEpoch;
+        uint64 shardDelta = assignment.newShardEpoch >= assignment.oldShardEpoch
+            ? assignment.newShardEpoch - assignment.oldShardEpoch
+            : 0;
+        bool sameAssignment = assignment.newShardEpoch == assignment.oldShardEpoch
+            && assignment.newActiveConfHash == assignment.oldActiveConfHash;
+
+        if (rootDelta == 1) {
+            if (assignment.supersessionSpan != 0 || assignment.supersessionCommitment != 0) {
+                revert InvalidSupersessionSpan();
+            }
+            if (sameAssignment) return; // unchanged root-only handoff
+            if (
+                shardDelta != 1 || assignment.newActiveConfHash == assignment.oldActiveConfHash
+                    || assignment.oldShardEpoch == type(uint64).max
+            ) revert AssignmentContextMismatch();
+            return; // ordinary EVM assignment change: both epochs advance exactly once
+        }
+
+        if (
+            rootDelta <= 1 || shardDelta != rootDelta
+                || assignment.newActiveConfHash == assignment.oldActiveConfHash
+                || assignment.supersessionSpan != rootDelta
+                || assignment.supersessionCommitment == 0
+        ) revert InvalidSupersessionSpan();
+    }
+
+    function _isZeroProjection(AssignmentProjection calldata assignment)
+        private
+        pure
+        returns (bool)
+    {
+        return assignment.oldRootEpoch == 0 && assignment.oldShardEpoch == 0
+            && assignment.oldActiveConfHash == 0 && assignment.newRootEpoch == 0
+            && assignment.newShardEpoch == 0 && assignment.newActiveConfHash == 0
+            && assignment.supersessionSpan == 0 && assignment.supersessionCommitment == 0
+            && assignment.projectionHash == 0;
     }
 
     /// @notice The privileged finalize step (§6.1, §6.3).

@@ -5,9 +5,9 @@ import {SealRegistry} from "../src/SealRegistry.sol";
 import {SealRegistryBase} from "./SealRegistryBase.sol";
 import {Vm} from "forge-std/Vm.sol";
 
-/// @notice Unit, boundary and malicious-caller tests for bft-core #153 §4 to §6 and the §9 examples.
-/// Each refusal test first establishes that the unmodified call would succeed, so a refusal cannot come
-/// from an unrelated failure, and then requires the named error and all 22 fields unchanged.
+/// @notice Unit, boundary and malicious-caller tests for the H3 assignment-aware registry projection.
+/// Each refusal test first establishes that the unmodified call would succeed, then checks its error
+/// and proves every stored word stayed unchanged.
 contract SealRegistryTest is SealRegistryBase {
     // ---------------------------------------------------------------- identity and genesis
 
@@ -19,6 +19,8 @@ contract SealRegistryTest is SealRegistryBase {
             0xabe1d0722ec7cab6bc8be8343a4900e571bdb46fad619947267449a2b9aa7497,
             0x7671d07e8accfd833bdccd596ad3a1c4a402a090b727f511a073a2498c590ae5,
             0xe77628dabc86b477c0db337bda981ad320031675934be9c596d69ebbc20f1a24,
+            0xbcc6e80fb08120fa6610a12120697a935440b6f731eb387496a45ae31fc4f093,
+            0x1333275c0dde98dea1f7569da4a9013691786d62030b101d14f0f6d68f27fd66,
             0xc3adc23527bab9702dd784bd0b145d2ab1a7dce35235a0db3dbfd3da7a53143d,
             0x1dfe98fa5011e0dbfdfc5efa804744e3497514271b58499de63781a9941c9a51,
             0x459cf503c328e501962bcf0cd8ca53327ab531deeb9155c48d827d2478932c6c,
@@ -51,20 +53,23 @@ contract SealRegistryTest is SealRegistryBase {
 
     function test_selectorsAreTheSpecifiedSignatures() public pure {
         assertEq(SealRegistry.open.selector, bytes4(keccak256(bytes(OPEN_SIGNATURE))));
+        assertEq(SealRegistry.open.selector, bytes4(0x45cf8245), "pinned v2 open selector");
         assertEq(SealRegistry.finalize.selector, bytes4(keccak256(bytes(FINALIZE_SIGNATURE))));
     }
 
-    function test_openCalldataIsTwentyTwoStaticWords() public pure {
-        assertEq(openCalldata(firstPayload()).length, 4 + 22 * 32);
+    function test_openCalldataHasThirtyTwoStaticWords() public pure {
+        bytes memory projected = openCalldata(firstPayload());
+        assertEq(projected.length, 4 + 32 * 32);
+        assertEq(projected.length - (4 + 22 * 32), 10 * 32, "320-byte assignment witness growth");
     }
 
-    function test_genesisIsExactlySixWords() public view {
+    function test_genesisIsExactlySevenWords() public view {
         string[FIELD_COUNT] memory names = fieldNames();
         for (uint256 i = 0; i < FIELD_COUNT; i++) {
             bytes32 got = vm.load(A_SR, slotKey(names[i]));
             bytes32 name = keccak256(bytes(names[i]));
             if (name == keccak256("layoutVersion")) {
-                assertEq(got, bytes32(uint256(1)));
+                assertEq(got, bytes32(uint256(2)));
             } else if (name == keccak256("genesisCommitment")) {
                 assertEq(got, GENESIS_COMMITMENT);
             } else if (name == keccak256("config.shardConfHash")) {
@@ -73,6 +78,8 @@ contract SealRegistryTest is SealRegistryBase {
                 assertEq(got, bytes32(uint256(SHARD_EPOCH)));
             } else if (name == keccak256("assignment.rootEpoch")) {
                 assertEq(got, bytes32(uint256(ROOT_EPOCH)));
+            } else if (name == keccak256("assignment.activeConfHash")) {
+                assertEq(got, FULL_SHARD_CONF_HASH);
             } else if (name == keccak256("phase")) {
                 assertEq(got, bytes32(uint256(2)));
             } else {
@@ -195,9 +202,9 @@ contract SealRegistryTest is SealRegistryBase {
         premiseOpenSucceeds(a);
         setWord("layoutVersion", bytes32(0));
         assertRefused(A_SYS, openCalldata(a), SealRegistry.NotInitialized.selector);
-        setWord("layoutVersion", bytes32(uint256(2)));
+        setWord("layoutVersion", bytes32(uint256(3)));
         assertRefused(A_SYS, openCalldata(a), SealRegistry.NotInitialized.selector);
-        setWord("layoutVersion", bytes32(uint256(1)));
+        setWord("layoutVersion", bytes32(uint256(2)));
         setWord("genesisCommitment", bytes32(0));
         assertRefused(A_SYS, openCalldata(a), SealRegistry.NotInitialized.selector);
     }
@@ -251,6 +258,13 @@ contract SealRegistryTest is SealRegistryBase {
         assertRefused(A_SYS, openCalldata(a), SealRegistry.ConfigurationMismatch.selector);
     }
 
+    function test_normalOpenRequiresTheCurrentActiveAssignmentHash() public {
+        OpenArgs memory a = firstPayload();
+        premiseOpenSucceeds(a);
+        a.activeConfHash = keccak256("unacknowledged assignment");
+        assertRefused(A_SYS, openCalldata(a), SealRegistry.ConfigurationMismatch.selector);
+    }
+
     function test_O7_anotherShardEpochIsRefused() public {
         OpenArgs memory a = firstPayload();
         premiseOpenSucceeds(a);
@@ -279,7 +293,7 @@ contract SealRegistryTest is SealRegistryBase {
         assertRefused(A_SYS, openCalldata(a), SealRegistry.TransitionsUnsupported.selector);
     }
 
-    function test_epochAcknowledgementRecordsTransitionAndAllowsNextRound() public {
+    function test_unchangedRootOnlyAcknowledgementPreservesAssignment() public {
         openAsSystem(firstPayload());
         finalizeAsSystem(1, keccak256("R1"));
         OpenArgs memory a = firstPayload();
@@ -293,15 +307,30 @@ contract SealRegistryTest is SealRegistryBase {
         a.commitID = keccak256("commit");
         a.frozenParent = keccak256("parent");
         a.successorTR = keccak256("tr");
+        a.assignment = assignmentProjection(
+            ROOT_EPOCH,
+            SHARD_EPOCH,
+            FULL_SHARD_CONF_HASH,
+            ROOT_EPOCH + 1,
+            SHARD_EPOCH,
+            FULL_SHARD_CONF_HASH,
+            0,
+            bytes32(0)
+        );
         vm.recordLogs();
         openAsSystem(a);
         Vm.Log[] memory logs = vm.getRecordedLogs();
         assertEq(logs.length, 1);
         assertEq(
             logs[0].topics[0],
-            keccak256("EpochAcknowledged(uint64,bytes32,bytes32,bytes32,bytes32,bytes32,bytes32)")
+            keccak256(
+                "EpochAcknowledged(uint64,uint64,bytes32,uint64,bytes32,bytes32,bytes32,bytes32,bytes32,bytes32,bytes32)"
+            )
         );
         assertEq(uintWord("assignment.rootEpoch"), 2);
+        assertEq(uintWord("assignment.epoch"), SHARD_EPOCH);
+        assertEq(word("assignment.activeConfHash"), FULL_SHARD_CONF_HASH);
+        assertEq(word("assignment.spanCommitment"), bytes32(0));
         assertEq(uintWord("transition.cursor"), 1);
         assertEq(word("transition.bodyID"), a.bodyID);
         assertEq(word("transition.genesisID"), a.genesisID);
@@ -315,6 +344,302 @@ contract SealRegistryTest is SealRegistryBase {
         a.rootEpoch = 2;
         a.rootRound = 2;
         openAsSystem(a);
+    }
+
+    function test_ordinaryAssignmentAcknowledgementAdvancesBothEpochsByOne() public {
+        openAsSystem(firstPayload());
+        finalizeAsSystem(1, keccak256("R1"));
+        bytes32 successor = keccak256("successor PDR");
+        SealRegistry.AssignmentProjection memory p = assignmentProjection(
+            ROOT_EPOCH,
+            SHARD_EPOCH,
+            FULL_SHARD_CONF_HASH,
+            ROOT_EPOCH + 1,
+            SHARD_EPOCH + 1,
+            successor,
+            0,
+            bytes32(0)
+        );
+        OpenArgs memory ack = assignmentAckPayload(p);
+        openAsSystem(ack);
+        assertEq(uintWord("assignment.rootEpoch"), ROOT_EPOCH + 1);
+        assertEq(uintWord("assignment.epoch"), SHARD_EPOCH + 1);
+        assertEq(word("config.shardConfHash"), FULL_SHARD_CONF_HASH, "genesis hash stays pinned");
+        assertEq(word("assignment.activeConfHash"), successor);
+        assertEq(word("assignment.spanCommitment"), bytes32(0));
+        finalizeAsSystem(2, keccak256("R2"));
+
+        OpenArgs memory next = firstPayload();
+        next.n = 3;
+        next.rootEpoch = ROOT_EPOCH + 1;
+        next.rootRound = 7;
+        next.certEpoch = SHARD_EPOCH + 1;
+        next.authEpoch = SHARD_EPOCH + 1;
+        next.activeConfHash = successor;
+        openAsSystem(next);
+        assertEq(word("origin.identity"), next.originIdentity);
+    }
+
+    function test_supersessionProjectionFoldsAVerifiedTwoStepSpan() public {
+        openAsSystem(firstPayload());
+        finalizeAsSystem(1, keccak256("R1"));
+        bytes32 successor = keccak256("s+2 PDR");
+        bytes32 spanCommitment = keccak256("verified H2 -> H3 chain");
+        SealRegistry.AssignmentProjection memory p = assignmentProjection(
+            ROOT_EPOCH,
+            SHARD_EPOCH,
+            FULL_SHARD_CONF_HASH,
+            ROOT_EPOCH + 2,
+            SHARD_EPOCH + 2,
+            successor,
+            2,
+            spanCommitment
+        );
+        openAsSystem(assignmentAckPayload(p));
+        assertEq(uintWord("assignment.rootEpoch"), ROOT_EPOCH + 2);
+        assertEq(uintWord("assignment.epoch"), SHARD_EPOCH + 2);
+        assertEq(word("assignment.activeConfHash"), successor);
+        assertEq(word("assignment.spanCommitment"), spanCommitment);
+        finalizeAsSystem(2, keccak256("R3"));
+
+        OpenArgs memory next = firstPayload();
+        next.n = 3;
+        next.rootEpoch = ROOT_EPOCH + 2;
+        next.rootRound = 7;
+        next.certEpoch = SHARD_EPOCH + 2;
+        next.authEpoch = SHARD_EPOCH + 2;
+        next.activeConfHash = successor;
+        openAsSystem(next);
+    }
+
+    function test_invalidSupersessionSpansAreRefused() public {
+        openAsSystem(firstPayload());
+        finalizeAsSystem(1, keccak256("R1"));
+        bytes32 successor = keccak256("successor");
+
+        SealRegistry.AssignmentProjection memory p = assignmentProjection(
+            ROOT_EPOCH,
+            SHARD_EPOCH,
+            FULL_SHARD_CONF_HASH,
+            ROOT_EPOCH + 1,
+            SHARD_EPOCH + 1,
+            successor,
+            1,
+            keccak256("not a supersession")
+        );
+        assertRefused(
+            A_SYS,
+            openCalldata(assignmentAckPayload(p)),
+            SealRegistry.InvalidSupersessionSpan.selector
+        );
+
+        p = assignmentProjection(
+            ROOT_EPOCH,
+            SHARD_EPOCH,
+            FULL_SHARD_CONF_HASH,
+            ROOT_EPOCH + 2,
+            SHARD_EPOCH + 1,
+            successor,
+            2,
+            keccak256("wrong shard delta")
+        );
+        assertRefused(
+            A_SYS,
+            openCalldata(assignmentAckPayload(p)),
+            SealRegistry.InvalidSupersessionSpan.selector
+        );
+
+        p = assignmentProjection(
+            ROOT_EPOCH,
+            SHARD_EPOCH,
+            FULL_SHARD_CONF_HASH,
+            ROOT_EPOCH + 2,
+            SHARD_EPOCH + 2,
+            successor,
+            2,
+            bytes32(0)
+        );
+        assertRefused(
+            A_SYS,
+            openCalldata(assignmentAckPayload(p)),
+            SealRegistry.InvalidSupersessionSpan.selector
+        );
+
+        p = assignmentProjection(
+            ROOT_EPOCH,
+            SHARD_EPOCH,
+            FULL_SHARD_CONF_HASH,
+            ROOT_EPOCH + 3,
+            SHARD_EPOCH + 3,
+            successor,
+            2,
+            keccak256("span count mismatch")
+        );
+        assertRefused(
+            A_SYS,
+            openCalldata(assignmentAckPayload(p)),
+            SealRegistry.InvalidSupersessionSpan.selector
+        );
+    }
+
+    function test_wrongOldAssignmentContextIsRefused() public {
+        openAsSystem(firstPayload());
+        finalizeAsSystem(1, keccak256("R1"));
+        SealRegistry.AssignmentProjection memory p = assignmentProjection(
+            ROOT_EPOCH - 1,
+            SHARD_EPOCH,
+            FULL_SHARD_CONF_HASH,
+            ROOT_EPOCH + 1,
+            SHARD_EPOCH + 1,
+            keccak256("successor"),
+            0,
+            bytes32(0)
+        );
+        assertRefused(
+            A_SYS,
+            openCalldata(assignmentAckPayload(p)),
+            SealRegistry.AssignmentContextMismatch.selector
+        );
+    }
+
+    function test_wrongNewAssignmentContextIsRefused() public {
+        openAsSystem(firstPayload());
+        finalizeAsSystem(1, keccak256("R1"));
+        SealRegistry.AssignmentProjection memory p = assignmentProjection(
+            ROOT_EPOCH,
+            SHARD_EPOCH,
+            FULL_SHARD_CONF_HASH,
+            ROOT_EPOCH + 1,
+            SHARD_EPOCH + 1,
+            keccak256("projected successor"),
+            0,
+            bytes32(0)
+        );
+        OpenArgs memory ack = assignmentAckPayload(p);
+        ack.activeConfHash = keccak256("different successor");
+        assertRefused(A_SYS, openCalldata(ack), SealRegistry.AssignmentContextMismatch.selector);
+    }
+
+    function test_duplicateAssignmentAcknowledgementIsRefused() public {
+        openAsSystem(firstPayload());
+        finalizeAsSystem(1, keccak256("R1"));
+        SealRegistry.AssignmentProjection memory p = assignmentProjection(
+            ROOT_EPOCH,
+            SHARD_EPOCH,
+            FULL_SHARD_CONF_HASH,
+            ROOT_EPOCH + 1,
+            SHARD_EPOCH,
+            FULL_SHARD_CONF_HASH,
+            0,
+            bytes32(0)
+        );
+        OpenArgs memory ack = assignmentAckPayload(p);
+        openAsSystem(ack);
+        finalizeAsSystem(2, keccak256("R2"));
+        ack.n = 3; // reach the duplicate-ack guard instead of the earlier round guard
+        assertRefused(A_SYS, openCalldata(ack), SealRegistry.DuplicateAcknowledgement.selector);
+    }
+
+    function test_assignmentAcknowledgementIsSystemOnly() public {
+        openAsSystem(firstPayload());
+        finalizeAsSystem(1, keccak256("R1"));
+        SealRegistry.AssignmentProjection memory p = assignmentProjection(
+            ROOT_EPOCH,
+            SHARD_EPOCH,
+            FULL_SHARD_CONF_HASH,
+            ROOT_EPOCH + 1,
+            SHARD_EPOCH + 1,
+            keccak256("successor"),
+            0,
+            bytes32(0)
+        );
+        OpenArgs memory ack = assignmentAckPayload(p);
+        assertRefused(address(0xBEEF), openCalldata(ack), SealRegistry.NotSystemCaller.selector);
+        openAsSystem(ack);
+    }
+
+    function test_ackFailureAfterProjectionWritesRollsBackAtomically() public {
+        openAsSystem(firstPayload());
+        finalizeAsSystem(1, keccak256("R1"));
+        SealRegistry.AssignmentProjection memory p = assignmentProjection(
+            ROOT_EPOCH,
+            SHARD_EPOCH,
+            FULL_SHARD_CONF_HASH,
+            ROOT_EPOCH + 2,
+            SHARD_EPOCH + 2,
+            keccak256("successor"),
+            2,
+            keccak256("verified span")
+        );
+        OpenArgs memory ack = assignmentAckPayload(p);
+        ack.hasBlockHash = false;
+        ack.blockHash = keccak256("noncanonical absent block hash");
+        assertRefused(A_SYS, openCalldata(ack), SealRegistry.NonCanonicalNullBlockHash.selector);
+    }
+
+    function test_assignmentProjectionAbiAndHashVector() public pure {
+        assertEq(
+            SealRegistry.assignmentProjectionHash.selector,
+            bytes4(
+                keccak256(
+                    bytes(
+                        "assignmentProjectionHash((uint64,uint64,bytes32,uint64,uint64,bytes32,uint64,bytes32,bytes32))"
+                    )
+                )
+            )
+        );
+        assertEq(
+            SealRegistry.assignmentProjectionHash.selector,
+            bytes4(0xaaebf335),
+            "pinned projection selector"
+        );
+        SealRegistry.AssignmentProjection memory p = assignmentProjection(
+            4, 2, keccak256("old"), 6, 4, keccak256("new"), 2, keccak256("H2/H3")
+        );
+        assertEq(
+            p.projectionHash, 0x8a6712ca26e2085a0dc21ad07303ddc72665c61dc3290e5ce0abc3fda55acca1
+        );
+    }
+
+    function test_gasAndWitnessGrowthMeasurement() public {
+        openAsSystem(firstPayload());
+        finalizeAsSystem(1, keccak256("R1"));
+        uint256 snap = vm.snapshotState();
+
+        SealRegistry.AssignmentProjection memory rootOnly = assignmentProjection(
+            ROOT_EPOCH,
+            SHARD_EPOCH,
+            FULL_SHARD_CONF_HASH,
+            ROOT_EPOCH + 1,
+            SHARD_EPOCH,
+            FULL_SHARD_CONF_HASH,
+            0,
+            bytes32(0)
+        );
+        OpenArgs memory rootOnlyAck = assignmentAckPayload(rootOnly);
+        uint256 beforeGas = gasleft();
+        openAsSystem(rootOnlyAck);
+        uint256 rootOnlyGas = beforeGas - gasleft();
+        emit log_named_uint("v2 root-only ACK open gas", rootOnlyGas);
+
+        vm.revertToState(snap);
+        SealRegistry.AssignmentProjection memory superseding = assignmentProjection(
+            ROOT_EPOCH,
+            SHARD_EPOCH,
+            FULL_SHARD_CONF_HASH,
+            ROOT_EPOCH + 2,
+            SHARD_EPOCH + 2,
+            keccak256("s+2 PDR"),
+            2,
+            keccak256("verified H2 -> H3 chain")
+        );
+        OpenArgs memory supersedingAck = assignmentAckPayload(superseding);
+        beforeGas = gasleft();
+        openAsSystem(supersedingAck);
+        uint256 supersedingGas = beforeGas - gasleft();
+        emit log_named_uint("v2 superseding ACK open gas", supersedingGas);
+        assertLt(rootOnlyGas, 500_000);
+        assertLt(supersedingGas, 600_000);
     }
 
     function test_O10_nonCanonicalNullBlockHashIsRefused() public {
@@ -360,8 +685,8 @@ contract SealRegistryTest is SealRegistryBase {
     function test_outOfRangeUint64WordIsRefusedByTheDecoder() public {
         bytes memory good = openCalldata(firstPayload());
         premiseOpenSucceeds(firstPayload());
-        // Word 0 is n; word 15 is transitionCount. Set bit 64 in each in turn.
-        for (uint256 w = 0; w < 16; w++) {
+        // Every uint64 ABI word rejects high bits, including the assignment projection tuple.
+        for (uint256 w = 0; w < 32; w++) {
             if (!isUint64Word(w)) continue;
             bytes memory bad = bytes.concat(good);
             setCalldataWord(bad, w, uint256(1) << 64);
@@ -384,7 +709,7 @@ contract SealRegistryTest is SealRegistryBase {
         assertRefusedWithoutReason(A_SYS, short, 0);
     }
 
-    /// Recorded, not refused: Solidity's decoder ignores bytes after the sixteen words. Sending the
+    /// Recorded, not refused: Solidity's decoder ignores bytes after the static projection. Sending the
     /// exact projection is the execution client's obligation (#153 §6.1, §12).
     function test_trailingCalldataIsIgnoredByTheDecoder() public {
         bytes memory extended = bytes.concat(openCalldata(firstPayload()), bytes32(uint256(0xdead)));
@@ -428,7 +753,7 @@ contract SealRegistryTest is SealRegistryBase {
     }
 
     /// Any open from a_sys either reverts and changes nothing, or succeeds and changes only the §6.2
-    /// fields, leaving genesis words and inert cursors as they were and advancing the round.
+    /// fields, leaving immutable genesis words and the acknowledgement cursor unchanged.
     function testFuzz_systemOpenRevertsCleanlyOrWritesOnlyItsFields(OpenArgs memory a) public {
         bytes32[FIELD_COUNT] memory before = allWords();
         (bool ok,) = callAs(A_SYS, openCalldata(a));
@@ -437,8 +762,8 @@ contract SealRegistryTest is SealRegistryBase {
             return;
         }
         assertGenesisAndCursorsUnchanged(before);
-        assertGt(uintWord("round.authorized"), uint256(before[11]));
-        assertGe(uintWord("clock.rootRound"), uint256(before[5]));
+        assertGt(uintWord("round.authorized"), uint256(before[13]));
+        assertGe(uintWord("clock.rootRound"), uint256(before[7]));
         assertEq(uintWord("phase"), 1);
         assertEq(a.transitionCount, 0);
         assertEq(a.shardConfHash, FULL_SHARD_CONF_HASH);
@@ -481,6 +806,30 @@ contract SealRegistryTest is SealRegistryBase {
 
     // ---------------------------------------------------------------- helpers
 
+    function assignmentAckPayload(SealRegistry.AssignmentProjection memory p)
+        internal
+        pure
+        returns (OpenArgs memory a)
+    {
+        a = firstPayload();
+        a.n = 2;
+        a.rootRound = 6;
+        a.rootEpoch = p.newRootEpoch;
+        a.certEpoch = p.oldShardEpoch;
+        a.authEpoch = p.newShardEpoch;
+        a.hasBlockHash = true;
+        a.blockHash = keccak256("frozen parent block");
+        a.transitionCount = 1;
+        a.bodyID = keccak256("ack body");
+        a.genesisID = keccak256("ack genesis");
+        a.frozenID = keccak256("ack frozen");
+        a.commitID = keccak256("ack commit");
+        a.frozenParent = keccak256("ack frozen parent");
+        a.successorTR = keccak256("ack successor TR");
+        a.activeConfHash = p.newActiveConfHash;
+        a.assignment = p;
+    }
+
     function premiseOpenSucceeds(OpenArgs memory a) internal {
         uint256 snap = vm.snapshotState();
         (bool ok, bytes memory ret) = callAs(A_SYS, openCalldata(a));
@@ -495,14 +844,17 @@ contract SealRegistryTest is SealRegistryBase {
         assertEq(word("config.shardConfHash"), before[2]);
         assertEq(word("assignment.epoch"), before[3]);
         assertEq(word("assignment.rootEpoch"), before[4]);
-        assertEq(word("transition.cursor"), before[20]);
-        assertEq(word("inbox.consumed"), before[21]);
+        assertEq(word("assignment.activeConfHash"), before[5]);
+        assertEq(word("assignment.spanCommitment"), before[6]);
+        assertEq(word("transition.cursor"), before[22]);
+        assertEq(word("inbox.consumed"), before[23]);
         assertEq(word("transition.cursor"), bytes32(0));
         assertEq(word("inbox.consumed"), bytes32(0));
     }
 
     function isUint64Word(uint256 w) internal pure returns (bool) {
-        return w == 0 || w == 1 || w == 2 || w == 3 || w == 8 || w == 9 || w == 10 || w == 15;
+        return w == 0 || w == 1 || w == 2 || w == 3 || w == 8 || w == 9 || w == 10 || w == 15
+            || w == 23 || w == 24 || w == 26 || w == 27 || w == 29;
     }
 
     function setCalldataWord(bytes memory data, uint256 w, uint256 value) internal pure {
