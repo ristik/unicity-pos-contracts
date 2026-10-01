@@ -4,7 +4,7 @@ pragma solidity 0.8.37;
 import {Test} from "forge-std/Test.sol";
 import {SealRegistry} from "../src/SealRegistry.sol";
 
-/// @notice Shared fixture: the registry's runtime code placed at a_sr with exactly the six genesis
+/// @notice Shared fixture: the registry's runtime code placed at a_sr with exactly the seven genesis
 /// words of bft-core #153 §5.4, and helpers that address storage by the specification's slot names.
 ///
 /// The genesis values are #153's worked vector (§5.4): genesisCommitment and fullShardConfHash from
@@ -22,10 +22,10 @@ abstract contract SealRegistryBase is Test {
     uint64 internal constant SHARD_EPOCH = 0;
     uint64 internal constant ROOT_EPOCH = 1;
 
-    uint256 internal constant FIELD_COUNT = 28;
+    uint256 internal constant FIELD_COUNT = 30;
 
-    /// @dev The §6.1 open arguments, in order. Every field is a static type, so abi.encode of this
-    /// struct is exactly the sixteen argument words of the flat signature.
+    /// @dev The open arguments in ABI order. All components are static, so encoding this tuple yields
+    /// exactly 32 words, including the nested assignment projection.
     struct OpenArgs {
         uint64 n;
         uint64 rootRound;
@@ -49,10 +49,12 @@ abstract contract SealRegistryBase is Test {
         bytes32 commitID;
         bytes32 frozenParent;
         bytes32 successorTR;
+        bytes32 activeConfHash;
+        SealRegistry.AssignmentProjection assignment;
     }
 
     string internal constant OPEN_SIGNATURE =
-        "open(uint64,uint64,uint64,uint64,bytes32,bytes32,bytes32,bytes32,uint64,uint64,uint64,bytes32,bool,bytes32,bytes32,uint64,bytes32,bytes32,bytes32,bytes32,bytes32,bytes32)";
+        "open(uint64,uint64,uint64,uint64,bytes32,bytes32,bytes32,bytes32,uint64,uint64,uint64,bytes32,bool,bytes32,bytes32,uint64,bytes32,bytes32,bytes32,bytes32,bytes32,bytes32,bytes32,(uint64,uint64,bytes32,uint64,uint64,bytes32,uint64,bytes32,bytes32))";
     string internal constant FINALIZE_SIGNATURE = "finalize(uint64,bytes32)";
 
     function setUp() public virtual {
@@ -60,17 +62,18 @@ abstract contract SealRegistryBase is Test {
         installGenesis();
     }
 
-    /// @dev §5.4: exactly these six words; every other field stays absent.
+    /// @dev Genesis installs seven words; the active assignment starts at the immutable genesis hash.
     function installGenesis() internal {
-        setWord("layoutVersion", bytes32(uint256(1)));
+        setWord("layoutVersion", bytes32(uint256(2)));
         setWord("genesisCommitment", GENESIS_COMMITMENT);
         setWord("config.shardConfHash", FULL_SHARD_CONF_HASH);
         setWord("assignment.epoch", bytes32(uint256(SHARD_EPOCH)));
         setWord("assignment.rootEpoch", bytes32(uint256(ROOT_EPOCH)));
+        setWord("assignment.activeConfHash", FULL_SHARD_CONF_HASH);
         setWord("phase", bytes32(uint256(2)));
     }
 
-    /// @dev The 22 field names of §4.2, in table order.
+    /// @dev The 30 fixed registry slot names, in artifact order.
     function fieldNames() internal pure returns (string[FIELD_COUNT] memory names) {
         names = [
             "layoutVersion",
@@ -78,6 +81,8 @@ abstract contract SealRegistryBase is Test {
             "config.shardConfHash",
             "assignment.epoch",
             "assignment.rootEpoch",
+            "assignment.activeConfHash",
+            "assignment.spanCommitment",
             "clock.rootRound",
             "origin.rootEpoch",
             "origin.timestamp",
@@ -174,8 +179,44 @@ abstract contract SealRegistryBase is Test {
             frozenID: bytes32(0),
             commitID: bytes32(0),
             frozenParent: bytes32(0),
-            successorTR: bytes32(0)
+            successorTR: bytes32(0),
+            activeConfHash: FULL_SHARD_CONF_HASH,
+            assignment: SealRegistry.AssignmentProjection({
+                oldRootEpoch: 0,
+                oldShardEpoch: 0,
+                oldActiveConfHash: bytes32(0),
+                newRootEpoch: 0,
+                newShardEpoch: 0,
+                newActiveConfHash: bytes32(0),
+                supersessionSpan: 0,
+                supersessionCommitment: bytes32(0),
+                projectionHash: bytes32(0)
+            })
         });
+    }
+
+    function assignmentProjection(
+        uint64 oldRootEpoch,
+        uint64 oldShardEpoch,
+        bytes32 oldActiveConfHash,
+        uint64 newRootEpoch,
+        uint64 newShardEpoch,
+        bytes32 newActiveConfHash,
+        uint64 supersessionSpan,
+        bytes32 supersessionCommitment
+    ) internal pure returns (SealRegistry.AssignmentProjection memory p) {
+        p = SealRegistry.AssignmentProjection({
+            oldRootEpoch: oldRootEpoch,
+            oldShardEpoch: oldShardEpoch,
+            oldActiveConfHash: oldActiveConfHash,
+            newRootEpoch: newRootEpoch,
+            newShardEpoch: newShardEpoch,
+            newActiveConfHash: newActiveConfHash,
+            supersessionSpan: supersessionSpan,
+            supersessionCommitment: supersessionCommitment,
+            projectionHash: bytes32(0)
+        });
+        p.projectionHash = SealRegistry(A_SR).assignmentProjectionHash(p);
     }
 
     function openAsSystem(OpenArgs memory a) internal {
