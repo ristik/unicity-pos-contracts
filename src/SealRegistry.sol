@@ -2,6 +2,24 @@
 // License not yet chosen: contract licensing is an explicit owner decision (bft-core #1), not a default.
 pragma solidity 0.8.37;
 
+import {
+    B1Layout,
+    B1Entry,
+    B1Member,
+    B1Update,
+    B1StateInvalid,
+    PriorTipMismatch,
+    OldTipEndMismatch,
+    InvalidInterval,
+    TooManyEntries,
+    RingFull,
+    NonContiguousEpochs,
+    ExpiredEntry,
+    StartAfterOrigin,
+    OriginEpochMismatch,
+    EntryAlreadyPresent
+} from "./B1Layout.sol";
+
 /// @title SealRegistry, profile sealRegistry/v2
 /// @notice Fixed-profile registry of the imported root origin and certified round clock for the
 /// enshrined EVM. Specification: bft-core docs/design/f4a-seal-registry-contract.md, as accepted in
@@ -12,7 +30,7 @@ pragma solidity 0.8.37;
 /// checks its stored old context, target context and bounded epoch/span arithmetic.
 ///
 /// Layout (§4): no Solidity state variables. Every field lives at the fixed key
-/// keccak256("unicity.seal-registry.v1/" || name) and is read and written with sload and sstore, so
+/// keccak256("unicity.seal-registry/" || name) and is read and written with sload and sstore, so
 /// the compiler cannot move a field. Scalars are uint64 values in a 32-byte word.
 ///
 /// Genesis: there is no constructor. The genesis allocation places this runtime code at the
@@ -33,75 +51,72 @@ contract SealRegistry {
     /// @notice a_sys, the only caller of open and finalize (§2.1).
     address internal constant A_SYS = 0xff00000000000000000000000000000000000001;
 
-    uint256 internal constant LAYOUT_VERSION = 2;
     uint256 internal constant PHASE_OPEN = 1;
     uint256 internal constant PHASE_FINALIZED = 2;
 
     // §4.1 slot keys, one per §4.2 field.
-    bytes32 internal constant SLOT_LAYOUT_VERSION =
-        keccak256("unicity.seal-registry.v1/layoutVersion");
     bytes32 internal constant SLOT_GENESIS_COMMITMENT =
-        keccak256("unicity.seal-registry.v1/genesisCommitment");
+        keccak256("unicity.seal-registry/genesisCommitment");
     bytes32 internal constant SLOT_CONFIG_SHARD_CONF_HASH =
-        keccak256("unicity.seal-registry.v1/config.shardConfHash");
+        keccak256("unicity.seal-registry/config.shardConfHash");
     bytes32 internal constant SLOT_ASSIGNMENT_EPOCH =
-        keccak256("unicity.seal-registry.v1/assignment.epoch");
+        keccak256("unicity.seal-registry/assignment.epoch");
     bytes32 internal constant SLOT_ASSIGNMENT_ROOT_EPOCH =
-        keccak256("unicity.seal-registry.v1/assignment.rootEpoch");
+        keccak256("unicity.seal-registry/assignment.rootEpoch");
     bytes32 internal constant SLOT_ASSIGNMENT_ACTIVE_CONF_HASH =
-        keccak256("unicity.seal-registry.v1/assignment.activeConfHash");
+        keccak256("unicity.seal-registry/assignment.activeConfHash");
     bytes32 internal constant SLOT_ASSIGNMENT_SPAN_COMMITMENT =
-        keccak256("unicity.seal-registry.v1/assignment.spanCommitment");
+        keccak256("unicity.seal-registry/assignment.spanCommitment");
     bytes32 internal constant ASSIGNMENT_PROJECTION_DOMAIN =
         keccak256("unicity.seal-registry.v2/assignment-ack-projection");
     bytes32 internal constant SLOT_CLOCK_ROOT_ROUND =
-        keccak256("unicity.seal-registry.v1/clock.rootRound");
+        keccak256("unicity.seal-registry/clock.rootRound");
     bytes32 internal constant SLOT_ORIGIN_ROOT_EPOCH =
-        keccak256("unicity.seal-registry.v1/origin.rootEpoch");
+        keccak256("unicity.seal-registry/origin.rootEpoch");
     bytes32 internal constant SLOT_ORIGIN_TIMESTAMP =
-        keccak256("unicity.seal-registry.v1/origin.timestamp");
+        keccak256("unicity.seal-registry/origin.timestamp");
     bytes32 internal constant SLOT_ORIGIN_TREE_ROOT =
-        keccak256("unicity.seal-registry.v1/origin.treeRoot");
+        keccak256("unicity.seal-registry/origin.treeRoot");
     bytes32 internal constant SLOT_ORIGIN_IDENTITY =
-        keccak256("unicity.seal-registry.v1/origin.identity");
+        keccak256("unicity.seal-registry/origin.identity");
     bytes32 internal constant SLOT_ORIGIN_TR_HASH =
-        keccak256("unicity.seal-registry.v1/origin.trHash");
+        keccak256("unicity.seal-registry/origin.trHash");
     bytes32 internal constant SLOT_ROUND_AUTHORIZED =
-        keccak256("unicity.seal-registry.v1/round.authorized");
+        keccak256("unicity.seal-registry/round.authorized");
     bytes32 internal constant SLOT_INPUT_COMMITMENT =
-        keccak256("unicity.seal-registry.v1/input.commitment");
+        keccak256("unicity.seal-registry/input.commitment");
     bytes32 internal constant SLOT_CERTIFIED_ROUND =
-        keccak256("unicity.seal-registry.v1/certified.round");
+        keccak256("unicity.seal-registry/certified.round");
     bytes32 internal constant SLOT_CERTIFIED_STATE_HASH =
-        keccak256("unicity.seal-registry.v1/certified.stateHash");
+        keccak256("unicity.seal-registry/certified.stateHash");
     bytes32 internal constant SLOT_CERTIFIED_HAS_BLOCK_HASH =
-        keccak256("unicity.seal-registry.v1/certified.hasBlockHash");
+        keccak256("unicity.seal-registry/certified.hasBlockHash");
     bytes32 internal constant SLOT_CERTIFIED_BLOCK_HASH =
-        keccak256("unicity.seal-registry.v1/certified.blockHash");
-    bytes32 internal constant SLOT_PHASE = keccak256("unicity.seal-registry.v1/phase");
+        keccak256("unicity.seal-registry/certified.blockHash");
+    bytes32 internal constant SLOT_PHASE = keccak256("unicity.seal-registry/phase");
     bytes32 internal constant SLOT_OUTCOMES_ROUND =
-        keccak256("unicity.seal-registry.v1/outcomes.round");
+        keccak256("unicity.seal-registry/outcomes.round");
     bytes32 internal constant SLOT_OUTCOMES_COMMITMENT =
-        keccak256("unicity.seal-registry.v1/outcomes.commitment");
+        keccak256("unicity.seal-registry/outcomes.commitment");
     bytes32 internal constant SLOT_TRANSITION_CURSOR =
-        keccak256("unicity.seal-registry.v1/transition.cursor");
+        keccak256("unicity.seal-registry/transition.cursor");
     bytes32 internal constant SLOT_TRANSITION_BODY_ID =
-        keccak256("unicity.seal-registry.v1/transition.bodyID");
+        keccak256("unicity.seal-registry/transition.bodyID");
     bytes32 internal constant SLOT_TRANSITION_GENESIS_ID =
-        keccak256("unicity.seal-registry.v1/transition.genesisID");
+        keccak256("unicity.seal-registry/transition.genesisID");
     bytes32 internal constant SLOT_TRANSITION_FROZEN_ID =
-        keccak256("unicity.seal-registry.v1/transition.frozenID");
+        keccak256("unicity.seal-registry/transition.frozenID");
     bytes32 internal constant SLOT_TRANSITION_COMMIT_ID =
-        keccak256("unicity.seal-registry.v1/transition.commitID");
+        keccak256("unicity.seal-registry/transition.commitID");
     bytes32 internal constant SLOT_TRANSITION_FROZEN_PARENT =
-        keccak256("unicity.seal-registry.v1/transition.frozenParent");
+        keccak256("unicity.seal-registry/transition.frozenParent");
     bytes32 internal constant SLOT_TRANSITION_SUCCESSOR_TR =
-        keccak256("unicity.seal-registry.v1/transition.successorTR");
+        keccak256("unicity.seal-registry/transition.successorTR");
     // inbox.consumed remains genesis-only. transition.cursor advances on each accepted acknowledgement.
 
     /// O1, F1: the caller is not a_sys.
     error NotSystemCaller();
-    /// O2: layoutVersion is not 2, or genesisCommitment is zero.
+    /// O2: b1.initialized is not 1, or genesisCommitment is zero.
     error NotInitialized();
     /// O3: the previous block's finalize has not run.
     error PreviousNotFinalized();
@@ -188,10 +203,11 @@ contract SealRegistry {
         bytes32 frozenParent,
         bytes32 successorTR,
         bytes32 activeConfHash,
-        AssignmentProjection calldata assignment
+        AssignmentProjection calldata assignment,
+        B1Update calldata update
     ) external {
         if (msg.sender != A_SYS) revert NotSystemCaller(); // O1
-        if (_load(SLOT_LAYOUT_VERSION) != LAYOUT_VERSION || _load(SLOT_GENESIS_COMMITMENT) == 0) {
+        if (_load(B1Layout.F_INITIALIZED) != 1 || _load(SLOT_GENESIS_COMMITMENT) == 0) {
             revert NotInitialized(); // O2
         }
         if (_load(SLOT_PHASE) != PHASE_FINALIZED) revert PreviousNotFinalized(); // O3
@@ -214,6 +230,7 @@ contract SealRegistry {
                     || successorTR != 0 || !_isZeroProjection(assignment)
             ) revert InvalidTransition();
         } else if (transitionCount == 1) {
+            if (rootRound < _load(SLOT_CLOCK_ROOT_ROUND)) revert StaleRootRound(); // O5
             if (
                 bodyID == 0 || genesisID == 0 || frozenID == 0 || commitID == 0 || frozenParent == 0
                     || successorTR == 0
@@ -262,6 +279,10 @@ contract SealRegistry {
             revert TransitionsUnsupported(); // O9
         }
         if (!hasBlockHash && blockHash != 0) revert NonCanonicalNullBlockHash(); // O10
+
+        // B1: prune expired intervals, close the former tip and insert the new live ones. Any error
+        // above or below reverts the whole call, so no partial deletion or insertion is published.
+        _applyB1(update, rootRound, rootEpoch);
 
         // §6.2 effects, in order.
         _store(SLOT_ORIGIN_ROOT_EPOCH, rootEpoch);
@@ -357,8 +378,156 @@ contract SealRegistry {
         if (_load(SLOT_PHASE) != PHASE_OPEN) revert NotOpen(); // F2
         if (n != _load(SLOT_OUTCOMES_ROUND)) revert WrongOutcomeRound(); // F3
 
+        _checkB1Invariants();
         _store(SLOT_OUTCOMES_COMMITMENT, uint256(sealRegistryCommitment));
         _store(SLOT_PHASE, PHASE_FINALIZED);
+    }
+
+    // ------------------------------------------------------------------ B1 pruned history
+
+    /// @dev Applies the committed update to the circular queue of live root-epoch intervals, in the
+    /// order of the design: bind and check the parent tip, prune before inserting (so occupancy never
+    /// exceeds K_max), write the former tip's closure once if it survives, append the new entries and
+    /// check the final live set. O is the origin round and L = max(0, O - W_cert); an entry is live
+    /// iff it is open or its exclusive end exceeds L.
+    function _applyB1(B1Update calldata update, uint64 originRound, uint64 originEpoch) private {
+        uint256 k = _load(B1Layout.F_W_CERT) + 1;
+        uint256 origin = originRound;
+        uint256 low = origin > k - 1 ? origin - (k - 1) : 0;
+        uint256 head = _load(B1Layout.F_HEAD);
+        uint256 count = _load(B1Layout.F_COUNT);
+        if (count == 0 || count > k || head >= k) revert B1StateInvalid();
+
+        uint256 tail = _load(B1Layout.queueSlot((head + count - 1) % k));
+        if (_load(B1Layout.entrySlot(tail, 6)) != 0) revert B1StateInvalid(); // the tail is open
+        if (update.priorTipEpoch != tail) revert PriorTipMismatch();
+
+        B1Entry[] calldata news = update.newEntries;
+        uint256 a = news.length;
+        if (a > k) revert TooManyEntries();
+        if (update.hasOldTipEnd != (a != 0)) revert OldTipEndMismatch();
+        if (!update.hasOldTipEnd && update.oldTipEnd != 0) revert OldTipEndMismatch();
+        if (update.hasOldTipEnd && update.oldTipEnd <= _load(B1Layout.entrySlot(tail, 4))) {
+            revert InvalidInterval();
+        }
+
+        // Prune from the head while the entry's effective end is at or below L. The former tip's
+        // effective end is the supplied oldTipEnd, so a tip that is deleted is never closed first.
+        while (count != 0) {
+            uint256 e = _load(B1Layout.queueSlot(head));
+            bool ended;
+            uint256 end;
+            if (count == 1) {
+                ended = update.hasOldTipEnd;
+                end = update.oldTipEnd;
+            } else {
+                ended = _load(B1Layout.entrySlot(e, 6)) != 0;
+                end = _load(B1Layout.entrySlot(e, 5));
+            }
+            if (!ended || end > low) break; // survivor (the boundary-crossing entry is retained)
+            _deleteEntry(e, head);
+            head = (head + 1) % k;
+            count--;
+        }
+        if (count == 0) head = 0;
+
+        if (a != 0) {
+            if (count + a > k) revert RingFull();
+            if (count != 0) {
+                // The former tip survives: it closes exactly where its successor starts.
+                if (news[0].epoch != uint256(tail) + 1 || news[0].start != update.oldTipEnd) {
+                    revert NonContiguousEpochs();
+                }
+                _store(B1Layout.entrySlot(tail, 5), update.oldTipEnd);
+                _store(B1Layout.entrySlot(tail, 6), 1);
+            } else {
+                // Everything expired: the first new entry must be the one that crosses L.
+                if (news[0].epoch <= tail) revert NonContiguousEpochs();
+                if (news[0].start > low) revert StartAfterOrigin();
+            }
+            for (uint256 i = 0; i < a; i++) {
+                B1Entry calldata en = news[i];
+                if (i != 0) {
+                    B1Entry calldata prev = news[i - 1];
+                    if (en.epoch != uint256(prev.epoch) + 1 || en.start != prev.end) {
+                        revert NonContiguousEpochs();
+                    }
+                }
+                if (en.hasEnd == (i == a - 1)) revert InvalidInterval(); // only the last is open
+                if (en.hasEnd && en.end <= low) revert ExpiredEntry();
+                if (en.start > origin) revert StartAfterOrigin();
+                if (_load(B1Layout.entrySlot(en.epoch, 0)) != 0) revert EntryAlreadyPresent();
+                B1Layout.checkEntry(en, false);
+                _writeEntry(en);
+                _store(B1Layout.queueSlot((head + count) % k), en.epoch);
+                count++;
+            }
+            tail = news[a - 1].epoch;
+        }
+
+        if (count == 0) revert B1StateInvalid();
+        if (tail != originEpoch) revert OriginEpochMismatch();
+        _store(B1Layout.F_HEAD, head);
+        _store(B1Layout.F_COUNT, count);
+    }
+
+    /// @dev Writes the 11 metadata words and 8 words per member of one entry.
+    function _writeEntry(B1Entry calldata en) private {
+        uint256 e = en.epoch;
+        uint256 m = en.members.length;
+        uint256 total = 0;
+        for (uint256 j = 0; j < m; j++) {
+            total += en.members[j].weight;
+        }
+        _store(B1Layout.entrySlot(e, 0), 1);
+        _store(B1Layout.entrySlot(e, 1), en.bodyKind);
+        _store(B1Layout.entrySlot(e, 2), uint256(en.bodyID));
+        _store(B1Layout.entrySlot(e, 3), uint256(en.activationCommitID));
+        _store(B1Layout.entrySlot(e, 4), en.start);
+        _store(B1Layout.entrySlot(e, 5), en.end);
+        _store(B1Layout.entrySlot(e, 6), en.hasEnd ? 1 : 0);
+        _store(B1Layout.entrySlot(e, 7), en.signingScheme);
+        _store(B1Layout.entrySlot(e, 8), uint256(en.signingConfigHash));
+        _store(B1Layout.entrySlot(e, 9), m);
+        _store(B1Layout.entrySlot(e, 10), total);
+        for (uint256 j = 0; j < m; j++) {
+            B1Member calldata mem = en.members[j];
+            _store(B1Layout.memberSlot(e, j, 0), mem.nodeIDLength);
+            for (uint256 w = 0; w < 4; w++) {
+                _store(B1Layout.memberSlot(e, j, 1 + w), uint256(mem.nodeID[w]));
+            }
+            _store(B1Layout.memberSlot(e, j, 5), uint256(mem.key[0]));
+            _store(B1Layout.memberSlot(e, j, 6), uint256(mem.key[1]));
+            _store(B1Layout.memberSlot(e, j, 7), mem.weight);
+        }
+    }
+
+    /// @dev Clears every metadata word, every member word and the queue word of one entry.
+    function _deleteEntry(uint256 e, uint256 queueIndex) private {
+        uint256 m = _load(B1Layout.entrySlot(e, 9));
+        for (uint256 j = 0; j < m; j++) {
+            for (uint256 f = 0; f < B1Layout.MEMBER_FIELDS; f++) {
+                _store(B1Layout.memberSlot(e, j, f), 0);
+            }
+        }
+        for (uint256 f = 0; f < B1Layout.ENTRY_FIELDS; f++) {
+            _store(B1Layout.entrySlot(e, f), 0);
+        }
+        _store(B1Layout.queueSlot(queueIndex), 0);
+    }
+
+    /// @dev Finalize re-asserts what the last open established: a non-empty ring within K_max whose
+    /// tail is the open interval of the origin epoch.
+    function _checkB1Invariants() private view {
+        uint256 k = _load(B1Layout.F_W_CERT) + 1;
+        uint256 head = _load(B1Layout.F_HEAD);
+        uint256 count = _load(B1Layout.F_COUNT);
+        if (count == 0 || count > k || head >= k) revert B1StateInvalid();
+        uint256 tail = _load(B1Layout.queueSlot((head + count - 1) % k));
+        if (
+            _load(B1Layout.entrySlot(tail, 0)) != 1 || _load(B1Layout.entrySlot(tail, 6)) != 0
+                || tail != _load(SLOT_ORIGIN_ROOT_EPOCH)
+        ) revert B1StateInvalid();
     }
 
     /// @dev Reads one whole word at a constant key. No memory is used.

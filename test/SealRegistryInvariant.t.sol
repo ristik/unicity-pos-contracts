@@ -31,20 +31,31 @@ contract SealRegistryHandler is SealRegistryBase {
         bytes32 blockHash,
         uint8 corrupt
     ) external {
-        OpenArgs memory a = firstPayload();
+        OpenArgs memory a = currentPayload();
         a.n = uint64(uintWord("round.authorized") + 1 + (roundStep % 3));
         a.rootRound = uint64(uintWord("clock.rootRound") + (rootStep % 3));
         a.hasBlockHash = hasBlockHash;
         a.blockHash = hasBlockHash ? blockHash : bytes32(0);
         if (corrupt % 8 == 0) a.transitionCount = 1;
         if (corrupt % 8 == 1) a.shardConfHash = blockHash;
-        if (corrupt % 8 == 2) a.rootEpoch = ROOT_EPOCH + 1;
+        if (corrupt % 8 == 2) a.rootEpoch += 1;
         if (corrupt % 8 == 3 && a.rootRound > 0) a.rootRound -= 1;
         (bool ok,) = callAs(A_SYS, openCalldata(a));
         if (ok) {
             successfulOpens++;
             record();
         }
+    }
+
+    /// The payload a_sys would send next against the stored assignment, with an empty B1 update.
+    function currentPayload() internal view returns (OpenArgs memory a) {
+        a = firstPayload();
+        a.rootEpoch = uint64(uintWord("assignment.rootEpoch"));
+        a.certEpoch = uint64(uintWord("assignment.epoch"));
+        a.authEpoch = a.certEpoch;
+        a.activeConfHash = word("assignment.activeConfHash");
+        a.rootRound = uint64(uintWord("clock.rootRound"));
+        a.update = emptyUpdate(tipEpoch());
     }
 
     function systemFinalize(uint8 wrongRound, bytes32 commitment) external {
@@ -90,7 +101,9 @@ contract SealRegistryHandler is SealRegistryBase {
         );
         OpenArgs memory a = firstPayload();
         a.n = uint64(uintWord("round.authorized") + 1);
-        a.rootRound = uint64(uintWord("clock.rootRound") + 1);
+        // The origin round advances by the epoch delta, so every new interval starts after the tip.
+        a.rootRound = uint64(uintWord("clock.rootRound") + rootDelta);
+        a.update = advanceUpdate(tipEpoch(), a.rootRound, rootDelta, 2);
         a.rootEpoch = oldRoot + rootDelta;
         a.certEpoch = oldShard;
         a.authEpoch = oldShard + shardDelta;
@@ -119,23 +132,29 @@ contract SealRegistryHandler is SealRegistryBase {
 
     /// A random payload almost never satisfies O2 to O10, so half of the calls use the payload a_sys
     /// would send next. Only the caller check can refuse those.
-    function strangerOpen(address caller, OpenArgs memory a, bool acceptablePayload) external {
+    function strangerOpen(address caller, uint256 seed, bool acceptablePayload) external {
         if (caller == A_SYS) return;
+        OpenArgs memory a = randomArgs(seed);
         if (acceptablePayload) {
-            a = firstPayload();
+            a = currentPayload();
             a.n = uint64(uintWord("round.authorized") + 1);
-            a.rootRound = uint64(uintWord("clock.rootRound"));
         }
         bytes32[FIELD_COUNT] memory before = allWords();
+        bytes32 b1Before = b1DigestLight();
         (bool ok,) = callAs(caller, openCalldata(a));
-        if (ok || !sameWords(before, allWords())) strangerCallsThatChangedState++;
+        if (ok || !sameWords(before, allWords()) || b1Before != b1DigestLight()) {
+            strangerCallsThatChangedState++;
+        }
     }
 
     function strangerFinalize(address caller, uint64 n, bytes32 commitment) external {
         if (caller == A_SYS) return;
         bytes32[FIELD_COUNT] memory before = allWords();
+        bytes32 b1Before = b1DigestLight();
         (bool ok,) = callAs(caller, finalizeCalldata(n, commitment));
-        if (ok || !sameWords(before, allWords())) strangerCallsThatChangedState++;
+        if (ok || !sameWords(before, allWords()) || b1Before != b1DigestLight()) {
+            strangerCallsThatChangedState++;
+        }
     }
 
     function sameWords(bytes32[FIELD_COUNT] memory a, bytes32[FIELD_COUNT] memory b)
@@ -178,7 +197,10 @@ contract SealRegistryInvariantTest is SealRegistryBase {
     }
 
     function invariant_genesisIdentityAndActiveHashStayValid() public view {
-        assertEq(uintWord("layoutVersion"), 2);
+        assertEq(b1Word("b1.initialized"), 1);
+        assertEq(b1Word("b1.wCert"), W_CERT);
+        assertEq(bytes32(b1Word("b1.profileHash")), PROFILE_HASH);
+        assertEq(b1Word("b1.network"), NETWORK);
         assertEq(word("genesisCommitment"), GENESIS_COMMITMENT);
         assertEq(word("config.shardConfHash"), FULL_SHARD_CONF_HASH);
         assertTrue(word("assignment.activeConfHash") != bytes32(0));
@@ -203,6 +225,30 @@ contract SealRegistryInvariantTest is SealRegistryBase {
     function invariant_ackCursorMatchesSuccessfulAcknowledgements() public view {
         assertEq(uintWord("transition.cursor"), handler.successfulAcknowledgements());
         assertEq(word("inbox.consumed"), bytes32(0));
+    }
+
+    /// The ring is never empty or over K_max, its epochs are consecutive and its intervals contiguous
+    /// with exactly one open tail, which is the assignment's root epoch once a block has opened.
+    function invariant_ringIsAContiguousLiveSetWithOneOpenTail() public view {
+        uint256 count = b1Word("b1.count");
+        assertGe(count, 1);
+        assertLe(count, kMax());
+        assertLt(b1Word("b1.head"), kMax());
+        uint256[] memory es = liveEpochs();
+        for (uint256 i = 0; i < es.length; i++) {
+            assertEq(ent(es[i], 0), bytes32(uint256(1)), "live entry present");
+            bool last = i == es.length - 1;
+            assertEq(uint256(ent(es[i], 6)), last ? 0 : 1, "only the tail is open");
+            if (!last) {
+                assertEq(es[i + 1], es[i] + 1, "consecutive epochs");
+                assertEq(ent(es[i], 5), ent(es[i + 1], 4), "end is the next start");
+            }
+        }
+        assertEq(es[es.length - 1], uintWord("assignment.rootEpoch"), "tail is the root epoch");
+        // No stale words for epochs that have left the window.
+        for (uint256 e = 0; e < es[0] && e < TRACK_EPOCHS; e++) {
+            assertEntryAbsent(e, TRACK_MEMBERS);
+        }
     }
 
     function invariant_phaseIsOpenOrFinalized() public view {
