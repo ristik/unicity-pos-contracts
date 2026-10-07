@@ -38,6 +38,7 @@ fs_permissions = [
     { access = "read-write", path = "./out" },
     { access = "read-write", path = "./artifacts" },
     { access = "read", path = "./test/bridge" },
+    { access = "read", path = "./test/p85/fixtures" },
 ]
 
 # Custody and registry code must not silently truncate.
