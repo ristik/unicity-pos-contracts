@@ -768,8 +768,11 @@ contract StakeCustody is ReentrancyGuard {
         if (d.exposureDigest != a.exposureDigest || d.keyHistoryDigest != a.keyDigest) {
             revert ClosureDigestMismatch();
         }
-        bytes32 key =
-            keccak256(abi.encode(CLOSURE_DOMAIN, a.rootEpoch, d.hRecordID, d.terminalRoot));
+        // The closure identity is (closed root epoch, H record, H round) with the terminal root as part of its immutable value:
+        // an assignment closes once, so any other H record, H round or terminal root conflicts with the first closure.
+        bytes32 key = keccak256(
+            abi.encode(CLOSURE_DOMAIN, a.rootEpoch, d.hRecordID, d.hRound, d.terminalRoot)
+        );
         if (a.closed) {
             if (a.closureKey != key) revert ConflictingClosure();
             return;

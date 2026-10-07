@@ -127,4 +127,49 @@ contract AuthenticatedRecordsTest is P85Flow {
         r.data[31] ^= 0x01;
         assertTrue(r.recordID != _id(r));
     }
+
+    // --- closure repeat/conflict: the vectors' cases applied to custody -------------------------
+
+    /// @dev The same second-closure cases bft-core's projection runs (rootrecords closureCases): an identical repeat is a no-op that
+    /// keeps both anchors, every other change is rejected. Custody and the projection must agree on each.
+    function test_theClosureCasesAreAppliedToCustody() public {
+        string memory json = _vectors();
+        uint256 n;
+        while (vm.keyExistsJson(json, string.concat(".closureCases[", vm.toString(n), "].name"))) {
+            ++n;
+        }
+        assertEq(n, 7, "the vectors carry the seven closure cases");
+        for (uint256 i; i < n; ++i) {
+            string memory base = string.concat(".closureCases[", vm.toString(i), "]");
+            string memory change = vm.parseJsonString(json, string.concat(base, ".change"));
+            string memory expect = vm.parseJsonString(json, string.concat(base, ".expect"));
+            uint256 snap = vm.snapshotState();
+
+            handoffExcluding(0);
+            closeGenesisAt(150, 1_200);
+            ClosureData memory d =
+                abi.decode(closureData(GENESIS_ASSIGNMENT, H_ROUND, "genesis"), (ClosureData));
+            bytes32 c = keccak256(bytes(change));
+            if (c == keccak256("assignment")) d.assignmentID = ASG_J;
+            else if (c == keccak256("hRound")) d.hRound = H_ROUND + 1;
+            else if (c == keccak256("hRecord")) d.hRecordID = keccak256("another H record");
+            else if (c == keccak256("terminalRoot")) d.terminalRoot = keccak256("another root");
+            else if (c == keccak256("exposureDigest")) d.exposureDigest = keccak256("x");
+            else if (c == keccak256("keyHistoryDigest")) d.keyHistoryDigest = keccak256("k");
+            clock(900, 9_000);
+            pushRecord(RecordKind.Closure, abi.encode(d));
+            uint64 cursor = custody.recordCursor();
+            if (keccak256(bytes(expect)) == keccak256("repeat")) {
+                applyAll();
+                assertEq(custody.recordCursor(), cursor + 1, change);
+                assertEq(asg(GENESIS_ASSIGNMENT).pClose, 150, change);
+                assertEq(asg(GENESIS_ASSIGNMENT).tClose, 1_200, change);
+            } else {
+                (bool ok,) = address(custody).call(abi.encodeCall(custody.applyRootRecords, (1)));
+                assertFalse(ok, change);
+                assertEq(custody.recordCursor(), cursor, change);
+            }
+            vm.revertToState(snap);
+        }
+    }
 }
