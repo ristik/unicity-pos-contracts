@@ -38,10 +38,17 @@ struct B1Word {
 /// allocation, so only non-zero words are returned.
 contract B1GenesisBuilder {
     /// Frozen bound on G_rest(K_max, C_max) for the pinned runtime (docs/b1-registry-gas.md): every
-    /// cost of a maximal open+finalize other than the addressed SSTOREs. See the measured fixtures in
-    /// test/SealRegistryB1Gas.t.sol, which fail if the runtime ever exceeds it.
-    uint256 public constant G_REST_BASE = 250_000;
-    uint256 public constant G_REST_PER_ENTRY = 1_000_000;
+    /// cost of a maximal open+finalize other than the history SSTOREs the rectangle covers. Linear in
+    /// the entries inserted (a) and deleted (p); a <= K_max and p <= K_max, so the worst case is
+    /// base + (perInsert + perDelete) * K_max.
+    uint256 public constant G_REST_BASE = 1_000_000;
+    uint256 public constant G_REST_PER_INSERT = 800_000;
+    uint256 public constant G_REST_PER_DELETE = 200_000;
+    uint256 public constant G_REST_PER_ENTRY = G_REST_PER_INSERT + G_REST_PER_DELETE;
+
+    function gRestFor(uint256 inserted, uint256 deleted) public pure returns (uint256) {
+        return G_REST_BASE + G_REST_PER_INSERT * inserted + G_REST_PER_DELETE * deleted;
+    }
 
     function gRestBound(uint256 kMax) public pure returns (uint256) {
         return G_REST_BASE + G_REST_PER_ENTRY * kMax;

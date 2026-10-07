@@ -343,6 +343,39 @@ contract SealRegistryB1Test is SealRegistryB1Helpers {
         assertEq(before, b1Digest());
     }
 
+    // ---------------------------------------------------------------- acknowledgement clock
+
+    /// An acknowledgement is an ordinary open for the monotone origin clock: a lower root round is
+    /// refused even though every interval rule would accept it (design v4, "monotone origin"; a lower
+    /// origin would move L backward after earlier pruning discarded history). The ordinary open at
+    /// round 10 leaves the tail at epoch 1 starting at round 1, so the acknowledgement's entry (start
+    /// 9) is valid at round 9 and at round 10: the two payloads differ only in the root round.
+    function test_anAcknowledgementBelowTheClockIsRefusedByTheClockGuardAlone() public {
+        step(plainAt(10));
+        assertEq(uintWord("clock.rootRound"), 10);
+        assertLive(epochs(1));
+
+        B1Update memory u = advanceUpdate(tipEpoch(), 9, 1, 3);
+        premiseOpenSucceeds(ackWith(10, 1, u)); // the same update at the clock's own round
+        refuse(ackWith(9, 1, u), SealRegistry.StaleRootRound.selector); // exact error, nothing written
+        refuse(ackWith(0, 1, u), SealRegistry.StaleRootRound.selector);
+
+        // Nothing was lost by the refusal: the unchanged update still opens at round 10 afterwards.
+        step(ackWith(10, 1, u));
+        assertLive(epochs(1, 2));
+    }
+
+    /// The guard is strict: an acknowledgement at exactly the clock's round is accepted and the clock
+    /// does not move.
+    function test_anAcknowledgementAtTheClockRoundIsAcceptedAndKeepsTheClock() public {
+        step(plainAt(10));
+        step(ackWith(10, 1, advanceUpdate(tipEpoch(), 9, 1, 3)));
+        assertEq(uintWord("clock.rootRound"), 10);
+        assertEq(uintWord("origin.rootEpoch"), 2);
+        assertLive(epochs(1, 2));
+        assertEq(ent(1, 5), bytes32(uint256(9)), "the former tip closed where the successor starts");
+    }
+
     function test_everyOriginAdvancePerformsThePruneCheck() public {
         step(ackAt(4, 1, 3)); // e1 [1,4), e2 [4,open)
         step(plainAt(6)); // L = 3: nothing to prune

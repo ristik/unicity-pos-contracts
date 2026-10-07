@@ -60,7 +60,17 @@ contract SealRegistryArtifactTest is SealRegistryBase {
         assertEq(vm.parseJsonUint(json, ".b1Layout.bounds.maxEntryWords"), 11 + 8 * 64);
         assertEq(vm.parseJsonUint(json, ".gasProfile.gRestBound.base"), builder.G_REST_BASE());
         assertEq(
+            vm.parseJsonUint(json, ".gasProfile.gRestBound.perInsert"), builder.G_REST_PER_INSERT()
+        );
+        assertEq(
+            vm.parseJsonUint(json, ".gasProfile.gRestBound.perDelete"), builder.G_REST_PER_DELETE()
+        );
+        assertEq(
             vm.parseJsonUint(json, ".gasProfile.gRestBound.perEntry"), builder.G_REST_PER_ENTRY()
+        );
+        assertEq(vm.parseJsonUint(json, ".gasProfile.gRestBound.operationalWrites.count"), 28);
+        assertEq(
+            vm.parseJsonUint(json, ".gasProfile.gRestBound.operationalWrites.pricePerWrite"), 22_100
         );
     }
 

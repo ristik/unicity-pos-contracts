@@ -92,48 +92,100 @@ Design v4 requires, before activation,
 g_sys >= 67536 + 326144*K + 22100*(524*K + 4) + 7100*524*K + G_rest(K, C_max)
 ```
 
-The `22100`/`7100` terms are a conservative SSTORE rectangle (every addressed write at the cold
-zero-to-non-zero price, every clear at 7100, no refund credit); `G_rest` bounds everything else in
-`open` + `finalize`. The registry meters ordinarily (gross), so the rectangle and `G_rest` are an
-activation check, not a runtime debit.
+The `22100`/`7100` terms are a conservative rectangle for the **history** SSTOREs only (every
+addressed history write at the cold zero-to-non-zero price, every clear at 7100, no refund credit).
+`G_rest` is everything else in `open` + `finalize`: SLOADs, slot hashing, calldata decode, memory, the
+event, **the operational-registry writes** and **the whole of `finalize`**. The registry meters
+ordinarily (gross), so the rectangle and `G_rest` are an activation check, not a runtime debit.
 
-**Loop analysis.** Every loop is bounded by a count that is checked first: the prune loop by `count <=
-K_max` (each iteration clears `11 + 8*m` words with `m <= 64` read from storage), the insertion loop by
-`a <= K_max` (each entry: `checkEntry` over `<= 64` members, 4 nodeID words each, then `523` writes), and
-`finalize` is constant. There is no recursion, no external call and no allocation per word (slot
-hashes use temporary memory above the free pointer without moving it), so non-storage gas is affine in
-`K`: `G_rest(K) = c0 + c1*K`. `C_max` (the calldata size of the update) adds no term beyond what is
-measured: calldata is read in place.
+**Frozen bound.** `G_rest(a, p) = 1 000 000 + 800 000*a + 200 000*p` for `a` inserted and `p` deleted
+entries; since `a <= K_max` and `p <= K_max`, `G_rest(K_max) = 1 000 000 + 1 000 000*K_max`. The
+constants are in `B1GenesisBuilder` and the artifact. They hold for the pinned runtime and compiler
+profile (`0.8.37`, IR, optimizer 200 runs) only.
 
-**Measurement.** `test/SealRegistryB1Gas.t.sol` runs the worst entry (64 members, 128-byte node IDs,
-523 words) at `K_max` in `{1,2,4,8,16}` in three shapes: *replace* (a full ring deleted and `K` new
-entries inserted, `p = a = K`), *insert* (`p = 0`, `a = K - 1`) and *prune* (`p = K - 1`, `a = 0`).
-The insert shape is tight: every addressed write is a fresh set, so the rectangle has no slack and the
-calibrated set/read costs (measured with a slot loop in the same environment) can be subtracted to leave
-`G_rest` exactly. Deletions are bounded against the rectangle's `7100` per clear (the EVM charges at
-most `5000`), whose slack covers the per-word non-storage work.
+### Accounting: where the gas can go
 
-| `K_max` | insert: gross (open + finalize) | rectangle (`a=K-1`) | measured `G_rest` | frozen `G_rest(K)` | replace: gross | rectangle (`a=p=K`) |
-|---|---|---|---|---|---|---|
-| 1 | n/a | n/a | n/a | 1 250 000 | 12 889 834 | 15 389 200 |
-| 2 | 12 729 045 | 11 668 800 | 620 675 | 2 250 000 | 25 258 600 | 30 690 000 |
-| 4 | 37 032 593 | 34 829 600 | 1 716 480 | 4 250 000 | 49 977 361 | 61 291 600 |
-| 8 | 85 699 070 | 81 151 200 | 3 916 000 | 8 250 000 | 99 455 382 | 122 494 800 |
-| 16 | 182 971 262 | 173 794 400 | 8 305 749 | 16 250 000 | 198 406 254 | 244 901 200 |
+Every loop's bound is checked before the loop runs, and every iteration is a straight-line block, so
+non-history cost is affine in `(a, p)` with no term in `K_max` alone.
 
-Measured `G_rest` is about `550 000` per inserted entry plus about `70 000` fixed (finalize alone is
-`~67 000`, including its cold reads). The frozen bound is `G_rest(K) = 250 000 + 1 000 000 * K`: at
-least 1.8x the measured per-entry insertion cost, which also leaves room for the per-word non-storage
-work of deletions (inside the rectangle's slack). The fixtures fail if the runtime ever exceeds the
-bound, and the bound is part of the artifact.
+| Block | Bound (checked first) | Per-iteration work outside the history SSTOREs | Data-dependent branches |
+|---|---|---|---|
+| operational checks | none | a fixed set of cold SLOADs; 15 effect writes, and on the acknowledgement path 11 more writes and one fixed-size log | `transitionCount` 0 or 1: the acknowledgement path is the superset |
+| parent binding | none | `head`, `count`, queue slot, tail words (cold SLOADs) | none (reverts are cheaper than success) |
+| prune loop | `count <= K_max` (`B1StateInvalid`), so `p + 1` iterations | one queue slot, two entry words (or the supplied tip end), then in `_deleteEntry` one `memberCount` load, `8*m + 12` slot hashes (2 to 4 words each) | the `count == 1` select; break |
+| closure | none | two writes, only when the tip survives | survives or not |
+| insert loop | `a <= K_max` (`TooManyEntries`) | one presence SLOAD, `checkEntry`, `523` slot hashes and calldata reads | see below |
+| `checkEntry` per member | `m <= 64` (`BadMemberCount`) | node ID padding (4 fixed words), key prefix, weight sum, ordering | `_lessThan` exits at the first differing node-ID word (1 to 4 words, then length) |
+| `finalize` | none | nine cold SLOADs, 2 writes | none |
 
-**Limits of this evidence.** These are gross-gas measurements under forge's test EVM with the pinned
-compiler profile, not a claim about the final client: ureth PR 4 must repeat them under the real client
-(same envelope, real DB, x86-64 and arm64) before activation, and any change to the runtime, compiler
-profile or the entry bounds invalidates the frozen constants. Under forge, clears of seeded slots were
-observed to cost less than the EVM's `5000`, which is why the deletion shapes are checked against the
-rectangle rather than used to derive `G_rest`. `K_max` is bounded only by `g_sys`: the profile check
-above refuses a `W_cert` the budget cannot cover; live history is never truncated.
+The calldata update is read in place (no copy), slot hashes use scratch memory above the free pointer
+that is never kept, and no call, create or recursion exists, so memory does not grow with the update.
+The only per-member data-dependent code is the ordering comparison, so the fixtures drive its worst
+branches: **variant 0** members differ in node-ID word 0 (the comparison exits at its first word),
+**variant 1** members share a 96-byte prefix and differ in word 3 (four words compared), **variant 2**
+node IDs are all-zero bytes of lengths 1 to 64 (all four words equal, ordered by length). Entries with
+fewer members or shorter IDs cost strictly less in every block above.
+
+### Method
+
+`test/SealRegistryB1Gas.t.sol` runs the real `open` and `finalize` against committed state with every
+first storage access cold (`vm.cool`), records the storage accesses, and prices each SSTORE with the
+exact Cancun rules (EIP-2929, 2200, 3529: 2100 cold surcharge; 100 when the value is unchanged or the
+slot is dirty; 20000 for a clean zero to non-zero; 2900 for any other clean change). That model is
+itself tested against the EVM (`SealRegistryB1GasModelTest`: a cold set is 22100, a cold clear or
+overwrite 5000, a dirty rewrite 100, a cold read 2100, a warm read 100, a write after a cold read 2900).
+
+Two properties of the test EVM matter and are handled explicitly. First, calls from the test body start
+cold, so each of `open` and `finalize` is priced as its own cold call (conservative). Second, the test EVM
+credits the capped refund to the call that earned it, so a raw `gasleft()` difference around a call that
+clears slots is **net**; the fixtures add the credit (`lastFrameGas().gasRefunded`) back to get gross
+(`test_theFixturesAddBackTheRefundCreditSoGrossIsMeasured` calibrates this against a control with no
+refund). Earlier fixtures measured net gas and so saw deletions cheaper than the EVM's 5000.
+
+For each fixture:
+
+```
+history = exact price of every write to a history slot (what the rectangle covers)
+rest*   = gross - history - (operational writes, exact) + 28 * 22100
+```
+
+`rest*` keeps every SLOAD, the event and finalize in `G_rest`, and re-prices the operational writes
+(at most 26 in `open`, 2 in `finalize`) at the 22100 worst case whatever their state. Every fixture
+asserts `rest* <= G_rest(a, p)`, `rest* <= G_rest(K_max)`, `history <= rectangle(a, p)` (with the
+write-count premises: non-zero history writes at most `524*a + 4`, all history writes at most
+`524*(a + p) + 4`, a non-zero write at most 22100, a write of zero at most 5000), and the end-to-end
+`gross <= rectangle + G_rest(K_max)`.
+
+Shapes, all with 64 members and 128-byte node IDs (variant 2: lengths 1 to 64), at `K_max` in
+`{1, 2, 4, 8, 16}`: **replace** (full ring deleted, `K` entries inserted, `a = p = K`), **mixed** (a
+full ring loses `K - 1` entries, the surviving tip is closed, `K - 1` inserted), **insert** (a ring of one
+open tail gains `K - 1`, `p = 0`), **prune** (`K - 1` deleted, `a = 0`).
+
+### Measured `rest*` (worst node-ID variant, variant 1)
+
+| `K_max` | replace (`a=p=K`) | mixed (`a=p=K-1`) | insert (`a=K-1`) | prune (`p=K-1`) | frozen `G_rest(K_max)` |
+|---|---|---|---|---|---|
+| 1 | 1 482 921 | n/a | n/a | n/a | 2 000 000 |
+| 2 | 2 233 622 | 1 490 882 | 1 363 236 | 851 362 | 3 000 000 |
+| 4 | 3 732 587 | 2 990 290 | 2 607 343 | 1 106 663 | 5 000 000 |
+| 8 | 6 730 442 | 5 988 145 | 5 094 623 | 1 617 238 | 9 000 000 |
+| 16 | 12 720 398 | 11 978 881 | 10 064 191 | 2 638 406 | 17 000 000 |
+
+Fitted unit costs: about 620 000 per inserted entry (`checkEntry` and the `523` slot hashes), about
+130 000 per deleted entry (the `523` slot hashes and loads), and a base near 750 000 (28 operational
+writes at 22100 is 619 000 of it, plus cold reads, the log and finalize). The frozen constants leave
+at least a 1.29x margin on every fixture (replace 1.34x; insert at `K_max = 16` is the tightest), and the
+fixtures fail if the runtime ever exceeds them. The full per-fixture figures (gross, history SSTORE,
+rectangle, operational SSTORE, SLOAD) are printed by `forge test --match-path
+test/SealRegistryB1Gas.t.sol -vv`.
+
+**Limits of this evidence.** These are gross-gas measurements under forge's test EVM, not a claim about
+the final client: ureth PR 4 must repeat them under the real client (same envelope, real database,
+x86-64 and arm64) before activation, and any change to the runtime, compiler profile or the entry bounds
+invalidates the frozen constants. The bound is derived for the maximal shape (64 members, 128-byte IDs,
+`K_max` entries); the linear form extends to any admitted `K_max` because no block above depends on
+`K_max` except through `a` and `p`. `K_max` is bounded only by `g_sys`: the profile check above refuses a
+`W_cert` the budget cannot cover; live history is never truncated.
 
 `test_deletionRefundsDoNotFundTheCall` shows the gross rule on the maximal replacement: the call earns a
 non-zero refund, a budget equal to gross minus the maximum refund fails with no state change, and a

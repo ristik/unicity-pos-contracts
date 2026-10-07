@@ -114,7 +114,16 @@ jq -n \
 		genesisNote: "Zero words are absent from a genesis allocation. The genesis builder (src/B1Genesis.sol) applies the runtime bounds to the genesis entry and refuses a profile whose g_sys does not cover the envelope. This artifact does not contain a deployable genesis record: genesisCommitment, fullShardConfHash and the entry members depend on deployment configuration and are produced by the Go construction using codeHash above.",
 		gasProfile: {
 			envelope: "g_sys >= 67536 + 326144*K_max + 22100*(524*K_max+4) + 7100*524*K_max + G_rest(K_max, C_max)",
-			gRestBound: {base: 250000, perEntry: 1000000, formula: "G_rest(K_max) = base + perEntry * K_max"},
+			gRestBound: {
+				base: 1000000,
+				perInsert: 800000,
+				perDelete: 200000,
+				perEntry: 1000000,
+				operationalWrites: {count: 28, pricePerWrite: 22100},
+				formula: "G_rest(a, p) = base + perInsert*a + perDelete*p; G_rest(K_max) = base + perEntry*K_max, since a <= K_max and p <= K_max",
+				covers: "everything in open + finalize except the history SSTOREs of the rectangle: SLOADs, hashing, decode, memory, logs, operational-registry writes (28, each priced at 22100) and finalize",
+				price: "Cancun, cold: SLOAD 2100, SSTORE 22100 set / 5000 reset, gross (no refund credit)"
+			},
 			analysis: "docs/b1-registry-gas.md"
 		}
 	}' >artifacts/seal-registry.json
