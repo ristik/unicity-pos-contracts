@@ -1,6 +1,6 @@
 # root-records-vectors.json
-Produced by bft-core `rootrecords` (branch p85/pr1b, commit db58ad7903a46f2bef320977fa606eef24562afa, `ROOTRECORDS_UPDATE=1 go test ./rootrecords`).
+Produced by bft-core `rootrecords` (branch p85/pr1c-import, commit 83f7cfb53799d6e9eb2751f1b2d709af40995038, `ROOTRECORDS_UPDATE=1 go test ./rootrecords`).
 Do not edit by hand; regenerate and copy. Replayed verbatim by `AuthenticatedRecords.t.sol`.
 
 UC time: the times in these vectors are quorum-approved wall-clock times of the root seal, bounded by root consensus (monotonic against the
-parent, 30 s voter clock skew: ristik/bft-core#445) and imported monotonically on one lineage (bft-core `rootrecords.Clock`).
+parent, 30 s voter clock skew: ristik/bft-core#445, merged in ristik/bft-core#447) and imported monotonically on one lineage (bft-core `rootrecords.Clock`).
