@@ -816,6 +816,7 @@ contract SealRegistryB1Test is SealRegistryB1Helpers {
         finalizeAsSystem(a.n, keccak256("R")); // premise: a good ring finalizes
         vm.revertToState(snap);
 
+        importEmptyAsSystem(a.n);
         bytes memory fin = finalizeCalldata(a.n, keccak256("R"));
         vm.store(A_SR, fixedSlot("b1.count"), bytes32(0));
         assertRefused(A_SYS, fin, B1StateInvalid.selector);

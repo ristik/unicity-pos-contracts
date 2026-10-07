@@ -18,6 +18,8 @@ struct B1GenesisParams {
     bytes32 shardConfHash;
     uint64 shardEpoch;
     uint64 rootEpoch;
+    // The pinned genesis UC time: records.ucTime before any import.
+    uint64 genesisUcTime;
     uint16 network;
     uint64 wCert;
     uint64 deltaEv;
@@ -42,13 +44,16 @@ contract B1GenesisBuilder {
     /// Largest K_max exercised by maximal actual-call fixtures; raising it requires re-measurement.
     uint256 public constant MAX_MEASURED_K = 16;
 
+    /// The base was raised by 40,000 for the records import: finalize now reads the import round, and the larger runtime and its
+    /// selector dispatch add measured cost to every open and finalize (worst measured growth 27,000 at 1.5x), and the per-delete term by 6,000 (measured growth up to 84,000 at K_max 16 after the larger runtime changed the compiler's layout of the pruning loop). The import call itself is
+    /// charged separately (G_R_admit and the import's own gross gas, PR1c control-records spec section 6).
     /// Measured-plus-margin allowance for the pinned runtime (docs/b1-registry-gas.md): every
     /// cost of a maximal open+finalize other than the history SSTOREs the rectangle covers. Fitted
     /// coefficients (731000 base, 633000 insert, 128000 delete) times a 1.5x safety factor, not a proof.
     /// Since a <= K_max and p <= K_max, the profile uses base + (perInsert + perDelete) * K_max.
-    uint256 public constant G_REST_BASE = 1_096_500;
+    uint256 public constant G_REST_BASE = 1_136_500;
     uint256 public constant G_REST_PER_INSERT = 949_500;
-    uint256 public constant G_REST_PER_DELETE = 192_000;
+    uint256 public constant G_REST_PER_DELETE = 198_000;
     uint256 public constant G_REST_PER_ENTRY = G_REST_PER_INSERT + G_REST_PER_DELETE;
 
     function gRestFor(uint256 inserted, uint256 deleted) public pure returns (uint256) {
@@ -79,7 +84,7 @@ contract B1GenesisBuilder {
         uint64 total = B1Layout.checkEntry(en, true);
 
         uint256 m = en.members.length;
-        out = new B1Word[](14 + 11 + 8 * m);
+        out = new B1Word[](15 + 11 + 8 * m);
         uint256 n = 0;
         // Operational words, re-exported under the single layout (no layoutVersion word).
         n = _put(out, n, _name("genesisCommitment"), p.genesisCommitment);
@@ -87,6 +92,7 @@ contract B1GenesisBuilder {
         n = _put(out, n, _name("assignment.epoch"), bytes32(uint256(p.shardEpoch)));
         n = _put(out, n, _name("assignment.rootEpoch"), bytes32(uint256(p.rootEpoch)));
         n = _put(out, n, _name("assignment.activeConfHash"), p.shardConfHash);
+        n = _put(out, n, _name("records.ucTime"), bytes32(uint256(p.genesisUcTime)));
         n = _put(out, n, _name("phase"), bytes32(uint256(2)));
         // B1 immutable and mutable words.
         n = _put(out, n, B1Layout.F_NETWORK, bytes32(uint256(p.network)));

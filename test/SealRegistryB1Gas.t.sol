@@ -482,6 +482,7 @@ abstract contract SealRegistryB1GasBase is SealRegistryB1Helpers, CancunPrices {
         assertTrue(ok, "open succeeds");
         price(d, t);
 
+        importEmptyAsSystem(a.n); // the mandatory import is not part of the finalize measurement
         bytes memory finData = finalizeCalldata(a.n, keccak256("R"));
         vm.cool(A_SR);
         vm.prank(A_SYS);

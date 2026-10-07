@@ -26,7 +26,7 @@ abstract contract SealRegistryBase is Test {
     uint64 internal constant SHARD_EPOCH = 0;
     uint64 internal constant ROOT_EPOCH = 1;
 
-    uint256 internal constant FIELD_COUNT = 29;
+    uint256 internal constant FIELD_COUNT = 36;
 
     // The fixture profile: W_cert = 3 gives K_max = 4 live intervals.
     uint64 internal constant W_CERT = 3;
@@ -34,6 +34,8 @@ abstract contract SealRegistryBase is Test {
     bytes32 internal constant PROFILE_HASH = keccak256("fixture execution profile");
     /// Genesis entry: root genesis epoch ROOT_EPOCH, open, starting at root round 1.
     uint64 internal constant GENESIS_START = 1;
+    /// The pinned genesis UC time (records.ucTime before any import).
+    uint64 internal constant GENESIS_UC_TIME = 1_000;
     /// Epochs and members the refusal digest tracks (state outside it is covered by dedicated tests).
     uint256 internal constant TRACK_EPOCHS = 12;
     uint256 internal constant TRACK_MEMBERS = 4;
@@ -103,6 +105,7 @@ abstract contract SealRegistryBase is Test {
             shardConfHash: FULL_SHARD_CONF_HASH,
             shardEpoch: SHARD_EPOCH,
             rootEpoch: ROOT_EPOCH,
+            genesisUcTime: GENESIS_UC_TIME,
             network: NETWORK,
             wCert: wCertFixture,
             deltaEv: wCertFixture > 10 ? wCertFixture : 10,
@@ -418,7 +421,14 @@ abstract contract SealRegistryBase is Test {
             "transition.frozenID",
             "transition.commitID",
             "transition.frozenParent",
-            "transition.successorTR"
+            "transition.successorTR",
+            "records.count",
+            "records.tip",
+            "records.progress",
+            "records.ucTime",
+            "records.targetCount",
+            "records.targetTip",
+            "records.importedRound"
         ];
     }
 
@@ -570,7 +580,36 @@ abstract contract SealRegistryBase is Test {
         }
     }
 
+    /// @dev The mandatory empty import of round n, without failing the test when the registry refuses it.
+    function tryImportEmpty(uint64 n) internal returns (bool ok, bytes memory ret) {
+        SealRegistry.ImportedRecord[] memory none = new SealRegistry.ImportedRecord[](0);
+        (ok, ret) = callAs(
+            A_SYS,
+            abi.encodeCall(
+                SealRegistry.importRootRecords,
+                (
+                    n,
+                    uint64(uintWord("records.progress")),
+                    uint64(uintWord("records.ucTime")),
+                    uint64(uintWord("records.targetCount")),
+                    bytes32(uintWord("records.targetTip")),
+                    none
+                )
+            )
+        );
+    }
+
+    /// @dev The mandatory empty import of round n, when the test has not made its own.
+    function importEmptyAsSystem(uint64 n) internal {
+        (bool ok, bytes memory ret) = tryImportEmpty(n);
+        if (!ok) {
+            emit log_named_bytes("import reverted", ret);
+            fail();
+        }
+    }
+
     function finalizeAsSystem(uint64 n, bytes32 commitment) internal {
+        if (uintWord("records.importedRound") != n) importEmptyAsSystem(n);
         (bool ok, bytes memory ret) = callAs(A_SYS, finalizeCalldata(n, commitment));
         if (!ok) {
             emit log_named_bytes("finalize reverted", ret);
