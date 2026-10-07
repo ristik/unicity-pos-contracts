@@ -37,6 +37,7 @@ extra_output = ["storageLayout"]
 fs_permissions = [
     { access = "read-write", path = "./out" },
     { access = "read-write", path = "./artifacts" },
+    { access = "read", path = "./test/bridge" },
 ]
 
 # Custody and registry code must not silently truncate.

@@ -1,0 +1,291 @@
+package bridgeprofile
+
+// Generator for the unicity-pos-contracts PR5 golden file (test/bridge/golden.json). Run with
+//   BRIDGE_PR5_GOLDEN=/path/out.json go test ./bridgeprofile -run TestGenPR5Golden -count=1
+// at the bft-core SDK 3.0.1 candidate oracle revision recorded in script/bridge-golden/README.md.
+// Every value is computed by the oracle: the Cfg, identifiers, kernel inputs and outputs, a real certified
+// anchor with its native InputRecord opening, and the B1 requests and verdicts of the A' reference
+// (RefB1 for 0x0100, b1ref.Member for 0x0102). Nothing is written by hand.
+
+import (
+	"encoding/binary"
+	"encoding/hex"
+	"encoding/json"
+	"math/big"
+	"os"
+	"testing"
+
+	"github.com/decred/dcrd/dcrec/secp256k1/v4"
+	"github.com/unicitynetwork/bft-go-base/types"
+
+	"github.com/unicitynetwork/bft-core/b1ref"
+)
+
+func x(b []byte) string     { return "0x" + hex.EncodeToString(b) }
+func x32(b [32]byte) string { return "0x" + hex.EncodeToString(b[:]) }
+
+func resOut(r *Result) map[string]any {
+	leaves := []map[string]any{}
+	for _, l := range r.Leaves {
+		leaves = append(leaves, map[string]any{"sid": x32(l.SID), "txHash": x32(l.TxHash),
+			"referenceTime": new(big.Int).SetUint64(l.ReferenceTime).String(), "leafValue": x32(l.Value)})
+	}
+	return map[string]any{"cfg": x32(r.Cfg), "nonce": new(big.Int).SetUint64(r.Nonce).String(), "amount": r.Amount.String(),
+		"tokenId": x32(r.TokenID), "salt": x32(r.Salt), "firstPredicateHash": x32(r.FirstPredicateHash),
+		"lockDigest": x32(r.LockDigest), "releaseTo": x(r.ReleaseTo[:]), "nullifier": x32(r.Nullifier), "leaves": leaves}
+}
+
+func kernelIn(t *testing.T, op uint8, cfg, payload []byte) []byte {
+	b, err := EncodeKernelInput(op, cfg, payload)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return b
+}
+
+func kernelOut(t *testing.T, valid bool, r *Result) []byte {
+	b, err := EncodeResult(valid, r)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return b
+}
+
+// ucRequest is the UC_V1 request of one claim: header | partition | shard | conf | root | irHash | ucLen | uc.
+func ucRequest(a *Anchor) []byte {
+	in := []byte{1, 0, 0, 1}
+	in = binary.BigEndian.AppendUint32(in, a.Partition)
+	in = binary.BigEndian.AppendUint16(in, uint16(len(a.Shard)))
+	in = append(in, a.Shard...)
+	in = append(in, a.ShardConfHash[:]...)
+	in = append(in, a.ExpectedStateRoot[:]...)
+	in = append(in, a.ExpectedIRHash[:]...)
+	in = binary.BigEndian.AppendUint32(in, uint32(len(a.UC)))
+	return append(in, a.UC...)
+}
+
+func anchorOut(a *Anchor) map[string]any {
+	return map[string]any{"partition": a.Partition, "shard": x(a.Shard), "conf": x32(a.ShardConfHash),
+		"stateRoot": x32(a.ExpectedStateRoot), "irHash": x32(a.ExpectedIRHash), "uc": x(a.UC), "inputRecord": x(a.InputRecord)}
+}
+
+// composed certifies the leaves of a result, asks the reference B1 for every verdict and returns the JSON.
+func composed(t *testing.T, d *Deployment, op uint8, history []byte, res *Result, irTime uint64) map[string]any {
+	extra := []Leaf{{SID: H([]byte("other-1")), Value: H([]byte("v1"))}, {SID: H([]byte("other-2")), Value: H([]byte("v2"))},
+		{SID: H([]byte("other-3")), Value: H([]byte("v3"))}}
+	cert, err := d.Agg.Certify(res.Leaves, extra, irTime, 100)
+	if err != nil {
+		t.Fatal(err)
+	}
+	a := cert.Anchor
+	env := &Envelope{PolicyBody: d.F.Policy.Bytes(), History: history, Anchors: []Anchor{a}, LeafProofs: cert.Proofs}
+	eb, err := env.Encode()
+	if err != nil {
+		t.Fatal(err)
+	}
+	b1 := RefB1{TB: d.TB}
+	if _, err := Compose(d.F.Cfg, op, eb, b1); err != nil {
+		t.Fatal(err)
+	}
+	if err := b1.AuthenticateAnchor(&a); err != nil {
+		t.Fatal(err)
+	}
+	members := []map[string]any{}
+	for i, l := range res.Leaves {
+		p := cert.Proofs[i]
+		req := MemberInput(a.ExpectedStateRoot, l.SID, l.Value, p)
+		v, err := b1ref.Member(req)
+		if err != nil || !v.Valid {
+			t.Fatalf("leaf %d: reference B1 refused its own proof: %v", i, err)
+		}
+		sibs := []string{}
+		for _, s := range p.Siblings {
+			sibs = append(sibs, x32(s))
+		}
+		// The pre-3.0 value (the bare txHash) is not the leaf value: the reference B1 says false.
+		old, err := b1ref.Member(MemberInput(a.ExpectedStateRoot, l.SID, l.TxHash, p))
+		if err != nil || old.Valid {
+			t.Fatalf("leaf %d: txHash as the value must not be a member (%v)", i, err)
+		}
+		members = append(members, map[string]any{"bitmap": x32(p.Bitmap), "siblings": sibs, "request": x(req),
+			"result": x(b1ref.Output(true)), "txHashRequest": x(MemberInput(a.ExpectedStateRoot, l.SID, l.TxHash, p)),
+			"txHashResult": x(b1ref.Output(false))})
+	}
+	return map[string]any{"bytes": x(eb), "anchor": anchorOut(&a), "irTime": irTime, "leaves": len(res.Leaves),
+		"ucRequest": x(ucRequest(&a)), "ucResult": x(b1ref.Output(true)), "members": members}
+}
+
+// irCase is one canonical native InputRecord opening produced by the SDK's own encoder.
+func irCase(t *testing.T, name string, ir *types.InputRecord) map[string]any {
+	b, err := ir.Bytes()
+	if err != nil {
+		t.Fatal(err)
+	}
+	f := func(v []byte) any {
+		if v == nil {
+			return nil
+		}
+		return x(v)
+	}
+	return map[string]any{"name": name, "bytes": x(b), "hash": x32(H(b)), "round": ir.RoundNumber, "epoch": ir.Epoch,
+		"timestamp": ir.Timestamp, "fees": ir.SumOfEarnedFees, "previousHash": f(ir.PreviousHash), "stateHash": x(ir.Hash),
+		"summary": f(ir.SummaryValue), "blockHash": f(ir.BlockHash), "executedHash": f(ir.ETHash)}
+}
+
+func TestGenPR5Golden(t *testing.T) {
+	path := os.Getenv("BRIDGE_PR5_GOLDEN")
+	if path == "" {
+		t.Skip("BRIDGE_PR5_GOLDEN not set")
+	}
+	d, err := NewDeployment()
+	if err != nil {
+		t.Fatal(err)
+	}
+	f := d.F
+	cfg := f.Cfg
+	ch := cfg.Hash()
+	g := map[string]any{}
+	g["cfg"] = map[string]any{
+		"network": cfg.Network, "rootGenesis": x32(cfg.RootGenesis), "chainId": cfg.ChainID, "executionGenesis": x32(cfg.ExecutionGenesis),
+		"evmPartition": cfg.EVMPartition, "evmShard": x(cfg.EVMShard), "vault": x(cfg.Vault[:]), "zeroAddress": x(cfg.ZeroAddress[:]),
+		"ty": x32(cfg.Ty), "aid": x32(cfg.Aid), "semanticProfileHash": x32(cfg.SemanticProfileHash),
+		"tokenVerifier": x(cfg.TokenVerifierAddress[:]), "tokenVerifierCodeHash": x32(cfg.TokenVerifierCodeHash),
+		"b1ProfileHash": x32(cfg.B1ProfileHash), "aggregatorPolicyHash": x32(cfg.AggregatorPolicyHash),
+		"bytes": x(cfg.Bytes()), "hash": x32(ch),
+		"identityD": identityD(cfg.Network, cfg.RootGenesis, cfg.ExecutionGenesis, cfg.ChainID),
+	}
+	g["policy"] = map[string]any{"partition": f.Policy.Partition, "conf": x32(f.Policy.ShardConf), "bytes": x(f.Policy.Bytes()), "hash": x32(f.Policy.Hash())}
+
+	// Identifiers of other deployments: every D component changes ty and aid; the vault is not one of them.
+	ids := []map[string]any{}
+	for _, c := range []struct {
+		name  string
+		net   uint16
+		root  [32]byte
+		exec  [32]byte
+		chain uint64
+	}{
+		{"dev", cfg.Network, cfg.RootGenesis, cfg.ExecutionGenesis, cfg.ChainID},
+		{"network", cfg.Network + 1, cfg.RootGenesis, cfg.ExecutionGenesis, cfg.ChainID},
+		{"root", cfg.Network, H([]byte("other-root")), cfg.ExecutionGenesis, cfg.ChainID},
+		{"exec", cfg.Network, cfg.RootGenesis, H([]byte("other-exec")), cfg.ChainID},
+		{"chain", cfg.Network, cfg.RootGenesis, cfg.ExecutionGenesis, cfg.ChainID + 1},
+		{"wide", 65535, H([]byte("r")), H([]byte("e")), ^uint64(0)},
+		{"zero-net", 0, H([]byte("r")), H([]byte("e")), 1},
+	} {
+		ids = append(ids, map[string]any{"name": c.name, "network": c.net, "rootGenesis": x32(c.root), "executionGenesis": x32(c.exec),
+			"chainId": new(big.Int).SetUint64(c.chain).String(), "d": identityD(c.net, c.root, c.exec, c.chain),
+			"ty": x32(DeriveType(c.net, c.root, c.exec, c.chain)), "aid": x32(DeriveAsset(c.net, c.root, c.exec, c.chain))})
+	}
+	g["identities"] = ids
+
+	// Derivations at n=1, a large amount and u64 max.
+	ders := []map[string]any{}
+	for _, c := range []struct {
+		n   uint64
+		amt *big.Int
+	}{{1, big.NewInt(1000)}, {^uint64(0), new(big.Int).Lsh(big.NewInt(1), 255)}, {7, big.NewInt(1)}} {
+		salt := DeriveSalt(ch, c.n)
+		id := DeriveTokenID(salt, cfg.Network)
+		rcpt := H([]byte("rcpt"))
+		k := LockRecord(cfg.ZeroAddress, cfg.Ty, cfg.Aid, c.amt, id, rcpt)
+		dg := LockDigest(ch, c.n, k)
+		ders = append(ders, map[string]any{"n": new(big.Int).SetUint64(c.n).String(), "amount": c.amt.String(), "salt": x32(salt), "id": x32(id),
+			"rcpt": x32(rcpt), "record": x(k), "digest": x32(dg),
+			"lockSlot": x32(LockDigestSlot(c.n)), "lockTrieKey": x32(StorageTrieKey(LockDigestSlot(c.n))),
+			"spentSlot": x32(SpentSlot(c.n)), "spentTrieKey": x32(StorageTrieKey(SpentSlot(c.n)))})
+	}
+	g["derivations"] = ders
+	var addr [20]byte
+	copy(addr[:], []byte("claimable-address-01"))
+	g["claimable"] = map[string]any{"address": x(addr[:]), "slot": x32(ClaimableSlot(addr)), "trieKey": x32(StorageTrieKey(ClaimableSlot(addr))),
+		"account": x32(AccountTrieKey(cfg.Vault))}
+	rl := [][32]byte{}
+	var lz [32]byte
+	lzh := H([]byte("leading-zero-digest"))
+	copy(lz[2:], lzh[:30])
+	var one [32]byte
+	one[31] = 1
+	var hi [32]byte
+	hi[31] = 0x80
+	hi[30] = 0x01
+	rl = append(rl, lz, one, hi, H([]byte("full")))
+	rv := []map[string]any{}
+	for _, v := range rl {
+		rv = append(rv, map[string]any{"value": x32(v), "rlp": x(StorageValueRLP(v))})
+	}
+	g["rlp"] = rv
+
+	// Prepare lock.
+	owner0 := KeyFromSeed("owner0")
+	p0 := sigPred(owner0).Bytes()
+	amt := big.NewInt(1_000_000_000_000_000_000)
+	pr, err := PrepareLock(cfg, 1, amt, p0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	payload := PreparePayload(1, amt, p0)
+	g["prepare"] = map[string]any{"n": 1, "amount": amt.String(), "p0": x(p0), "payload": x(payload),
+		"kernelInput": x(kernelIn(t, OpPrepareLock, cfg.Bytes(), payload)),
+		"result":      resOut(pr), "kernelOutput": x(kernelOut(t, true, pr))}
+
+	// Mint: the history embeds the real, certified lock proof of nonce 1.
+	hist, _, err := d.Backed(1, amt, []*secp256k1.PrivateKey{owner0})
+	if err != nil {
+		t.Fatal(err)
+	}
+	mb := hist.Bytes()
+	mr, err := VerifyMint(cfg, mb)
+	if err != nil {
+		t.Fatal(err)
+	}
+	mint := map[string]any{"history": x(mb), "kernelInput": x(kernelIn(t, OpMint, cfg.Bytes(), mb)),
+		"result": resOut(mr), "kernelOutput": x(kernelOut(t, true, mr))}
+	mint["envelope"] = composed(t, d, OpMint, mb, mr, mr.Leaves[0].ReferenceTime+5)
+	g["mint"] = mint
+
+	// Return: owner0 -> owner1 -> burn to recipient.
+	owner1 := KeyFromSeed("owner1")
+	rh, _, err := d.Backed(1, amt, []*secp256k1.PrivateKey{owner0, owner1})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var recip [20]byte
+	copy(recip[:], []byte("recipient-address-01"))
+	f.AppendBurn(rh, owner1, recip, amt)
+	rb := rh.Bytes()
+	rr, err := VerifyReturn(cfg, rb)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var maxT uint64
+	for _, l := range rr.Leaves {
+		if l.ReferenceTime > maxT {
+			maxT = l.ReferenceTime
+		}
+	}
+	ret := map[string]any{"history": x(rb), "kernelInput": x(kernelIn(t, OpReturn, cfg.Bytes(), rb)),
+		"result": resOut(rr), "kernelOutput": x(kernelOut(t, true, rr)), "recipient": x(recip[:]), "maxReferenceTime": maxT}
+	ret["envelope"] = composed(t, d, OpReturn, rb, rr, maxT+5)
+	g["return"] = ret
+	g["invalidOutput"] = x(kernelOut(t, false, nil))
+
+	// Native InputRecord openings produced by the SDK encoder: nulls, a summary, wide integers.
+	st := H([]byte("ir-state"))
+	h1, h2, h3 := H([]byte("ir-prev")), H([]byte("ir-block")), H([]byte("ir-et"))
+	big64 := ^uint64(0)
+	irs := []map[string]any{
+		irCase(t, "all-set", &types.InputRecord{Version: 1, RoundNumber: 100, Epoch: 3, PreviousHash: h1[:], Hash: st[:], SummaryValue: []byte("summary"), Timestamp: 1_700_000_100, BlockHash: h2[:], SumOfEarnedFees: 55, ETHash: h3[:]}),
+		irCase(t, "nulls", &types.InputRecord{Version: 1, RoundNumber: 1, Epoch: 0, Hash: st[:], Timestamp: 7}),
+		irCase(t, "empty-summary", &types.InputRecord{Version: 1, RoundNumber: 23, Epoch: 24, Hash: st[:], SummaryValue: []byte{}, Timestamp: 255}),
+		irCase(t, "max-summary", &types.InputRecord{Version: 1, RoundNumber: 256, Epoch: 65535, Hash: st[:], SummaryValue: make([]byte, 256), Timestamp: 65536, SumOfEarnedFees: 4294967295}),
+		irCase(t, "u64-max", &types.InputRecord{Version: 1, RoundNumber: big64, Epoch: big64, PreviousHash: h1[:], Hash: st[:], Timestamp: big64, BlockHash: h2[:], SumOfEarnedFees: big64, ETHash: h3[:]}),
+		irCase(t, "u32-edge", &types.InputRecord{Version: 1, RoundNumber: 4294967296, Epoch: 65537, Hash: st[:], Timestamp: 4294967295, SumOfEarnedFees: 4294967296}),
+	}
+	g["inputRecords"] = irs
+
+	out, _ := json.MarshalIndent(g, "", "  ")
+	if err := os.WriteFile(path, append(out, '\n'), 0o644); err != nil {
+		t.Fatal(err)
+	}
+}
