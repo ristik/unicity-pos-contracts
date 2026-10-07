@@ -61,6 +61,7 @@ contract SealRegistryHandler is SealRegistryBase {
     function systemFinalize(uint8 wrongRound, bytes32 commitment) external {
         uint64 n = uint64(uintWord("outcomes.round"));
         if (wrongRound % 5 == 0) n += 1;
+        tryImportEmpty(uint64(uintWord("outcomes.round"))); // the mandatory import; a refused one only makes finalize refuse
         (bool ok,) = callAs(A_SYS, finalizeCalldata(n, commitment));
         if (ok) {
             successfulFinalizes++;
@@ -123,6 +124,7 @@ contract SealRegistryHandler is SealRegistryBase {
         successfulOpens++;
         successfulAcknowledgements++;
         record();
+        tryImportEmpty(a.n);
         (ok,) = callAs(A_SYS, finalizeCalldata(a.n, keccak256(abi.encode("outcome", seed))));
         if (ok) {
             successfulFinalizes++;

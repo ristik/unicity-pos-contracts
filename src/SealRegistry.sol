@@ -20,6 +20,9 @@ import {
     EntryAlreadyPresent
 } from "./B1Layout.sol";
 
+import {IRootRecords} from "./p85/IP85.sol";
+import {RootRecord, RecordKind} from "./p85/P85Types.sol";
+
 /// @title SealRegistry, profile sealRegistry/v2
 /// @notice Fixed-profile registry of the imported root origin and certified round clock for the
 /// enshrined EVM. Specification: bft-core docs/design/f4a-seal-registry-contract.md, as accepted in
@@ -47,7 +50,7 @@ import {
 /// block, that open runs first and finalize after the forced prefix exactly once each, the post-block
 /// phase check, g_sys accounting, the header extraData check, rejection of any other transaction from
 /// a_sys, and that the calldata is a faithful projection of the authenticated rootInput.
-contract SealRegistry {
+contract SealRegistry is IRootRecords {
     /// @notice a_sys, the only caller of open and finalize (§2.1).
     address internal constant A_SYS = 0xff00000000000000000000000000000000000001;
 
@@ -112,6 +115,25 @@ contract SealRegistry {
         keccak256("unicity.seal-registry/transition.frozenParent");
     bytes32 internal constant SLOT_TRANSITION_SUCCESSOR_TR =
         keccak256("unicity.seal-registry/transition.successorTR");
+    // P85 root records (PR1c control-records spec, section 6): the linked log custody applies, with the progress and UC time the paired
+    // verifier supplied. Whole-word slots like every other field; entries are keyed by RECORDS_ENTRY.
+    bytes32 internal constant SLOT_RECORDS_COUNT = keccak256("unicity.seal-registry/records.count");
+    bytes32 internal constant SLOT_RECORDS_TIP = keccak256("unicity.seal-registry/records.tip");
+    bytes32 internal constant SLOT_RECORDS_PROGRESS =
+        keccak256("unicity.seal-registry/records.progress");
+    bytes32 internal constant SLOT_RECORDS_UC_TIME =
+        keccak256("unicity.seal-registry/records.ucTime");
+    bytes32 internal constant SLOT_RECORDS_TARGET_COUNT =
+        keccak256("unicity.seal-registry/records.targetCount");
+    bytes32 internal constant SLOT_RECORDS_TARGET_TIP =
+        keccak256("unicity.seal-registry/records.targetTip");
+    bytes32 internal constant SLOT_RECORDS_IMPORTED_ROUND =
+        keccak256("unicity.seal-registry/records.importedRound");
+    bytes32 internal constant RECORDS_ENTRY = keccak256("unicity.seal-registry/records.entry");
+    bytes32 internal constant RECORDS_CLOSURE = keccak256("unicity.seal-registry/records.closure");
+    bytes32 internal constant RECORDS_RETIREMENT =
+        keccak256("unicity.seal-registry/records.retirement");
+    uint256 internal constant MAX_IMPORT = 32;
     // inbox.consumed remains genesis-only. transition.cursor advances on each accepted acknowledgement.
 
     /// O1, F1: the caller is not a_sys.
@@ -139,6 +161,22 @@ contract SealRegistry {
     error InvalidSupersessionSpan();
     /// This assignment acknowledgement was already imported.
     error DuplicateAcknowledgement();
+    /// finalize found no importRootRecords call for this round.
+    error RecordImportMissing();
+    /// importRootRecords was already applied for this round.
+    error RecordImportDuplicate();
+    /// The batch is not exactly the next required prefix of the authenticated source log.
+    error RecordPrefixInvalid();
+    /// A record's index, predecessor, identifier, kind or payload shape is invalid.
+    error RecordInvalid();
+    /// Current progress, UC time or the target count would decrease, or a record anchor is out of order or above the current value.
+    error RecordAnchorInvalid();
+    /// The target tip contradicts the target count or the imported tail.
+    error RecordTargetInvalid();
+    /// A closure or retirement is already logged under its key.
+    error RecordDuplicateKey();
+    /// recordAt outside the imported count.
+    error RecordIndexOutOfRange();
     /// O10: a null block hash is not encoded as the zero word.
     error NonCanonicalNullBlockHash();
     /// F2: no open round to finalize.
@@ -302,6 +340,193 @@ contract SealRegistry {
         _store(SLOT_PHASE, PHASE_OPEN);
     }
 
+    // ------------------------------------------------------------------ root records import
+
+    /// @notice One projected record plus the closed root epoch of a Closure (zero for every other kind).
+    struct ImportedRecord {
+        RootRecord record;
+        uint64 closedEpoch;
+    }
+
+    /// @notice The privileged import step, run exactly once per EVM block after open() and before finalize(). `p` and `t` are the
+    /// authenticated current canonical progress and UC time, `targetCount` and `targetTip` the length and tip of the complete source
+    /// log the paired verifier reconstructed. The batch must be the next min(32, targetCount - count) records, so a relayer can
+    /// neither omit, select, reorder nor look ahead. Root signatures, terminal proofs and lifecycle validity are checked by the paired
+    /// verifier before this call; the registry checks provenance, log identity, content identity and anchors.
+    function importRootRecords(
+        uint64 n,
+        uint64 p,
+        uint64 t,
+        uint64 targetCount,
+        bytes32 targetTip,
+        ImportedRecord[] calldata entries
+    ) external {
+        if (msg.sender != A_SYS) revert NotSystemCaller();
+        if (_load(SLOT_PHASE) != PHASE_OPEN) revert NotOpen();
+        if (n != _load(SLOT_OUTCOMES_ROUND)) revert WrongOutcomeRound();
+        if (_load(SLOT_RECORDS_IMPORTED_ROUND) == n) revert RecordImportDuplicate();
+
+        uint256 count = _load(SLOT_RECORDS_COUNT);
+        uint256 batch = entries.length;
+        if (
+            p < _load(SLOT_RECORDS_PROGRESS) || t < _load(SLOT_RECORDS_UC_TIME)
+                || targetCount < _load(SLOT_RECORDS_TARGET_COUNT)
+        ) revert RecordAnchorInvalid();
+        if (targetCount < count + batch) revert RecordPrefixInvalid();
+        uint256 required = targetCount - count;
+        if (required > MAX_IMPORT) required = MAX_IMPORT;
+        if (batch != required) revert RecordPrefixInvalid();
+        if (
+            (targetCount == _load(SLOT_RECORDS_TARGET_COUNT)
+                    && targetTip != bytes32(_load(SLOT_RECORDS_TARGET_TIP)))
+                || (targetCount == 0 && targetTip != bytes32(0))
+        ) revert RecordTargetInvalid();
+
+        bytes32 tip = bytes32(_load(SLOT_RECORDS_TIP));
+        uint256 lastProgress = 0;
+        uint256 lastTime = 0;
+        if (count != 0) {
+            lastProgress = _load(_entrySlot(count - 1, 3));
+            lastTime = _load(_entrySlot(count - 1, 4));
+        }
+        for (uint256 i = 0; i < batch; ++i) {
+            RootRecord calldata r = entries[i].record;
+            if (r.index != count + i || r.predecessor != tip) revert RecordInvalid();
+            if (r.progress < lastProgress || r.ucTime < lastTime || r.progress > p || r.ucTime > t)
+            {
+                revert RecordAnchorInvalid();
+            }
+            if (
+                r.recordID
+                    != keccak256(
+                        abi.encode(r.index, r.predecessor, r.kind, r.progress, r.ucTime, r.data)
+                    )
+            ) revert RecordInvalid();
+            _acceptRecord(r, entries[i].closedEpoch);
+            lastProgress = r.progress;
+            lastTime = r.ucTime;
+            tip = r.recordID;
+        }
+        if (count + batch == targetCount && tip != targetTip) revert RecordTargetInvalid();
+
+        _store(SLOT_RECORDS_COUNT, count + batch);
+        _store(SLOT_RECORDS_TIP, uint256(tip));
+        _store(SLOT_RECORDS_PROGRESS, p);
+        _store(SLOT_RECORDS_UC_TIME, t);
+        _store(SLOT_RECORDS_TARGET_COUNT, targetCount);
+        _store(SLOT_RECORDS_TARGET_TIP, uint256(targetTip));
+        _store(SLOT_RECORDS_IMPORTED_ROUND, n);
+    }
+
+    /// @dev Checks the exact payload width and uint64-word shape of one record (P85Types structs: all static words), fixes the
+    /// closure or retirement key to this index, and stores every word. The first record of a key is the only one.
+    function _acceptRecord(RootRecord calldata r, uint64 closedEpoch) private {
+        uint256 kind = uint8(r.kind);
+        uint256 words;
+        uint256 u64Mask = 0; // bit j set: payload word j is a uint64
+        if (kind == uint8(RecordKind.SessionClosed)) {
+            words = 1;
+        } else if (kind == uint8(RecordKind.Ack)) {
+            (words, u64Mask) = (4, 0xe);
+        } else if (kind == uint8(RecordKind.RecoveryAck)) {
+            (words, u64Mask) = (9, 0x1fc);
+        } else if (kind == uint8(RecordKind.Closure)) {
+            (words, u64Mask) = (6, 0x2);
+        } else if (kind == uint8(RecordKind.Retirement)) {
+            (words, u64Mask) = (3, 0x3);
+        } else {
+            revert RecordInvalid();
+        }
+        bytes calldata d = r.data;
+        if (d.length != words * 32) revert RecordInvalid();
+        if (kind != uint8(RecordKind.Closure) && closedEpoch != 0) revert RecordInvalid();
+
+        bytes32 key = bytes32(0);
+        if (kind == uint8(RecordKind.Closure)) {
+            key = keccak256(
+                abi.encode(RECORDS_CLOSURE, closedEpoch, bytes32(d[64:96]), _u64(d[32:64]))
+            );
+        } else if (kind == uint8(RecordKind.Retirement)) {
+            key = keccak256(abi.encode(RECORDS_RETIREMENT, _u64(d[0:32]), _u64(d[32:64])));
+        }
+        if (key != 0) {
+            if (_load(key) != 0) revert RecordDuplicateKey();
+            _store(key, r.index + 1);
+        }
+
+        uint64 i = r.index;
+        _store(_entrySlot(i, 0), uint256(r.recordID));
+        _store(_entrySlot(i, 1), uint256(r.predecessor));
+        _store(_entrySlot(i, 2), kind);
+        _store(_entrySlot(i, 3), r.progress);
+        _store(_entrySlot(i, 4), r.ucTime);
+        _store(_entrySlot(i, 5), d.length);
+        for (uint256 j = 0; j < words; ++j) {
+            uint256 w = uint256(bytes32(d[32 * j:32 * j + 32]));
+            if (u64Mask & (1 << j) != 0 && w > type(uint64).max) revert RecordInvalid();
+            _store(_entrySlot(i, 6 + j), w);
+        }
+        _store(_entrySlot(i, 15), closedEpoch);
+    }
+
+    function _u64(bytes calldata word) private pure returns (uint64) {
+        uint256 w = abi.decode(word, (uint256));
+        if (w > type(uint64).max) revert RecordInvalid();
+        // forge-lint: disable-next-line(unsafe-typecast)
+        return uint64(w);
+    }
+
+    function _entrySlot(uint256 index, uint256 field) private pure returns (bytes32) {
+        // forge-lint: disable-next-line(unsafe-typecast)
+        return keccak256(abi.encode(RECORDS_ENTRY, uint64(index), uint64(field)));
+    }
+
+    /// @notice Number of imported records.
+    function recordCount() external view returns (uint64) {
+        // forge-lint: disable-next-line(unsafe-typecast)
+        return uint64(_load(SLOT_RECORDS_COUNT));
+    }
+
+    /// @notice Length of the authenticated source log as of the last import, for complete-prefix gates.
+    function recordTargetCount() external view returns (uint64) {
+        // forge-lint: disable-next-line(unsafe-typecast)
+        return uint64(_load(SLOT_RECORDS_TARGET_COUNT));
+    }
+
+    /// @notice Record `index` of the imported log.
+    function recordAt(uint64 index) external view returns (RootRecord memory r) {
+        if (index >= _load(SLOT_RECORDS_COUNT)) revert RecordIndexOutOfRange();
+        r.index = index;
+        r.recordID = bytes32(_load(_entrySlot(index, 0)));
+        r.predecessor = bytes32(_load(_entrySlot(index, 1)));
+        // forge-lint: disable-next-line(unsafe-typecast)
+        r.kind = RecordKind(uint8(_load(_entrySlot(index, 2))));
+        // forge-lint: disable-start(unsafe-typecast)
+        r.progress = uint64(_load(_entrySlot(index, 3)));
+        r.ucTime = uint64(_load(_entrySlot(index, 4)));
+        // forge-lint: disable-end(unsafe-typecast)
+        bytes memory d = new bytes(_load(_entrySlot(index, 5)));
+        for (uint256 j = 0; j < d.length / 32; ++j) {
+            uint256 w = _load(_entrySlot(index, 6 + j));
+            assembly ("memory-safe") {
+                mstore(add(add(d, 0x20), mul(j, 0x20)), w)
+            }
+        }
+        r.data = d;
+    }
+
+    /// @notice Canonical ordinary progress p as of the last import (supplied by the paired verifier).
+    function progress() external view returns (uint64) {
+        // forge-lint: disable-next-line(unsafe-typecast)
+        return uint64(_load(SLOT_RECORDS_PROGRESS));
+    }
+
+    /// @notice Quorum-approved UC time as of the last import; the pinned genesis UC time before any.
+    function ucTime() external view returns (uint64) {
+        // forge-lint: disable-next-line(unsafe-typecast)
+        return uint64(_load(SLOT_RECORDS_UC_TIME));
+    }
+
     /// @notice Reproducible, domain-separated hash for the acknowledgement projection carried in
     /// open(). Chain validity itself is established by the paired verifier before the system call.
     function assignmentProjectionHash(AssignmentProjection calldata assignment)
@@ -377,6 +602,7 @@ contract SealRegistry {
         if (msg.sender != A_SYS) revert NotSystemCaller(); // F1
         if (_load(SLOT_PHASE) != PHASE_OPEN) revert NotOpen(); // F2
         if (n != _load(SLOT_OUTCOMES_ROUND)) revert WrongOutcomeRound(); // F3
+        if (_load(SLOT_RECORDS_IMPORTED_ROUND) != n) revert RecordImportMissing();
 
         _checkB1Invariants();
         _store(SLOT_OUTCOMES_COMMITMENT, uint256(sealRegistryCommitment));
