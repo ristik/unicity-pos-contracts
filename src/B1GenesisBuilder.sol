@@ -6,6 +6,8 @@ import {B1Layout, B1Entry} from "./B1Layout.sol";
 
 /// W_cert <= delta_ev < delta_hold does not hold, or W_cert + 1 overflows.
 error ProfileBounds();
+/// K_max exceeds the largest maximal actual-call gas fixture; a larger budget does not admit it.
+error UnmeasuredKMax();
 /// The profile's g_sys does not cover the conservative registry envelope for its K_max.
 error GasEnvelopeShort();
 /// The genesis entry is not the open interval of the root genesis epoch.
@@ -37,13 +39,16 @@ struct B1Word {
 /// function (B1Layout.checkEntry) that checks runtime entries. Zero words are absent from a genesis
 /// allocation, so only non-zero words are returned.
 contract B1GenesisBuilder {
-    /// Frozen bound on G_rest(K_max, C_max) for the pinned runtime (docs/b1-registry-gas.md): every
-    /// cost of a maximal open+finalize other than the history SSTOREs the rectangle covers. Linear in
-    /// the entries inserted (a) and deleted (p); a <= K_max and p <= K_max, so the worst case is
-    /// base + (perInsert + perDelete) * K_max.
-    uint256 public constant G_REST_BASE = 1_000_000;
-    uint256 public constant G_REST_PER_INSERT = 800_000;
-    uint256 public constant G_REST_PER_DELETE = 200_000;
+    /// Largest K_max exercised by maximal actual-call fixtures; raising it requires re-measurement.
+    uint256 public constant MAX_MEASURED_K = 16;
+
+    /// Measured-plus-margin allowance for the pinned runtime (docs/b1-registry-gas.md): every
+    /// cost of a maximal open+finalize other than the history SSTOREs the rectangle covers. Fitted
+    /// coefficients (731000 base, 633000 insert, 128000 delete) times a 1.5x safety factor, not a proof.
+    /// Since a <= K_max and p <= K_max, the profile uses base + (perInsert + perDelete) * K_max.
+    uint256 public constant G_REST_BASE = 1_096_500;
+    uint256 public constant G_REST_PER_INSERT = 949_500;
+    uint256 public constant G_REST_PER_DELETE = 192_000;
     uint256 public constant G_REST_PER_ENTRY = G_REST_PER_INSERT + G_REST_PER_DELETE;
 
     function gRestFor(uint256 inserted, uint256 deleted) public pure returns (uint256) {
@@ -65,6 +70,7 @@ contract B1GenesisBuilder {
             revert ProfileBounds();
         }
         uint256 kMax = uint256(p.wCert) + 1;
+        if (kMax > MAX_MEASURED_K) revert UnmeasuredKMax();
         if (p.gRest < gRestBound(kMax) || p.gSys < minGSys(kMax, p.gRest)) {
             revert GasEnvelopeShort();
         }

@@ -58,6 +58,9 @@ contract SealRegistryArtifactTest is SealRegistryBase {
         assertEq(vm.parseJsonUint(json, ".b1Layout.bounds.maxMembers"), 64);
         assertEq(vm.parseJsonUint(json, ".b1Layout.bounds.maxNodeIDBytes"), 128);
         assertEq(vm.parseJsonUint(json, ".b1Layout.bounds.maxEntryWords"), 11 + 8 * 64);
+        assertEq(vm.parseJsonUint(json, ".b1Layout.bounds.maxMeasuredK"), builder.MAX_MEASURED_K());
+        assertEq(vm.parseJsonUint(json, ".gasProfile.gRestBound.safetyFactor.numerator"), 3);
+        assertEq(vm.parseJsonUint(json, ".gasProfile.gRestBound.safetyFactor.denominator"), 2);
         assertEq(vm.parseJsonUint(json, ".gasProfile.gRestBound.base"), builder.G_REST_BASE());
         assertEq(
             vm.parseJsonUint(json, ".gasProfile.gRestBound.perInsert"), builder.G_REST_PER_INSERT()

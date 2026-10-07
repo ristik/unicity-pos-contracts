@@ -208,7 +208,7 @@ contract SealRegistryB1GasModelTest is Test, CancunPrices {
     }
 }
 
-/// @notice Gross gas of maximal registry updates at several K_max, and the G_rest bound they prove.
+/// @notice Gross gas of maximal registry updates up to the measured genesis K_max cap.
 ///
 /// The system call budget (design v4, "Realizable system metering") is
 ///   g_sys >= 67536 + 326144*K + 22100*(524*K+4) + 7100*524*K + G_rest(K, C_max),
@@ -224,11 +224,10 @@ contract SealRegistryB1GasModelTest is Test, CancunPrices {
 ///   rest     = gross gas - history  (SLOADs, operational writes, finalize and all other work stay in rest);
 ///   rest*    = rest with every operational write re-priced at the 22100 worst case (28 writes at most),
 ///              which is conservative whatever state the operational words are in.
-/// The test asserts, for each fixture, rest* <= base + perInsert*a + perDelete*p and, because the
-/// worst shape has p = a = K, rest* <= G_rest(K). The unit costs are linear because every loop is bounded
-/// by a count that is checked first (prune loop <= K_max, insert loop <= K_max, members <= 64) and each
-/// iteration is a straight-line block whose only data-dependent branches are listed in
-/// docs/b1-registry-gas.md. The fixtures drive the maximal branch of each one.
+/// The test asserts a 1.5x margin over rest* for each fixture, both for (a, p) and for K_max.
+/// The affine allowance is fitted to these measurements, not an instruction-level proof. The
+/// structural history-write rectangle and operational-write allowance are checked independently.
+/// See docs/b1-registry-gas.md for the coefficient derivation and limits of the evidence.
 ///
 /// Shapes (a = entries inserted, p = entries deleted, every entry 64 members with 128-byte node IDs):
 ///   replace: a full ring is deleted, K new entries inserted (a = p = K, the former tip is deleted);
@@ -535,9 +534,10 @@ abstract contract SealRegistryB1GasBase is SealRegistryB1Helpers, CancunPrices {
         assertLe(t.maxZeroWrite, 5000, "no write of zero above 5000");
         assertLe(t.histCharge, allowance(a, p), "history SSTOREs within the rectangle");
         assertLe(t.opWrites, OPERATIONAL_WRITES_MAX, "operational writes within 28");
-        // The conservative remainder, the linear bound for this (a, p) and the frozen G_rest(K).
-        assertLe(rest, builder.gRestFor(a, p), "rest* within the linear bound");
-        assertLe(rest, builder.gRestBound(K()), "rest* within G_rest(K_max)");
+        // Preserve the stated 1.5x safety factor, not just coverage of the measured remainder.
+        uint256 withMargin = (3 * rest + 1) / 2;
+        assertLe(withMargin, builder.gRestFor(a, p), "rest* has 1.5x margin for (a, p)");
+        assertLe(withMargin, builder.gRestBound(K()), "rest* has 1.5x margin for K_max");
         // The design's envelope, end to end, for the shape actually run and for the rectangle at p = a = K.
         assertLe(t.gross, allowance(a, p) + builder.gRestBound(K()), "gross within the envelope");
         assertLe(
@@ -548,6 +548,13 @@ abstract contract SealRegistryB1GasBase is SealRegistryB1Helpers, CancunPrices {
     }
 
     // ---------------------------------------------------------------- tests
+
+    /// Baseline with no history insertion or deletion, in both full-ring and tail-only state.
+    function test_noHistoryChange() public {
+        Tally memory t = run(plainAt(ORIGIN0));
+        check("unchanged", 0, 0, 0, t);
+        assertEq(liveEpochs().length, committedFullRing() ? K() : 1);
+    }
 
     function _replace(uint8 variant) internal {
         if (!committedFullRing()) return;

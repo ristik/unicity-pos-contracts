@@ -17,6 +17,7 @@ import {
     B1GenesisParams,
     B1Word,
     ProfileBounds,
+    UnmeasuredKMax,
     GasEnvelopeShort,
     GenesisEntryInvalid
 } from "../src/B1GenesisBuilder.sol";
@@ -136,6 +137,33 @@ contract SealRegistryB1GenesisTest is SealRegistryBase {
         _expectRefusal(p, ProfileBounds.selector);
     }
 
+    function test_measuredKCapIsAcceptedAndNextKIsRefusedDespiteAmpleGas() public {
+        // The largest actual-call fixture is explicitly K = 16, not a budget-derived limit.
+        assertEq(builder.MAX_MEASURED_K(), 16);
+        B1GenesisParams memory p = genesisParams();
+        p.wCert = 15;
+        p.deltaEv = 16;
+        p.deltaHold = 17;
+        p.gRest = builder.gRestBound(16);
+        p.gSys = builder.minGSys(16, p.gRest);
+        _build(p);
+
+        p.wCert = 16; // K = 17; every other profile and entry check still passes
+        p.gRest = 10 ** 30;
+        p.gSys = 10 ** 40;
+        _expectRefusal(p, UnmeasuredKMax.selector);
+    }
+
+    function testFuzz_unmeasuredKIsRefusedDespiteAmpleGas(uint64 wCert) public {
+        B1GenesisParams memory p = genesisParams();
+        p.wCert = uint64(bound(wCert, 16, type(uint64).max - 1));
+        p.deltaEv = p.wCert;
+        p.deltaHold = p.wCert + 1;
+        p.gRest = 10 ** 30;
+        p.gSys = 10 ** 40;
+        _expectRefusal(p, UnmeasuredKMax.selector);
+    }
+
     // ---------------------------------------------------------------- gas envelope
 
     function test_minGSysIsTheSpecifiedEnvelope() public view {
@@ -155,7 +183,7 @@ contract SealRegistryB1GenesisTest is SealRegistryBase {
 
     function test_gRestBelowTheFrozenBoundIsRefused() public {
         B1GenesisParams memory p = genesisParams();
-        p.gRest -= 1; // below the bound the measured fixtures prove
+        p.gRest -= 1; // below the measured-plus-margin allowance
         p.gSys = builder.minGSys(kMax(), p.gRest); // consistent g_sys for the lower G_rest
         _expectRefusal(p, GasEnvelopeShort.selector);
     }

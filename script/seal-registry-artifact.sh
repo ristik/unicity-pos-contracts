@@ -87,6 +87,7 @@ jq -n \
 				encoding: "nodeID bytes in wire order, left-aligned, zero right padding; key = 33-byte compressed secp256k1 key in key0 (bytes 0..31) and the top byte of key1 (byte 32), rest zero"
 			},
 			bounds: {
+				maxMeasuredK: 16,
 				maxMembers: 64,
 				maxNodeIDBytes: 128,
 				entryMetadataWords: 11,
@@ -111,14 +112,16 @@ jq -n \
 			{name: "b1.entry(genesis epoch)", value: "the authenticated genesis entry: present=1, activationCommitID=0, hasEnd=0, memberCount, totalWeight"},
 			{name: "b1.member(genesis epoch, j)", value: "full members under the root consensus keys, 8 words each"}
 		],
-		genesisNote: "Zero words are absent from a genesis allocation. The genesis builder (src/B1Genesis.sol) applies the runtime bounds to the genesis entry and refuses a profile whose g_sys does not cover the envelope. This artifact does not contain a deployable genesis record: genesisCommitment, fullShardConfHash and the entry members depend on deployment configuration and are produced by the Go construction using codeHash above.",
+		genesisNote: "Zero words are absent from a genesis allocation. The genesis builder (src/B1GenesisBuilder.sol) applies the runtime bounds to the genesis entry and refuses K_max > 16 with UnmeasuredKMax, G_rest below the measured-plus-margin allowance, or g_sys below the envelope. This artifact does not contain a deployable genesis record: genesisCommitment, fullShardConfHash and the entry members depend on deployment configuration and are produced by the Go construction using codeHash above.",
 		gasProfile: {
 			envelope: "g_sys >= 67536 + 326144*K_max + 22100*(524*K_max+4) + 7100*524*K_max + G_rest(K_max, C_max)",
 			gRestBound: {
-				base: 1000000,
-				perInsert: 800000,
-				perDelete: 200000,
-				perEntry: 1000000,
+				basis: "Measured-plus-margin, not proven: maximal actual-call fixtures at K_max 1, 2, 4, 8, 16; ureth PR 4 must re-measure under the real client and may lower or raise the constants before activation",
+				safetyFactor: {numerator: 3, denominator: 2},
+				base: 1096500,
+				perInsert: 949500,
+				perDelete: 192000,
+				perEntry: 1141500,
 				operationalWrites: {count: 28, pricePerWrite: 22100},
 				formula: "G_rest(a, p) = base + perInsert*a + perDelete*p; G_rest(K_max) = base + perEntry*K_max, since a <= K_max and p <= K_max",
 				covers: "everything in open + finalize except the history SSTOREs of the rectangle: SLOADs, hashing, decode, memory, logs, operational-registry writes (28, each priced at 22100) and finalize",
