@@ -19,7 +19,11 @@ import {
 contract AuthenticatedRecordsTest is P85Flow {
     string internal constant VECTORS = "/test/p85/fixtures/root-records-vectors.json";
 
-    function _path(uint256 s, uint256 i, string memory field) internal pure returns (string memory) {
+    function _path(uint256 s, uint256 i, string memory field)
+        internal
+        pure
+        returns (string memory)
+    {
         return string.concat(
             ".scenarios[", vm.toString(s), "].records[", vm.toString(i), "].", field
         );
