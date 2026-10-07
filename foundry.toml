@@ -20,6 +20,12 @@ optimizer = true
 optimizer_runs = 200
 via_ir = true
 
+# The P85 custody modules are far larger than the registry and exceed EIP-170 at 200 runs, so they
+# compile under a size-first profile. The registry's settings, and so its pinned code hash, are
+# untouched: the restriction names only src/p85.
+additional_compiler_profiles = [{ name = "p85", optimizer_runs = 1 }]
+compilation_restrictions = [{ paths = "src/p85/**", optimizer_runs = 1 }]
+
 # The runtime bytecode is protocol surface: its keccak256 is the registryCodeHash the genesis record
 # pins (bft-core #153 §2.2, §5.1). Metadata would tie that hash to source paths and file contents
 # outside the contract, so no metadata hash and no CBOR metadata trailer are emitted.
@@ -39,7 +45,11 @@ deny_warnings = true
 [lint]
 # Registry uses fixed slots; payouts use CEI plus ReentrancyGuard. require-revert-in-loop: the B1
 # loops are bounded by K_max and 64 members, and any refusal inside them must revert the whole call.
-exclude_lints = ["reentrancy-events", "reentrancy-eth", "require-revert-in-loop"]
+exclude_lints = [
+    "reentrancy-events",
+    "reentrancy-eth",
+    "require-revert-in-loop",
+]
 # Linting is enforced on contract sources. Tests use low-level calls, cheatcodes and helper casts on
 # purpose, and deny_warnings would otherwise turn those lint findings into build failures.
 ignore = ["test/**/*.sol"]
