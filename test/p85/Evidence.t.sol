@@ -602,4 +602,3 @@ contract EvidenceTest is P85Flow {
         custody.applyPenalty(caseID, lot);
     }
 }
-

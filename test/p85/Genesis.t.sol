@@ -288,6 +288,46 @@ contract GenesisTest is P85Base {
         deployer.factory{value: 100 * UCT}(c);
     }
 
+    function test_review_factoryRejectsBatchAboveImmutableCeiling() public {
+        PosFactory.Config memory c = _config(_oneIdentity());
+        c.limits.maxBatch = 33;
+        vm.deal(address(this), 100 * UCT);
+        vm.expectRevert(StakeCustody.InvalidGenesis.selector);
+        deployer.factory{value: 100 * UCT}(c);
+    }
+
+    function test_review_factoryRejectsVAboveImmutableCeiling() public {
+        PosFactory.Config memory c = _config(_oneIdentity());
+        c.limits.vMax = 129;
+        vm.deal(address(this), 100 * UCT);
+        vm.expectRevert(StakeCustody.InvalidGenesis.selector);
+        deployer.factory{value: 100 * UCT}(c);
+    }
+
+    function test_review_factoryRejectsLAboveImmutableCeiling() public {
+        PosFactory.Config memory c = _config(_oneIdentity());
+        c.limits.lMax = 9;
+        vm.deal(address(this), 100 * UCT);
+        vm.expectRevert(StakeCustody.InvalidGenesis.selector);
+        deployer.factory{value: 100 * UCT}(c);
+    }
+
+    function test_review_factoryRejectsRAboveImmutableCeiling() public {
+        PosFactory.Config memory c = _config(_oneIdentity());
+        c.limits.rMax = 5;
+        vm.deal(address(this), 100 * UCT);
+        vm.expectRevert(StakeCustody.InvalidGenesis.selector);
+        deployer.factory{value: 100 * UCT}(c);
+    }
+
+    function test_review_factoryAcceptsCeilingsAndSmallerBoundedGenesis() public {
+        PosFactory.Config memory c = _config(_oneIdentity());
+        vm.deal(address(this), 200 * UCT);
+        deployer.factory{value: 100 * UCT}(c); // exact upper ceilings
+        c.limits = Limits({vMax: 1, lMax: 1, rMax: 3, maxBatch: 1});
+        deployer.factory{value: 100 * UCT}(c);
+    }
+
     function _config(GenesisIdentity[] memory ids)
         internal
         view

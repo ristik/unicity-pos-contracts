@@ -1,6 +1,9 @@
 // SPDX-License-Identifier: Apache-2.0
 pragma solidity 0.8.37;
 
+// Genesis identity seeding is bounded by custody's immutable V ceiling and calls fixed modules.
+// forge-lint: disable-start(calls-loop)
+
 import {
     Policy,
     Limits,
@@ -97,3 +100,5 @@ contract PosFactory {
         emit Deployed(h, address(CUSTODY), address(ELECTION), address(EVIDENCE), address(POLICY));
     }
 }
+
+// forge-lint: disable-end(calls-loop)

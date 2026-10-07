@@ -1,6 +1,10 @@
 // SPDX-License-Identifier: Apache-2.0
 pragma solidity 0.8.37;
 
+// Loops are bounded by the immutable V/L/R/batch ceilings validated by custody at genesis.
+// Fixed deployment modules are trusted; guard failures must revert the entire bounded operation.
+// forge-lint: disable-start(require-revert-in-loop, calls-loop)
+
 import {ReentrancyGuard} from "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
 import {
     Policy,
@@ -87,6 +91,7 @@ contract StakeCustody is ReentrancyGuard {
     error NoOpenLots();
     error RetirementAlreadyRequested();
     error RoleNonceMismatch();
+    error RoleTupleMismatch();
     error NoPendingRoles();
     error NoRoleChange();
     error NotNominated();
@@ -269,6 +274,11 @@ contract StakeCustody is ReentrancyGuard {
                 || c.limits.rMax < 3 || c.limits.maxBatch == 0
                 || c.genesis.assignmentID == bytes32(0)
         ) revert InvalidGenesis();
+        // Immutable development resource ceilings; alternative test genesis remains bounded.
+        if (c.limits.vMax > 128) revert InvalidGenesis();
+        if (c.limits.lMax > 8) revert InvalidGenesis();
+        if (c.limits.rMax > 4) revert InvalidGenesis();
+        if (c.limits.maxBatch > 32) revert InvalidGenesis();
         genesisStarted = true;
         manifestHash = manifestHash_;
         network = c.network;
@@ -452,13 +462,18 @@ contract StakeCustody is ReentrancyGuard {
     }
 
     /// @notice A nominated holder accepts (or the current withdrawal authority consents); once
-    /// every required acceptance is in, the tuple installs atomically. Existing credits keep their
-    /// creditor.
-    function acceptRoles(uint64 id, uint64 nonce) external whenInitialized {
+    /// every required acceptance is in, the tuple installs atomically. Calldata binds both nominated
+    /// addresses, so replacing a pending proposal cannot redirect an already prepared acceptance.
+    /// Existing credits keep their creditor.
+    function acceptRoles(uint64 id, uint64 nonce, address newOwner, address newWithdrawal)
+        external
+        whenInitialized
+    {
         Position storage p = positions[id];
         PendingRoles storage r = _pendingRoles[id];
         if (r.required == 0 || r.nonce != nonce) revert NoPendingRoles();
         if (nonce != p.roleNonce) revert RoleNonceMismatch();
+        if (newOwner != r.newOwner || newWithdrawal != r.newWithdrawal) revert RoleTupleMismatch();
         uint8 bits = 0;
         if (msg.sender == r.newOwner) bits |= ROLE_BIT_OWNER;
         if (msg.sender == r.newWithdrawal) bits |= ROLE_BIT_WITHDRAWAL;
@@ -674,10 +689,8 @@ contract StakeCustody is ReentrancyGuard {
         for (uint256 i = 0; i < j.exposureIDs.length; ++i) {
             Exposure storage e = exposures[j.exposureIDs[i]];
             Position storage p = positions[e.id];
-            if (e.rootKeyHash != p.rootKeyHash && e.rootKeyHash == p.stagedRootKeyHash) {
-                p.rootKeyHash = e.rootKeyHash;
-                p.stagedRootKeyHash = bytes32(0);
-            }
+            p.rootKeyHash = e.rootKeyHash;
+            if (e.rootKeyHash == p.stagedRootKeyHash) p.stagedRootKeyHash = bytes32(0);
         }
         lastAckedAssignment = s.assignmentID;
         s.state = SESSION_ACKED;
@@ -1093,3 +1106,5 @@ contract StakeCustody is ReentrancyGuard {
         return _sessions[resultID];
     }
 }
+
+// forge-lint: disable-end(require-revert-in-loop, calls-loop)

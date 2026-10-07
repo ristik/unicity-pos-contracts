@@ -185,9 +185,9 @@ contract MaturityTest is P85Flow {
         vm.prank(vm.addr(ownerPk(0)));
         custody.proposeRoles(gid(0), vm.addr(ownerPk(0)), newWd, 0);
         vm.prank(newWd);
-        custody.acceptRoles(gid(0), 0);
+        custody.acceptRoles(gid(0), 0, vm.addr(ownerPk(0)), newWd);
         vm.prank(vm.addr(wdPk(0)));
-        custody.acceptRoles(gid(0), 0);
+        custody.acceptRoles(gid(0), 0, vm.addr(ownerPk(0)), newWd);
         assertEq(creditOf(vm.addr(wdPk(0))), GENESIS_BOND, "existing credit keeps its creditor");
         assertEq(creditOf(newWd), 0);
     }
@@ -198,9 +198,9 @@ contract MaturityTest is P85Flow {
         vm.prank(vm.addr(ownerPk(0)));
         custody.proposeRoles(gid(0), vm.addr(ownerPk(0)), newWd, 0);
         vm.prank(newWd);
-        custody.acceptRoles(gid(0), 0);
+        custody.acceptRoles(gid(0), 0, vm.addr(ownerPk(0)), newWd);
         vm.prank(vm.addr(wdPk(0)));
-        custody.acceptRoles(gid(0), 0);
+        custody.acceptRoles(gid(0), 0, vm.addr(ownerPk(0)), newWd);
         clock(3_000, 5_000);
         matureOne(lotOf(gid(0)));
         assertEq(creditOf(newWd), GENESIS_BOND);

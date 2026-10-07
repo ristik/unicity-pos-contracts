@@ -40,7 +40,7 @@ them with minimal local fixtures; each is listed in the PR body as "to be replac
    | Kind | Payload | Effect in custody |
    |---|---|---|
    | `SessionClosed` | `resultID` | exact pre-H abort / ordered rejection: closes only that attempt's references and its session lock |
-   | `Ack` | `resultID, replacedHRound, offset, firstRound` | successor Active; incumbent's H recorded; staged root keys of members activate; last-acknowledged moves |
+   | `Ack` | `resultID, replacedHRound, offset, firstRound` | successor Active; incumbent's H recorded; frozen exposure root keys become current; only matching staged keys are cleared; last-acknowledged moves |
    | `RecoveryAck` | `resultID, recoveryAssignmentID, jOffset, jFirstRound, jHRound, kOffset, kFirstRound, kRootEpoch, kEvmEpoch` | J Active; exact K derived from the incumbent exposures (same identities, keys, weights, payees, lots; incumbent captured policy) **before** any reference closes |
    | `Closure` | `assignmentID, hRound, hRecordID, terminalRoot, exposureDigest, keyHistoryDigest` | first closure fixes `p_close` and its UC time; repeats are no-ops; a different closure identity reverts |
    | `Retirement` | `id, generation, refDigest` | requires zero live references, `refDigest == exposureChain(id, generation)`, `p_ret >= max z` |
@@ -98,7 +98,7 @@ lotIDs)` per member, so candidate/exposure payee tampering changes the digest th
 | `register` | owner (caller) | PoP over `(domain, network, chain, custody, owner, withdrawal, key, nonce)`; `BadPossessionProof`, `KeyAlreadyUsed`, `ZeroAddress` | none |
 | `bond(id)` | owner | `NotOwner`, `ZeroValue`, `GenerationClosing`, `LotCapacity`, index guard `IndexFull` | balance and F rise equally |
 | `proposeRootKey` | owner | PoP bound to `(id, generation, key, roleNonce)`; `KeyAlreadyUsed` | none |
-| `proposeRoles` / `acceptRoles` | owner / nominated holders and, for a withdrawal change, the current withdrawal authority | exact role nonce; `NoRoleChange`, `NotNominated`, `NoPendingRoles` | none |
+| `proposeRoles` / `acceptRoles` | owner / nominated holders and, for a withdrawal change, the current withdrawal authority | exact role nonce and nominated tuple; `RoleTupleMismatch`, `NoRoleChange`, `NotNominated`, `NoPendingRoles` | none |
 | `requestRetirement` | owner | once per generation; `NoOpenLots`; moves unreferenced F lots to D | none |
 | `reserveCandidate` | fixed `ElectionPolicy` | `NotElection`, `IncumbentMismatch`, `LineageMismatch`, `SessionExists`, `AssignmentExists`, `MembersUnsorted`, `PrimaryRetiring`, `IdentityExcluded`, `WrongKey`, `LotSetMismatch`, `LotNotEligible`, `ReferenceCapacity`, `InsufficientCoverage` | F to E metadata only |
 | `registerEvmKey` | fixed `ElectionPolicy` | cross-role key uniqueness | none |
@@ -110,6 +110,16 @@ lotIDs)` per member, so candidate/exposure payee tampering changes the digest th
 | `claim(amount, to)` | creditor | `InsufficientCredit`, reentrancy guard, debit before transfer | balance and credit fall equally |
 | `admitDelegation` | anyone relaying owner + EVM proofs | see above | none |
 | `syncLiveIndex` | custody only | `NotCustody`, `IndexFull` | none |
+
+`acceptRoles(uint64 id, uint64 nonce, address newOwner, address newWithdrawal)` binds the
+acceptor's calldata to both nominated addresses. All required acceptances use that same tuple and
+current role nonce; a replacement proposal clears collected acceptances. A transaction prepared
+for a superseded different tuple fails with `RoleTupleMismatch`, including consent by the current
+withdrawal authority. Completed installation advances the role nonce as before.
+
+Ack installs each acknowledged exposure's immutable root key as current, even after another key
+has been staged. A distinct later nomination remains staged; a nomination matching the installed
+key is cleared. The key tombstones and historical exposure keys are retained.
 
 Getters: `positions`, `lots`, `exposures`, `exposureLots`, `assignments`, `assignmentExposures`,
 `policyTerms`, `session`, `retirements`, `exposureChain`, `liveExposures`, `maxLiabilityAnchor`,
@@ -144,20 +154,28 @@ Getters: `positions`, `lots`, `exposures`, `exposureLots`, `assignments`, `assig
 * **Sizes.** `StakeCustody` is under EIP-170 only with the size-first profile in `foundry.toml`
   (`optimizer_runs = 1` restricted to `src/p85/**`); the registry's settings and code hash are
   untouched. Getters that the design lists but that PR3 does not need were moved or dropped to fit
-  (`releaseState` lives on `Evidence`; there is no `coverage` or `keyHistory` getter, since exposures
-  carry the historical keys and tombstones live in `keyOwner`).
+  (`releaseState` lives on `Evidence`; there is no `coverage` or `keyHistory` getter). Reconstruct
+  historical keys from retained exposures/assignments and permanent `keyOwner` tombstones, and
+  coverage from `generationLots`/`exposureLots`, lot remainders, committed weights and `bondUnit`.
 
 ## DEV-DEFAULT parameters used by the tests
 
 Bond unit and minimum 100 UCT (10^18 base units each); `V_max=128, L_max=8, R_max=4`, batches ≤ 32;
 penalty 1%, lifetime cap 5%, bounty 10% capped at 1 UCT; evidence window 1,000 rounds; holds 2,000
-rounds; UC floor 3,600 s. `PolicyBounds` enforces the design's immutable development bounds.
+rounds; UC floor 3,600 s. `PolicyBounds` enforces the economic/protection bounds.
+`StakeCustody.initialize` also enforces
+`1 <= V_max <= 128`, `1 <= L_max <= 8`, `3 <= R_max <= 4` and `1 <= maxBatch <= 32`,
+including deployment through `PosFactory`. Alternative test genesis values must obey these limits.
 
 ## Guard self-test
 
 `script/p85-mutate.py` disables each revert guard (and weakens each accounting formula) once in a scratch
 copy and runs the named tests; `docs/p85/GUARDS.md` lists every row with its location, edit and the
-failing test. All 198 mutations are caught, and every failing test is one of the named tests.
+failing test. The original 198-mutation run at reviewed head `33d317e` caught every mutation with
+a named test.
+The fix-round mutations in `script/p85-fix-mutations.json` isolate each newly added ceiling and
+both tuple fields, plus key installation and staging behavior; `docs/p85/FIX-GUARDS.md` records
+the current results. The original table's line numbers refer to `33d317e`.
 Two guards that are provably redundant under the development bounds were removed instead of
 tested (the remaining-principal term of the debit, `evidenceWindow >= W_cert`); the evidence gate
 in `mature` is kept and tested with a test-only unbounded policy.
@@ -178,4 +196,4 @@ in `mature` is kept and tested with a test-only unbounded policy.
 | `Claims.t.sol` | claims, reentrancy, rejecting recipients, forced value |
 | `KeyLib.t.sol` | decompression and signature rules |
 | `Fuzz.t.sol` | penalty formula, bounty chunk independence, maturity gates, coverage, permissions |
-| `P85Invariant.t.sol` | conservation, reference exactness, caps, credits, permissions under random sequences |
+| `P85Invariant.t.sol` | conservation, reference exactness, caps, credits, permissions and frozen-key activation under random sequences |

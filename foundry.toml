@@ -46,11 +46,6 @@ deny_warnings = true
 exclude_lints = [
     "reentrancy-events",
     "reentrancy-eth", # registry uses fixed slots; payouts use CEI plus ReentrancyGuard
-    # src/p85 loops are bounded by the fixed development ceilings (V_max, L_max, R_max, maxBatch).
-    # A failed guard inside a bounded loop must revert the whole call, and the loops call only the
-    # fixed, trusted modules of the same deployment.
-    "require-revert-in-loop",
-    "calls-loop",
 ]
 # Linting is enforced on contract sources. Tests use low-level calls, cheatcodes and helper casts on
 # purpose, and deny_warnings would otherwise turn those lint findings into build failures.

@@ -128,7 +128,7 @@ contract DelegationTest is P85Base {
         vm.prank(vm.addr(ownerPk(0)));
         custody.proposeRoles(gid(0), newOwner, vm.addr(wdPk(0)), 0);
         vm.prank(newOwner);
-        custody.acceptRoles(gid(0), 0);
+        custody.acceptRoles(gid(0), 0, newOwner, vm.addr(wdPk(0)));
         vm.expectRevert(ElectionPolicy.RoleNonceMismatch.selector);
         election.admitDelegation(r, ownerSig, evmSig);
     }

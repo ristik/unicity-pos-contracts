@@ -188,6 +188,7 @@
       "RetirementNotImported()": "4cc65a6a",
       "RetirementNotRequested()": "ad173684",
       "RoleNonceMismatch()": "4f77ef1d",
+      "RoleTupleMismatch()": "083d543a",
       "RoundGateNotMet()": "b39cf1ae",
       "SessionExists()": "af0dd7f0",
       "SessionNotOpen()": "387e9d09",
@@ -220,7 +221,7 @@
     "methodIdentifiers": {
       "BPS()": "249d39e9",
       "FACTORY()": "2dd31000",
-      "acceptRoles(uint64,uint64)": "0da17dc9",
+      "acceptRoles(uint64,uint64,address,address)": "2eac4b90",
       "applyPenalty(bytes32,uint256)": "b06d3f5a",
       "applyRootRecords(uint32)": "1d2a0037",
       "assignmentExposures(bytes32)": "b40fe7d4",

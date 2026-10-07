@@ -199,6 +199,59 @@ contract RecordsTest is P85Flow {
         assertEq(staged, bytes32(0));
     }
 
+    function test_review_ackInstallsFrozenKeyDespiteLaterNomination() public {
+        bytes memory b = _stageRootKey(gid(1), 0x9501);
+        ReserveInput memory in_ = _reserveInput(RES_J, ASG_J, allMembers(), 1);
+        in_.members[1].rootKeyHash = keccak256(b);
+        vm.prank(address(election));
+        custody.reserveCandidate(in_);
+        bytes memory c = _stageRootKey(gid(1), 0x9502);
+        clock(120, 1_000);
+        pushRecord(RecordKind.Ack, ackData(RES_J, H_ROUND, 100, 101));
+        applyAll();
+        (,, bytes32 active, bytes32 staged,,,,,) = custody.positions(gid(1));
+        assertEq(active, keccak256(b), "Ack installs its frozen key");
+        assertEq(staged, keccak256(c), "later nomination remains staged");
+        assertEq(expo(exposureID(ASG_J, gid(1))).rootKeyHash, keccak256(b));
+        // Admission accepts both the acknowledged key B and the distinct staged key C.
+        _admitRootBinding(b, 0);
+        _admitRootBinding(c, 1);
+        // The newly current key also remains reservable for the next primary.
+        in_ = _reserveInput(RES_J2, ASG_J2, allMembers(), 2);
+        in_.incumbentAssignmentID = ASG_J;
+        in_.members[1].rootKeyHash = keccak256(b);
+        vm.prank(address(election));
+        custody.reserveCandidate(in_);
+    }
+
+    function _admitRootBinding(bytes memory key, uint64 nonce) internal {
+        DelegationRequest memory r;
+        r.id = gid(1);
+        r.generation = 1;
+        r.binding = Delegation(
+            keccak256(abi.encode("root", uint256(1))),
+            key,
+            keccak256(abi.encode("evm", uint256(1))),
+            compressed(evmPk(1)),
+            vm.addr(payeePk(1))
+        );
+        r.delegationNonce = nonce;
+        r.expiry = type(uint64).max;
+        bytes32 digest = election.delegationDigest(r);
+        election.admitDelegation(r, sign(ownerPk(1), digest), sign(evmPk(1), digest));
+    }
+
+    function test_review_ackWithUnchangedKeyPreservesLaterNomination() public {
+        reserve(RES_J, ASG_J, allMembers(), 1);
+        bytes memory c = _stageRootKey(gid(1), 0x9502);
+        clock(120, 1_000);
+        pushRecord(RecordKind.Ack, ackData(RES_J, H_ROUND, 100, 101));
+        applyAll();
+        (,, bytes32 active, bytes32 staged,,,,,) = custody.positions(gid(1));
+        assertEq(active, keccak256(compressed(rootPk(1))));
+        assertEq(staged, keccak256(c));
+    }
+
     function test_ackRejectsUnknownSessions() public {
         pushRecord(RecordKind.Ack, ackData(keccak256("none"), H_ROUND, 100, 101));
         vm.expectRevert(StakeCustody.UnknownSession.selector);

@@ -1,6 +1,10 @@
 // SPDX-License-Identifier: Apache-2.0
 pragma solidity 0.8.37;
 
+// Loops are bounded by the immutable V/L/R/batch ceilings validated by custody at genesis.
+// Fixed deployment modules are trusted; guard failures must revert the entire bounded operation.
+// forge-lint: disable-start(require-revert-in-loop, calls-loop)
+
 import {Manifest, Policy} from "./P85Types.sol";
 import {IRootRecords, IStakeCustody, CaseView} from "./IP85.sol";
 import {KeyLib} from "./KeyLib.sol";
@@ -344,3 +348,5 @@ contract Evidence {
         return _excluded[id];
     }
 }
+
+// forge-lint: disable-end(require-revert-in-loop, calls-loop)

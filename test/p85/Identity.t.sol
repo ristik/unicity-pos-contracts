@@ -261,7 +261,7 @@ contract IdentityTest is P85Base {
         vm.prank(vm.addr(ownerPk(0)));
         custody.proposeRoles(gid(0), newOwner, vm.addr(wdPk(0)), 0);
         vm.prank(newOwner);
-        custody.acceptRoles(gid(0), 0);
+        custody.acceptRoles(gid(0), 0, newOwner, vm.addr(wdPk(0)));
         vm.prank(newOwner);
         vm.expectRevert(StakeCustody.BadPossessionProof.selector);
         custody.proposeRootKey(gid(0), key, pop);
@@ -277,7 +277,7 @@ contract IdentityTest is P85Base {
         assertEq(owner, vm.addr(ownerPk(0)), "not installed before acceptance");
         assertEq(nonce, 0);
         vm.prank(newOwner);
-        custody.acceptRoles(gid(0), 0);
+        custody.acceptRoles(gid(0), 0, newOwner, vm.addr(wdPk(0)));
         (owner,,,,, nonce,,,) = custody.positions(gid(0));
         assertEq(owner, newOwner);
         assertEq(nonce, 1);
@@ -289,11 +289,11 @@ contract IdentityTest is P85Base {
         vm.prank(vm.addr(ownerPk(0)));
         custody.proposeRoles(gid(0), vm.addr(ownerPk(0)), newWd, 0);
         vm.prank(newWd);
-        custody.acceptRoles(gid(0), 0); // nominee alone is not enough
+        custody.acceptRoles(gid(0), 0, vm.addr(ownerPk(0)), newWd); // nominee alone is not enough
         (, address wd,,,,,,,) = custody.positions(gid(0));
         assertEq(wd, oldWd);
         vm.prank(oldWd);
-        custody.acceptRoles(gid(0), 0); // existing authority's consent completes it
+        custody.acceptRoles(gid(0), 0, vm.addr(ownerPk(0)), newWd); // existing authority's consent completes it
         (, wd,,,,,,,) = custody.positions(gid(0));
         assertEq(wd, newWd);
     }
@@ -303,10 +303,10 @@ contract IdentityTest is P85Base {
         vm.prank(vm.addr(ownerPk(0)));
         custody.proposeRoles(gid(0), vm.addr(ownerPk(0)), newWd, 0);
         vm.prank(newWd);
-        custody.acceptRoles(gid(0), 0);
+        custody.acceptRoles(gid(0), 0, vm.addr(ownerPk(0)), newWd);
         vm.prank(vm.addr(ownerPk(0))); // the owner is not the withdrawal authority
         vm.expectRevert(StakeCustody.NotNominated.selector);
-        custody.acceptRoles(gid(0), 0);
+        custody.acceptRoles(gid(0), 0, vm.addr(ownerPk(0)), newWd);
         (, address wd,,,,,,,) = custody.positions(gid(0));
         assertEq(wd, vm.addr(wdPk(0)));
     }
@@ -329,13 +329,13 @@ contract IdentityTest is P85Base {
         custody.proposeRoles(gid(0), newOwner, vm.addr(wdPk(0)), 0);
         vm.prank(stranger);
         vm.expectRevert(StakeCustody.NotNominated.selector);
-        custody.acceptRoles(gid(0), 0);
+        custody.acceptRoles(gid(0), 0, newOwner, vm.addr(wdPk(0)));
         vm.prank(newOwner);
         vm.expectRevert(StakeCustody.NoPendingRoles.selector);
-        custody.acceptRoles(gid(0), 5);
+        custody.acceptRoles(gid(0), 5, newOwner, vm.addr(wdPk(0)));
         vm.prank(newOwner);
         vm.expectRevert(StakeCustody.NoPendingRoles.selector);
-        custody.acceptRoles(gid(1), 0);
+        custody.acceptRoles(gid(1), 0, newOwner, vm.addr(wdPk(0)));
     }
 
     function test_acceptedRolesCannotBeReplayed() public {
@@ -343,10 +343,64 @@ contract IdentityTest is P85Base {
         vm.prank(vm.addr(ownerPk(0)));
         custody.proposeRoles(gid(0), newOwner, vm.addr(wdPk(0)), 0);
         vm.prank(newOwner);
-        custody.acceptRoles(gid(0), 0);
+        custody.acceptRoles(gid(0), 0, newOwner, vm.addr(wdPk(0)));
         vm.prank(newOwner);
         vm.expectRevert(StakeCustody.NoPendingRoles.selector);
-        custody.acceptRoles(gid(0), 0);
+        custody.acceptRoles(gid(0), 0, newOwner, vm.addr(wdPk(0)));
+    }
+
+    function test_review_roleConsentBindsTheProposedTuple() public {
+        address owner = vm.addr(ownerPk(0));
+        address oldWd = vm.addr(wdPk(0));
+        address b = makeAddr("withdrawalB");
+        address c = makeAddr("withdrawalC");
+        vm.prank(owner);
+        custody.proposeRoles(gid(0), owner, b, 0);
+        bytes memory preparedConsent =
+            abi.encodeCall(StakeCustody.acceptRoles, (gid(0), 0, owner, b));
+        vm.prank(owner);
+        custody.proposeRoles(gid(0), owner, c, 0);
+        vm.prank(c);
+        custody.acceptRoles(gid(0), 0, owner, c);
+        vm.prank(oldWd);
+        (bool ok, bytes memory reason) = address(custody).call(preparedConsent);
+        assertFalse(ok, "superseded consent must fail");
+        assertEq(reason, abi.encodeWithSelector(StakeCustody.RoleTupleMismatch.selector));
+        (, address wd,,,,,,,) = custody.positions(gid(0));
+        assertEq(wd, oldWd);
+        vm.prank(oldWd);
+        custody.acceptRoles(gid(0), 0, owner, c);
+        (, wd,,,,,,,) = custody.positions(gid(0));
+        assertEq(wd, c, "fresh exact-tuple consent completes installation");
+    }
+
+    function test_review_roleConsentAlsoBindsTheNominatedOwner() public {
+        address owner = vm.addr(ownerPk(0));
+        address wd = vm.addr(wdPk(0));
+        address b = makeAddr("ownerB");
+        address c = makeAddr("ownerC");
+        vm.prank(owner);
+        custody.proposeRoles(gid(0), b, wd, 0);
+        vm.prank(b);
+        vm.expectRevert(StakeCustody.RoleTupleMismatch.selector);
+        custody.acceptRoles(gid(0), 0, c, wd); // only the expected owner differs
+    }
+
+    function test_review_replacementClearsAlreadyGivenConsent() public {
+        address owner = vm.addr(ownerPk(0));
+        address wd = vm.addr(wdPk(0));
+        address b = makeAddr("withdrawalB");
+        address c = makeAddr("withdrawalC");
+        vm.prank(owner);
+        custody.proposeRoles(gid(0), owner, b, 0);
+        vm.prank(wd);
+        custody.acceptRoles(gid(0), 0, owner, b);
+        vm.prank(owner);
+        custody.proposeRoles(gid(0), owner, c, 0);
+        vm.prank(c);
+        custody.acceptRoles(gid(0), 0, owner, c);
+        (, address actual,,,,,,,) = custody.positions(gid(0));
+        assertEq(actual, wd, "old consent does not survive replacement");
     }
 
     // --- retirement requests -----------------------------------------------------------------------

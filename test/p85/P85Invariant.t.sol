@@ -44,6 +44,10 @@ contract InvariantHandler is P85Flow {
     uint64[] public excludedIds;
     mapping(uint64 => bool) internal knownExcluded;
 
+    mapping(uint64 => bytes32) public expectedRoot;
+    mapping(uint64 => bytes32) public expectedStaged;
+    uint256 public ghostKeyStages;
+
     uint64 public nextEpoch = 2;
     uint64 public nextAttempt = 1;
     uint256 public ghostSurplus;
@@ -83,6 +87,7 @@ contract InvariantHandler is P85Flow {
             ids.push(id);
             ident[id] = Ident(ownerPk(i), rootPk(i), evmPk(i), vm.addr(wdPk(i)), 1);
             keyOf[keccak256(compressed(rootPk(i)))] = rootPk(i);
+            expectedRoot[id] = keccak256(compressed(rootPk(i)));
             keyOf[keccak256(compressed(evmPk(i)))] = evmPk(i);
             _creditor(vm.addr(wdPk(i)));
         }
@@ -150,6 +155,7 @@ contract InvariantHandler is P85Flow {
             ids.push(id);
             ident[id] = Ident(ok, rk, ek, vm.addr(wk), 0);
             keyOf[keccak256(key)] = rk;
+            expectedRoot[id] = keccak256(key);
             keyOf[keccak256(compressed(ek))] = ek;
             _creditor(vm.addr(wk));
             _delegate(id);
@@ -165,7 +171,7 @@ contract InvariantHandler is P85Flow {
         r.generation = 1;
         r.binding = Delegation(
             keccak256(abi.encode("root", id)),
-            compressed(x.rootKey),
+            compressed(keyOf[expectedRoot[id]]),
             keccak256(abi.encode("evm", id)),
             compressed(x.evmKey),
             vm.addr(x.ownerKey)
@@ -211,12 +217,41 @@ contract InvariantHandler is P85Flow {
             return;
         }
         vm.prank(newWd);
-        try custody.acceptRoles(id, nonce) {} catch {}
+        try custody.acceptRoles(id, nonce, owner, newWd) {} catch {}
         vm.prank(wd);
-        try custody.acceptRoles(id, nonce) {
+        try custody.acceptRoles(id, nonce, owner, newWd) {
             ident[id].withdrawal = newWd;
             _creditor(newWd);
         } catch {}
+    }
+
+    /// Stage keys between reservation and delayed Ack imports, including repeated nominations.
+    function act_stageRootKey(uint256 idSeed) external {
+        uint64 id = ids[idSeed % ids.length];
+        (address owner,,,, uint64 gen, uint64 nonce,,,) = custody.positions(id);
+        uint256 pk = 0xA00000 + ghostKeyStages;
+        bytes memory key = compressed(pk);
+        bytes32 digest = keccak256(
+            abi.encode(
+                keccak256("unicity.p85.pop.proposeRootKey"),
+                NETWORK,
+                block.chainid,
+                address(custody),
+                id,
+                gen,
+                keccak256(key),
+                nonce
+            )
+        );
+        bytes memory pop = sign(pk, digest);
+        vm.prank(owner);
+        try custody.proposeRootKey(id, key, pop) {
+            expectedStaged[id] = keccak256(key);
+            keyOf[keccak256(key)] = pk;
+            ghostKeyStages++;
+        } catch {
+            unexpectedRevert = true;
+        }
     }
 
     function act_nominatePayee(uint256 idSeed, uint256 salt) external {
@@ -228,7 +263,7 @@ contract InvariantHandler is P85Flow {
         r.generation = gen;
         r.binding = Delegation(
             keccak256(abi.encode("root", id)),
-            compressed(x.rootKey),
+            compressed(keyOf[expectedRoot[id]]),
             keccak256(abi.encode("evm", id)),
             compressed(x.evmKey),
             makeAddr(string(abi.encode("payee", salt % 7)))
@@ -267,7 +302,8 @@ contract InvariantHandler is P85Flow {
                 (,,, uint128 remaining,,,,,,,,,) = custody.lots(lots[j]);
                 backing += remaining;
             }
-            (,, bytes32 rootHash,,,,,,) = custody.positions(id);
+            bytes32 rootHash =
+                expectedStaged[id] == bytes32(0) ? expectedRoot[id] : expectedStaged[id];
             (Delegation memory d,,) = election.delegation(id, 1);
             members[k] = ReserveMember({
                 id: id,
@@ -340,6 +376,12 @@ contract InvariantHandler is P85Flow {
             offsetCounter += 1_000;
             if (kind == 1) {
                 pushRecord(RecordKind.Ack, ackData(res, h, offset, h + 1));
+                bytes32[] memory frozen = custody.assignmentExposures(sessionAssignment[res]);
+                for (uint256 i; i < frozen.length; ++i) {
+                    Expo memory e = expo(frozen[i]);
+                    expectedRoot[e.id] = e.rootKeyHash;
+                    if (expectedStaged[e.id] == e.rootKeyHash) expectedStaged[e.id] = bytes32(0);
+                }
                 ghostAcks++;
             } else {
                 bytes32 k = keccak256(abi.encode("asg/K", res));
@@ -592,7 +634,7 @@ contract P85InvariantTest is StdInvariant, P85Flow {
         super.setUp();
         handler = new InvariantHandler(this);
         targetContract(address(handler));
-        bytes4[] memory selectors = new bytes4[](14);
+        bytes4[] memory selectors = new bytes4[](15);
         selectors[0] = handler.act_registerIdentity.selector;
         selectors[1] = handler.act_bond.selector;
         selectors[2] = handler.act_requestRetirement.selector;
@@ -607,6 +649,7 @@ contract P85InvariantTest is StdInvariant, P85Flow {
         selectors[11] = handler.act_probe.selector;
         selectors[12] = handler.act_changeWithdrawal.selector;
         selectors[13] = handler.act_nominatePayee.selector;
+        selectors[14] = handler.act_stageRootKey.selector;
         targetSelector(FuzzSelector({addr: address(handler), selectors: selectors}));
     }
 
@@ -646,6 +689,31 @@ contract P85InvariantTest is StdInvariant, P85Flow {
         handler.act_submitEvidence(0);
         assertFalse(handler.applyFailed());
         assertFalse(handler.unexpectedRevert());
+    }
+
+    function test_review_handlerRotatesWithLaterStaging() public {
+        handler.act_stageRootKey(1);
+        bytes32 frozenKey = handler.expectedStaged(gid(1));
+        handler.act_reserveCandidate(7);
+        handler.act_stageRootKey(1);
+        bytes32 laterKey = handler.expectedStaged(gid(1));
+        handler.act_rootStep(1 << 4); // Ack
+        assertEq(handler.ghostKeyStages(), 2);
+        assertEq(handler.ghostAcks(), 1);
+        (,, bytes32 current, bytes32 staged,,,,,) = custody.positions(gid(1));
+        assertEq(current, frozenKey);
+        assertEq(staged, laterKey);
+        invariant_keysFollowAcknowledgedMembership();
+        invariant_theHarnessItselfStaysConsistent();
+    }
+
+    function invariant_keysFollowAcknowledgedMembership() public view {
+        for (uint256 i; i < handler.idsLength(); ++i) {
+            uint64 id = handler.ids(i);
+            (,, bytes32 current, bytes32 staged,,,,,) = custody.positions(id);
+            assertEq(current, handler.expectedRoot(id), "current key follows frozen Ack");
+            assertEq(staged, handler.expectedStaged(id), "distinct later nomination survives");
+        }
     }
 
     // --- invariants ------------------------------------------------------------------------------------
