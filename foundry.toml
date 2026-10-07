@@ -43,9 +43,12 @@ fs_permissions = [
 deny_warnings = true
 
 [lint]
+# Registry uses fixed slots; payouts use CEI plus ReentrancyGuard. require-revert-in-loop: the B1
+# loops are bounded by K_max and 64 members, and any refusal inside them must revert the whole call.
 exclude_lints = [
     "reentrancy-events",
-    "reentrancy-eth", # registry uses fixed slots; payouts use CEI plus ReentrancyGuard
+    "reentrancy-eth",
+    "require-revert-in-loop",
 ]
 # Linting is enforced on contract sources. Tests use low-level calls, cheatcodes and helper casts on
 # purpose, and deny_warnings would otherwise turn those lint findings into build failures.

@@ -5,7 +5,8 @@ precondition on [bft-core F4 (#12)](https://github.com/ristik/bft-core/issues/12
 repository/toolchain and ownership must be recorded before implementation; no complete PoS contract
 package is assumed to exist in BFT Core."*
 
-**Implemented so far:** the fixed-profile SealRegistry, WUCT native wrapper, simplified FeeCollector,
+**Implemented so far:** the SealRegistry (with the B1 pruned authenticated root-epoch history, see
+[`docs/b1-registry-gas.md`](docs/b1-registry-gas.md)), WUCT native wrapper, simplified FeeCollector,
 immutable timestamp vesting vault, and the P85 custody, identity and evidence modules (`src/`,
 `src/p85/`). Nothing here is deployed, and no genesis, activation, issuance or PoS feature follows
 from merging it.
@@ -93,33 +94,39 @@ Read that before designing storage layout: the system call writes `sealRegistryC
 contract's storage, authenticated by the block's `stateRoot` and proved with `eth_getProof`, so the
 layout is protocol surface, not an implementation detail.
 
-## SealRegistry v2
+## SealRegistry
 
-`src/SealRegistry.sol` implements the assignment-aware registry profile for H3. It retains the
-immutable genesis configuration hash and tracks a separate active EVM assignment hash and shard epoch.
-The paired BFT/Ureth verifier authenticates the ordered supersession chain and supplies its bounded
-projection; the contract checks the projection's old/new context, commitment digest and epoch arithmetic.
+`src/SealRegistry.sol` implements the assignment-aware registry profile for H3 and, for B1 (bft-core
+#62), the pruned authenticated root-epoch history. It retains the immutable genesis configuration hash,
+tracks a separate active EVM assignment hash and shard epoch, and stores the live root-epoch intervals
+(full members and weights) that certificate verification reads. The paired BFT/Ureth verifier
+authenticates the ordered supersession chain and the history and supplies their bounded projections;
+the contract checks the projection's old/new context, commitment digest, epoch arithmetic and the
+queue invariants. Layout, update projection, genesis and the gas analysis are in
+[`docs/b1-registry-gas.md`](docs/b1-registry-gas.md).
 
-- **Layout.** No Solidity state variables. Existing v1 fields retain their fixed keys; v2 adds
-  `assignment.activeConfHash` and `assignment.spanCommitment`, also under the fixed-key namespace. The
-  `config.shardConfHash` word stays immutable after genesis. A test requires the compiled storage layout to be empty.
-- **Genesis.** No constructor. Genesis places the runtime code at `a_sr` and writes seven words, including
-  `assignment.activeConfHash = config.shardConfHash`; the v2 layout version is `2`.
+- **Layout.** No Solidity state variables. One fresh layout (no layout-version word, no migration): every
+  field lives at `keccak256("unicity.seal-registry/" || name)`, plus a circular queue of epochs and
+  per-epoch entry and member words at derived slots. A test requires the compiled storage layout to be empty.
+- **Genesis.** No constructor. Genesis places the runtime code at `a_sr` and writes the operational words,
+  the immutable profile words (`b1.network`, `b1.wCert`, `b1.profileHash`), `b1.initialized`, the queue and
+  the genesis entry with its members. `src/B1GenesisBuilder.sol` builds those words under the runtime's
+  bounds and refuses a profile whose `g_sys` does not cover the registry envelope; it is a build-time
+  helper and is not part of the runtime.
 - **Transitions.** Ordinary blocks require certified and authorized epochs plus the active hash to match
   storage. Root-only acknowledgements still advance root epoch by exactly one and preserve the assignment.
   Direct EVM assignment acknowledgements advance root and shard epochs by one. Only a paired-verifier
   projection can fold a multi-step supersession span; its root/shard deltas and commitment are checked,
-  while the immutable genesis hash is never rewritten. Only the system caller may `open` or `finalize`.
+  while the immutable genesis hash is never rewritten. Every `open` prunes intervals whose end is at or
+  below `L = max(0, O - W_cert)`, closes the former tip once and inserts the new live intervals. Only the
+  system caller may `open` or `finalize`.
 - **Compiler.** Solidity 0.8.37 with the IR pipeline (owner decision on bft-core #12); no metadata hash or
   CBOR trailer is emitted.
-- **Artifact.** `artifacts/seal-registry-v2.json` records compiler settings, ABI, runtime bytecode, code hash,
-  slot keys and the seven genesis word names. `artifacts/seal-registry-v1.json` remains the historical #153
-  artifact. `script/seal-registry-artifact.sh` regenerates v2. The new artifact is not a deployable genesis
-  record: `genesisCommitment` and `fullShardConfHash` come from the Go construction of #153 §5.3 over this
+- **Artifact.** `artifacts/seal-registry.json` records compiler settings, ABI, runtime bytecode, code hash,
+  slot keys, the B1 layout description and bounds, the genesis word list and the gas constants.
+  `script/seal-registry-artifact.sh` regenerates it. The artifact is not a deployable genesis record:
+  `genesisCommitment`, `fullShardConfHash` and the genesis members come from the Go construction over this
   code hash.
-
-The inherited field keys remain `keccak256("unicity.seal-registry.v1/" || name)`; the v2 artifact
-records both existing and newly added slots.
 
 **What the contract enforces, and what it does not.** It enforces its caller, its own state machine and
 bounded checks on its arguments. These belong to the execution client (bft-core #11) and are not claimed

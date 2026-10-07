@@ -12,38 +12,38 @@ contract SealRegistryTest is SealRegistryBase {
     // ---------------------------------------------------------------- identity and genesis
 
     function test_slotKeysMatchTheIndependentVector() public pure {
-        // Printed by bft-core `go test ./docs/design/models/f4aregistry/ -run TestSlotKeys -v`.
+        // keccak256("unicity.seal-registry/" || name), printed by `cast keccak`; no layoutVersion word
+        // and no version in the prefix: one fresh layout.
         bytes32[FIELD_COUNT] memory want = [
-            bytes32(0x79b704796b8c2ee2cf835e5113e27bbaf138c9831ce0b1cc259966898323094a),
-            0x1dc271a4e4328f3a46506e6e6e1db1488418d59ca41e005534ed0eda129e6150,
-            0xabe1d0722ec7cab6bc8be8343a4900e571bdb46fad619947267449a2b9aa7497,
-            0x7671d07e8accfd833bdccd596ad3a1c4a402a090b727f511a073a2498c590ae5,
-            0xe77628dabc86b477c0db337bda981ad320031675934be9c596d69ebbc20f1a24,
-            0xbcc6e80fb08120fa6610a12120697a935440b6f731eb387496a45ae31fc4f093,
-            0x1333275c0dde98dea1f7569da4a9013691786d62030b101d14f0f6d68f27fd66,
-            0xc3adc23527bab9702dd784bd0b145d2ab1a7dce35235a0db3dbfd3da7a53143d,
-            0x1dfe98fa5011e0dbfdfc5efa804744e3497514271b58499de63781a9941c9a51,
-            0x459cf503c328e501962bcf0cd8ca53327ab531deeb9155c48d827d2478932c6c,
-            0x8af142b0300add3b2aec220298bb445eb0c9884bb45fcd5059be6fcd18e7090d,
-            0xbee6419aa5a12f10d4794669dbd882527b590089e967b14012543a23e0b78e72,
-            0xe58f62addabf9360d9fcddf3db70a93d2b2ba476996540ecefbbed5ee3cc9c80,
-            0x14386166497930a3efb28f5976da18bcbf7bec69c7b2c449c3ce32552f037844,
-            0xa0cbe06c0b5a76b8d67341bd1bd8f162e5d5c6aea162604a10cec0dce4e0d060,
-            0x47a3f86feb14af4a7e5a1a1fb3362c95b32dfbf03a7a3ca31717f8e829382b3c,
-            0xe39f0827feecb5f38ffbd452e7c3556ecd0ba586a94434c3f5a10f846cbbfcea,
-            0x1b118c38b50e4765caa320a933997b81ec1218283e0c260e18a4609340314deb,
-            0x80ce058bdccaa08590781edd25c9005041ebaba94b6a8941896d46eb60394931,
-            0x2d5c30492e4b770265db26c3b2d89794cb0435f97f91a351ae818c18236222a7,
-            0xa6dfb02f4e0457f6dc0ca8f4fd82b31c4a0df5261e0214610377f2af855a5ee5,
-            0x435c00c3e0bb551759ef849ef59de7b0a62c300b5c1aa3011d4363b09ddef85a,
-            0x9071048d24ef915056944fc390854c5afc82c7b780af60912f32c98b8a009850,
-            0x902fa8def05f8c67caa8c59344f53ee4ebbc428d5073e5fbf37e23543232cae5,
-            0xf64ae08ca348865e7c42acf81d3a418af899eeafa1c21504ea348c15d212c4b8,
-            0xdedd17782b4935024a9ff293bbd39d406d127447bf3b1d6ed496032fa0cd58e5,
-            0xa17f343c4f400f901a88319ee38011c1770dfd251fb8f2afb0e66b3ac0e3d1a5,
-            0xecd1c378aba52fc330dbbc613de4db55413282426cdedf09fd6ed57a76bc90b5,
-            0xf4f5ae5954831b1d1559d70dc2cabdc751ef64cc34ab0750efbd97479665f06a,
-            0xaf0d5400378db3d13018c5af67f324d41d95126cd3f97f3e3b4ac05ba9afdaeb
+            bytes32(0xe4756cc967765a03ac699a0196af5ec73c15ae2739f43da745666a02a12a2bc0),
+            0x4d19b7530faa2fa3495319b01857830cdc6ca35a5b20c4084d10119118d44afe,
+            0xd1358cd157e8920f4cfe36f79ae73373716b602bf47f574ea08d5281befa59ef,
+            0x52ff97c9251b51e7f509a2b0fc46b23b06051f0336a4c2214c3a1b91f9bd79ad,
+            0xd56125ba33c296e14f68d6694333af40f3cc48fa5a36f9e92163bf6a6a427ce1,
+            0x6e517af5ad1ad5851bf185b4a61f1b629012f215c3641f90755230b1dfdc00db,
+            0x2d4c56cc2e5e6359278ccd26c935f31d15bedaeff39fc3c6a82ab884c5969c32,
+            0x184dca1edd98a90c34df33b3efbfe84d04606a0e83fd64f7c8fbf5b5d1d59a19,
+            0x0544846a1c10d375249e56211500ec3eea84925b04f998de1e3f88362b84c172,
+            0x3ff2245574ffd2dbff36514765e4712bea443ea47427e517cb0336bfb485864b,
+            0x6f5040705d0fea67fa3c2f792d45109a88512fc6966f2168f7c4c2973d0d2471,
+            0xfa726923769d08d9f56554ed7bae9419ebffeebb6eca2743f544002227466012,
+            0xb1fe9535d8cd5cb453076d468874d238efe22d2a230923709c3b5011420a815b,
+            0x10bbcc4389d544c5a6aa241a5a0558461be04c33b27a73035671c2944f498784,
+            0xa0f08189724ae2bfb150fa140a6488830ddc10e8fdd94a55a0815e79eaf49a27,
+            0x250f2a1a88d823a14236a8068855c03dc5dc9076e6b0917b688be3c276b8bdb1,
+            0x22e2eb405e136cd16718e3c00d060333168f5e2545670217d461f5d019b06d87,
+            0x9814a3b8474ed9091981ace9b8cbd4a6520c2d32b1c0dcd03f05164d1a562592,
+            0xbd46d80656ebd65ff40d271a180003a97a8f7200d2b0562e68a0b3455cd447d1,
+            0xdf6054d2856db510df05f205217ce7e44e297a6e8637b87280ec2ea8c9f4c7ee,
+            0xa20cac25b5a8a5560378675c46b953deb71e952d3a217adf06a367755ed9e14c,
+            0xdbba6e361c4e690f76de59e333754674890220c3d931a423324e3db092908f97,
+            0xd14c69282b27a736ce28f3d4c57008f9d3a70bcf058e146df265bab878414f2a,
+            0x80b36647f19b9ab7294c125a56d9634ef5f7f4c0d437e92c65d79c607967900d,
+            0xabe73c5aa5a967f9e6da6c1be32abfce1b66e460b44f649067486102b6538bc3,
+            0xed1d3da064f55047710c1067080e0914ea5f3e1526c4c70cdb7c2dc768a23db9,
+            0x3d757b6a4784611a540ddb25254ed92d49550a4d59419156b8efcecab4b7e8ab,
+            0x21bb45ea32d44dc2e8e963e554010b26131eebc932bbf8789c4f13b84054261e,
+            0x56d9e67e7cd6c7be08d7d04ecc09d9cff4704c1c8469af99237930ab4f868ef4
         ];
         string[FIELD_COUNT] memory names = fieldNames();
         for (uint256 i = 0; i < FIELD_COUNT; i++) {
@@ -53,24 +53,24 @@ contract SealRegistryTest is SealRegistryBase {
 
     function test_selectorsAreTheSpecifiedSignatures() public pure {
         assertEq(SealRegistry.open.selector, bytes4(keccak256(bytes(OPEN_SIGNATURE))));
-        assertEq(SealRegistry.open.selector, bytes4(0x45cf8245), "pinned v2 open selector");
+        assertEq(SealRegistry.open.selector, bytes4(0x724236c0), "pinned B1 open selector");
         assertEq(SealRegistry.finalize.selector, bytes4(keccak256(bytes(FINALIZE_SIGNATURE))));
     }
 
-    function test_openCalldataHasThirtyTwoStaticWords() public pure {
+    /// 23 scalars and the 9-word assignment projection form a 32-word static head, then the offset of
+    /// the dynamic update; an empty update is five words (four fields and a zero array length).
+    function test_openCalldataIsThirtyThreeHeadWordsAndAFiveWordEmptyUpdate() public pure {
         bytes memory projected = openCalldata(firstPayload());
-        assertEq(projected.length, 4 + 32 * 32);
-        assertEq(projected.length - (4 + 22 * 32), 10 * 32, "320-byte assignment witness growth");
+        assertEq(projected.length, 4 + 33 * 32 + 5 * 32);
+        assertEq(uint256(bytes32(slice(projected, 4 + 32 * 32, 32))), 33 * 32, "update offset");
     }
 
-    function test_genesisIsExactlySevenWords() public view {
+    function test_operationalGenesisWordsAreTheSixSpecifiedOnes() public view {
         string[FIELD_COUNT] memory names = fieldNames();
         for (uint256 i = 0; i < FIELD_COUNT; i++) {
             bytes32 got = vm.load(A_SR, slotKey(names[i]));
             bytes32 name = keccak256(bytes(names[i]));
-            if (name == keccak256("layoutVersion")) {
-                assertEq(got, bytes32(uint256(2)));
-            } else if (name == keccak256("genesisCommitment")) {
+            if (name == keccak256("genesisCommitment")) {
                 assertEq(got, GENESIS_COMMITMENT);
             } else if (name == keccak256("config.shardConfHash")) {
                 assertEq(got, FULL_SHARD_CONF_HASH);
@@ -86,6 +86,19 @@ contract SealRegistryTest is SealRegistryBase {
                 assertEq(got, bytes32(0), names[i]);
             }
         }
+    }
+
+    function test_b1FixedGenesisWordsAndNoLayoutVersion() public view {
+        assertEq(b1Word("b1.network"), NETWORK);
+        assertEq(b1Word("b1.wCert"), W_CERT);
+        assertEq(bytes32(b1Word("b1.profileHash")), PROFILE_HASH);
+        assertEq(b1Word("b1.initialized"), 1);
+        assertEq(b1Word("b1.head"), 0);
+        assertEq(b1Word("b1.count"), 1);
+        assertEq(queueAt(0), ROOT_EPOCH);
+        assertEntryStored(genesisEntry(), 8);
+        assertEq(uint256(vm.load(A_SR, keccak256("unicity.seal-registry/layoutVersion"))), 0);
+        assertEq(uint256(vm.load(A_SR, keccak256("unicity.seal-registry.v1/layoutVersion"))), 0);
     }
 
     // ---------------------------------------------------------------- successful transitions
@@ -200,11 +213,11 @@ contract SealRegistryTest is SealRegistryBase {
     function test_O2_uninitializedRegistryRefusesOpen() public {
         OpenArgs memory a = firstPayload();
         premiseOpenSucceeds(a);
-        setWord("layoutVersion", bytes32(0));
+        vm.store(A_SR, fixedSlot("b1.initialized"), bytes32(0));
         assertRefused(A_SYS, openCalldata(a), SealRegistry.NotInitialized.selector);
-        setWord("layoutVersion", bytes32(uint256(3)));
+        vm.store(A_SR, fixedSlot("b1.initialized"), bytes32(uint256(2)));
         assertRefused(A_SYS, openCalldata(a), SealRegistry.NotInitialized.selector);
-        setWord("layoutVersion", bytes32(uint256(2)));
+        vm.store(A_SR, fixedSlot("b1.initialized"), bytes32(uint256(1)));
         setWord("genesisCommitment", bytes32(0));
         assertRefused(A_SYS, openCalldata(a), SealRegistry.NotInitialized.selector);
     }
@@ -299,7 +312,8 @@ contract SealRegistryTest is SealRegistryBase {
         OpenArgs memory a = firstPayload();
         a.n = 2;
         a.rootEpoch = ROOT_EPOCH + 1;
-        a.rootRound = 1;
+        a.rootRound = 6;
+        a.update = advanceUpdate(ROOT_EPOCH, 6, 1, 3);
         a.transitionCount = 1;
         a.bodyID = keccak256("body");
         a.genesisID = keccak256("genesis");
@@ -342,7 +356,8 @@ contract SealRegistryTest is SealRegistryBase {
         a = firstPayload();
         a.n = 3;
         a.rootEpoch = 2;
-        a.rootRound = 2;
+        a.rootRound = 7;
+        a.update = emptyUpdate(2);
         openAsSystem(a);
     }
 
@@ -376,6 +391,7 @@ contract SealRegistryTest is SealRegistryBase {
         next.certEpoch = SHARD_EPOCH + 1;
         next.authEpoch = SHARD_EPOCH + 1;
         next.activeConfHash = successor;
+        next.update = emptyUpdate(ROOT_EPOCH + 1);
         openAsSystem(next);
         assertEq(word("origin.identity"), next.originIdentity);
     }
@@ -409,6 +425,7 @@ contract SealRegistryTest is SealRegistryBase {
         next.certEpoch = SHARD_EPOCH + 2;
         next.authEpoch = SHARD_EPOCH + 2;
         next.activeConfHash = successor;
+        next.update = emptyUpdate(ROOT_EPOCH + 2);
         openAsSystem(next);
     }
 
@@ -638,8 +655,9 @@ contract SealRegistryTest is SealRegistryBase {
         openAsSystem(supersedingAck);
         uint256 supersedingGas = beforeGas - gasleft();
         emit log_named_uint("v2 superseding ACK open gas", supersedingGas);
-        assertLt(rootOnlyGas, 500_000);
-        assertLt(supersedingGas, 600_000);
+        // Each acknowledgement now inserts a 3-member interval (35 fresh words) as well.
+        assertLt(rootOnlyGas, 1_100_000);
+        assertLt(supersedingGas, 1_900_000);
     }
 
     function test_O10_nonCanonicalNullBlockHashIsRefused() public {
@@ -734,12 +752,13 @@ contract SealRegistryTest is SealRegistryBase {
 
     function testFuzz_publicCallerChangesNothingInEitherPhase(
         address caller,
-        OpenArgs memory a,
+        uint256 seed,
         uint64 n,
         bytes32 c
     ) public {
         vm.assume(caller != A_SYS);
         OpenArgs memory valid = firstPayload();
+        OpenArgs memory a = randomArgs(seed);
 
         // Finalized phase: a well-formed open and an arbitrary one.
         assertRefused(caller, openCalldata(valid), SealRegistry.NotSystemCaller.selector);
@@ -752,31 +771,46 @@ contract SealRegistryTest is SealRegistryBase {
         assertRefused(caller, finalizeCalldata(n, c), SealRegistry.NotSystemCaller.selector);
     }
 
-    /// Any open from a_sys either reverts and changes nothing, or succeeds and changes only the §6.2
-    /// fields, leaving immutable genesis words and the acknowledgement cursor unchanged.
-    function testFuzz_systemOpenRevertsCleanlyOrWritesOnlyItsFields(OpenArgs memory a) public {
+    /// Any open from a_sys either reverts and changes nothing (operational or B1 words), or succeeds
+    /// and changes only the §6.2 fields and the ring, leaving immutable genesis words and the
+    /// acknowledgement cursor unchanged.
+    function testFuzz_systemOpenRevertsCleanlyOrWritesOnlyItsFields(uint256 seed) public {
+        OpenArgs memory a = randomArgs(seed);
         bytes32[FIELD_COUNT] memory before = allWords();
+        bytes32 b1Before = b1Digest();
         (bool ok,) = callAs(A_SYS, openCalldata(a));
         if (!ok) {
             assertWordsEqual(before, allWords());
+            assertEq(b1Before, b1Digest(), "refused open changed B1 words");
             return;
         }
         assertGenesisAndCursorsUnchanged(before);
-        assertGt(uintWord("round.authorized"), uint256(before[13]));
-        assertGe(uintWord("clock.rootRound"), uint256(before[7]));
+        assertGt(uintWord("round.authorized"), uint256(before[fieldIndex("round.authorized")]));
+        assertGe(uintWord("clock.rootRound"), uint256(before[fieldIndex("clock.rootRound")]));
         assertEq(uintWord("phase"), 1);
-        assertEq(a.transitionCount, 0);
         assertEq(a.shardConfHash, FULL_SHARD_CONF_HASH);
+        assertEq(b1Word("b1.wCert"), W_CERT);
+        assertEq(b1Word("b1.initialized"), 1);
+        assertGe(b1Word("b1.count"), 1);
+        assertLe(b1Word("b1.count"), kMax());
     }
 
     // ---------------------------------------------------------------- code properties
 
     /// The runtime code contains none of the opcodes #153 §2.2 excludes, and no BALANCE or SELFBALANCE.
-    function test_runtimeCodeExcludesForbiddenOpcodes() public pure {
+    /// The compiler may append a data region (deduplicated 32-byte constants read with CODECOPY), so
+    /// the scan covers exactly the instructions the source map lists and never decodes data as code.
+    function test_runtimeCodeExcludesForbiddenOpcodes() public view {
         bytes memory code = type(SealRegistry).runtimeCode;
         assertGt(code.length, 0);
+        string memory artifact = vm.readFile("out/SealRegistry.sol/SealRegistry.json");
+        bytes memory sourceMap = bytes(vm.parseJsonString(artifact, ".deployedBytecode.sourceMap"));
+        uint256 instructions = 1;
+        for (uint256 k = 0; k < sourceMap.length; k++) {
+            if (sourceMap[k] == ";") instructions++;
+        }
         uint256 i = 0;
-        while (i < code.length) {
+        for (uint256 n = 0; n < instructions; n++) {
             uint8 op = uint8(code[i]);
             assertTrue(op != 0xf4, "DELEGATECALL");
             assertTrue(op != 0xf2, "CALLCODE");
@@ -789,6 +823,10 @@ contract SealRegistryTest is SealRegistryBase {
             assertTrue(op != 0xfa, "STATICCALL");
             i += 1 + (op >= 0x60 && op <= 0x7f ? op - 0x5f : 0);
         }
+        assertLe(i, code.length, "instructions end inside the code");
+        // What follows the instructions is constant data, not executable: it must be only the
+        // CODECOPY-read region (the code never jumps into it, so execution cannot reach it).
+        assertLt(code.length - i, 1024, "data region is small");
     }
 
     /// No Solidity state variables: the compiled storage layout is empty.
@@ -828,6 +866,11 @@ contract SealRegistryTest is SealRegistryBase {
         a.successorTR = keccak256("ack successor TR");
         a.activeConfHash = p.newActiveConfHash;
         a.assignment = p;
+        uint64 delta = p.newRootEpoch - p.oldRootEpoch;
+        // Even refused (invalid) projections carry a well-formed update when the span is small.
+        if (delta >= 1 && delta <= 4) {
+            a.update = advanceUpdate(p.oldRootEpoch, a.rootRound, delta, 3);
+        }
     }
 
     function premiseOpenSucceeds(OpenArgs memory a) internal {
@@ -839,17 +882,35 @@ contract SealRegistryTest is SealRegistryBase {
     }
 
     function assertGenesisAndCursorsUnchanged(bytes32[FIELD_COUNT] memory before) internal view {
-        assertEq(word("layoutVersion"), before[0]);
-        assertEq(word("genesisCommitment"), before[1]);
-        assertEq(word("config.shardConfHash"), before[2]);
-        assertEq(word("assignment.epoch"), before[3]);
-        assertEq(word("assignment.rootEpoch"), before[4]);
-        assertEq(word("assignment.activeConfHash"), before[5]);
-        assertEq(word("assignment.spanCommitment"), before[6]);
-        assertEq(word("transition.cursor"), before[22]);
-        assertEq(word("inbox.consumed"), before[23]);
+        assertEq(word("genesisCommitment"), before[0]);
+        assertEq(word("config.shardConfHash"), before[1]);
+        assertEq(word("assignment.epoch"), before[2]);
+        assertEq(word("assignment.rootEpoch"), before[3]);
+        assertEq(word("assignment.activeConfHash"), before[4]);
+        assertEq(word("assignment.spanCommitment"), before[5]);
+        assertEq(word("transition.cursor"), before[fieldIndex("transition.cursor")]);
+        assertEq(word("inbox.consumed"), before[fieldIndex("inbox.consumed")]);
         assertEq(word("transition.cursor"), bytes32(0));
         assertEq(word("inbox.consumed"), bytes32(0));
+    }
+
+    function fieldIndex(string memory name) internal pure returns (uint256) {
+        string[FIELD_COUNT] memory names = fieldNames();
+        for (uint256 i = 0; i < FIELD_COUNT; i++) {
+            if (keccak256(bytes(names[i])) == keccak256(bytes(name))) return i;
+        }
+        revert("unknown field");
+    }
+
+    function slice(bytes memory data, uint256 from, uint256 len)
+        internal
+        pure
+        returns (bytes memory r)
+    {
+        r = new bytes(len);
+        for (uint256 i = 0; i < len; i++) {
+            r[i] = data[from + i];
+        }
     }
 
     function isUint64Word(uint256 w) internal pure returns (bool) {
