@@ -6,8 +6,9 @@ repository/toolchain and ownership must be recorded before implementation; no co
 package is assumed to exist in BFT Core."*
 
 **Implemented so far:** the fixed-profile SealRegistry, WUCT native wrapper, simplified FeeCollector,
-and immutable timestamp vesting vault (`src/`). Nothing here is deployed, and no genesis, activation,
-issuance or PoS feature follows from merging it.
+immutable timestamp vesting vault, and the P85 custody, identity and evidence modules (`src/`,
+`src/p85/`). Nothing here is deployed, and no genesis, activation, issuance or PoS feature follows
+from merging it.
 
 ## Ownership and process
 
@@ -53,6 +54,7 @@ forge fmt --check
 bash script/seal-registry-artifact.sh && git diff --exit-code artifacts/    # artifact is current
 bash script/t2t3-artifact.sh && git diff --exit-code artifacts/t2t3-test-v1.json
 bash script/vesting-vault-artifact.sh && git diff --exit-code artifacts/vesting-vault-test-v1.json
+bash script/p85-interface-manifest.sh && git diff --exit-code artifacts/p85-pr2-interface.json
 ```
 
 OpenZeppelin Contracts is pinned as a submodule at v5.4.0 (commit recorded in `foundry.lock`). The
@@ -163,3 +165,17 @@ reward payout implementation; the reward pot is retained while T8 is disabled.
 
 These contracts and artifacts are test-profile material only. They do not select production
 allocation amounts, a fee split, or a production treasury authority.
+
+## P85 custody, identity and evidence (PR 2 of 5)
+
+`src/p85/` holds the clean-room native-UCT custody modules of
+[bft-core #85](https://github.com/ristik/bft-core/issues/85): `StakeCustody`, `Evidence`, the
+`admitDelegation` surface of `ElectionPolicy`, an immutable `FixedPolicy` source and the one-shot
+`PosFactory`. Election, governance and rewards are later PRs. Read
+[`docs/p85/INTERFACE.md`](docs/p85/INTERFACE.md) for the authority matrix, the interface frozen for
+PR3, the fixtures that PR1 replaces and the design interpretations to confirm, and
+[`docs/p85/PROVENANCE.md`](docs/p85/PROVENANCE.md) for the clean-room provenance manifest.
+
+The P85 modules compile under a size-first optimizer profile (`optimizer_runs = 1`, restricted to
+`src/p85/**` in `foundry.toml`) so that `StakeCustody` stays under EIP-170; the SealRegistry's pinned
+settings and code hash are unaffected.

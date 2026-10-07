@@ -25,5 +25,9 @@ jobs:
         run: |
           bash script/seal-registry-artifact.sh
           git diff --exit-code artifacts/
+      - name: P85 interface manifest is current
+        run: |
+          bash script/p85-interface-manifest.sh
+          git diff --exit-code artifacts/p85-pr2-interface.json
       - name: forge test
         run: forge test -vvv

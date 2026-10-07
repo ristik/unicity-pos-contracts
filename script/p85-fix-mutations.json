@@ -1,0 +1,74 @@
+[
+  {
+    "id": "ceiling-vMax",
+    "file": "src/p85/StakeCustody.sol",
+    "old": "if (c.limits.vMax > 128) revert InvalidGenesis();",
+    "new": "if (block.chainid == 0 && c.limits.vMax > 128) revert InvalidGenesis();",
+    "tests": "test_review_factoryRejectsVAboveImmutableCeiling",
+    "guard": "immutable vMax upper ceiling"
+  },
+  {
+    "id": "ceiling-lMax",
+    "file": "src/p85/StakeCustody.sol",
+    "old": "if (c.limits.lMax > 8) revert InvalidGenesis();",
+    "new": "if (block.chainid == 0 && c.limits.lMax > 8) revert InvalidGenesis();",
+    "tests": "test_review_factoryRejectsLAboveImmutableCeiling",
+    "guard": "immutable lMax upper ceiling"
+  },
+  {
+    "id": "ceiling-rMax",
+    "file": "src/p85/StakeCustody.sol",
+    "old": "if (c.limits.rMax > 4) revert InvalidGenesis();",
+    "new": "if (block.chainid == 0 && c.limits.rMax > 4) revert InvalidGenesis();",
+    "tests": "test_review_factoryRejectsRAboveImmutableCeiling",
+    "guard": "immutable rMax upper ceiling"
+  },
+  {
+    "id": "ceiling-maxBatch",
+    "file": "src/p85/StakeCustody.sol",
+    "old": "if (c.limits.maxBatch > 32) revert InvalidGenesis();",
+    "new": "if (block.chainid == 0 && c.limits.maxBatch > 32) revert InvalidGenesis();",
+    "tests": "test_review_factoryRejectsBatchAboveImmutableCeiling",
+    "guard": "immutable maxBatch upper ceiling"
+  },
+  {
+    "id": "role-owner-tuple",
+    "file": "src/p85/StakeCustody.sol",
+    "old": "if (newOwner != r.newOwner || newWithdrawal != r.newWithdrawal) revert RoleTupleMismatch();",
+    "new": "if ((block.chainid == 0 && newOwner != r.newOwner) || newWithdrawal != r.newWithdrawal) revert RoleTupleMismatch();",
+    "tests": "test_review_roleConsentAlsoBindsTheNominatedOwner",
+    "guard": "exact nominated owner"
+  },
+  {
+    "id": "role-withdrawal-tuple",
+    "file": "src/p85/StakeCustody.sol",
+    "old": "if (newOwner != r.newOwner || newWithdrawal != r.newWithdrawal) revert RoleTupleMismatch();",
+    "new": "if (newOwner != r.newOwner || (block.chainid == 0 && newWithdrawal != r.newWithdrawal)) revert RoleTupleMismatch();",
+    "tests": "test_review_roleConsentBindsTheProposedTuple",
+    "guard": "exact withdrawal consent tuple"
+  },
+  {
+    "id": "ack-current-key",
+    "file": "src/p85/StakeCustody.sol",
+    "old": "            p.rootKeyHash = e.rootKeyHash;",
+    "new": "            if (e.rootKeyHash == p.stagedRootKeyHash) p.rootKeyHash = e.rootKeyHash;",
+    "tests": "test_review_ackInstallsFrozenKeyDespiteLaterNomination|test_review_handlerRotatesWithLaterStaging",
+    "guard": "Ack installs frozen key independently of staging"
+  },
+  {
+    "id": "ack-preserve-later-key",
+    "file": "src/p85/StakeCustody.sol",
+    "old": "if (e.rootKeyHash == p.stagedRootKeyHash) p.stagedRootKeyHash = bytes32(0);",
+    "new": "p.stagedRootKeyHash = bytes32(0);",
+    "tests": "test_review_ackInstallsFrozenKeyDespiteLaterNomination|test_review_ackWithUnchangedKeyPreservesLaterNomination",
+    "guard": "preserve distinct later staged key"
+  },
+  {
+    "id": "ack-clear-installed-key",
+    "file": "src/p85/StakeCustody.sol",
+    "old": "if (e.rootKeyHash == p.stagedRootKeyHash) p.stagedRootKeyHash = bytes32(0);",
+    "new": "if (block.chainid == 0 && e.rootKeyHash == p.stagedRootKeyHash) p.stagedRootKeyHash = bytes32(0);",
+    "tests": "test_ackActivatesAStagedRootKeyOnlyWithCommittedMembership",
+    "guard": "clear only installed nomination"
+  }
+]
