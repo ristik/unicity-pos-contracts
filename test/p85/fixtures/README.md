@@ -6,3 +6,8 @@ formulas are shared.
 
 UC time: the times in these vectors are quorum-approved wall-clock times of the root seal, bounded by root consensus (monotonic against the
 parent, 30 s voter clock skew: ristik/bft-core#445, merged in ristik/bft-core#447) and imported monotonically on one lineage (bft-core `rootrecords.Clock`).
+
+# root-records-import-vectors.json
+Produced by bft-core `rootrecords` (branch p85/pr1c-import, commit 8dadcae2e42bdd7d024574cbcb0488fd4215f7cb; `ROOTRECORDS_UPDATE=1 go test ./rootrecords`).
+The registry import calls the projection owes, block by block, with each block's canonical companion and `rootRecordsHash`.
+Replayed by `test/RootRecordsImport.t.sol`.
