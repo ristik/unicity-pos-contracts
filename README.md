@@ -9,7 +9,11 @@ package is assumed to exist in BFT Core."*
 [`docs/b1-registry-gas.md`](docs/b1-registry-gas.md)), WUCT native wrapper, simplified FeeCollector,
 immutable timestamp vesting vault, and the P85 custody, identity and evidence modules (`src/`,
 `src/p85/`). Nothing here is deployed, and no genesis, activation, issuance or PoS feature follows
-from merging it.
+from merging it. The native-UCT `BridgeVault` and its composing `TokenVerifier` (`src/bridge/`, B4 #65) are
+written for the native bridge protocol v2 on the SDK 3.0.1 profile (leaf value `H(C(b(txHash),t))`, kernel result stride
+`448+128*m`, InputRecord opening and `t <= IR.timestamp` after B1 authentication). They are tested against explicit test
+doubles for the proposed 0x0104 kernel and for the B1 precompiles' answers (recorded from the A' reference oracle), and are
+not usable until the real native calls exist. Vector provenance: `script/bridge-golden/README.md`.
 
 ## Ownership and process
 
@@ -56,6 +60,7 @@ bash script/seal-registry-artifact.sh && git diff --exit-code artifacts/    # ar
 bash script/t2t3-artifact.sh && git diff --exit-code artifacts/t2t3-test-v1.json
 bash script/vesting-vault-artifact.sh && git diff --exit-code artifacts/vesting-vault-test-v1.json
 bash script/p85-interface-manifest.sh && git diff --exit-code artifacts/p85-pr2-interface.json
+python3 script/bridge-guards.py --jobs 3                                   # disable each bridge guard once
 ```
 
 OpenZeppelin Contracts is pinned as a submodule at v5.4.0 (commit recorded in `foundry.lock`). The
