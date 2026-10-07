@@ -538,6 +538,155 @@ contract RootRecordsImportTest is SealRegistryBase {
         );
     }
 
+    function _closureWith(
+        bytes32 hRecord,
+        uint64 hRound,
+        bytes32 terminalRoot,
+        bytes32 exposureDigest
+    ) internal pure returns (bytes memory) {
+        return abi.encode(
+            keccak256("asg"), hRound, hRecord, terminalRoot, exposureDigest, keccak256("kh")
+        );
+    }
+
+    /// @dev The closure key is (closed epoch, H record, H round): changing only the H round or only the H record is another key, and
+    /// repeating the key with any other field changed is the same key.
+    function test_theClosureKeyDistinguishesTheHRecordAndTheHRoundAlone() public {
+        OpenArgs memory a = opened();
+        bytes32 h = keccak256("h");
+        bytes32 root = keccak256("root");
+        bytes32 ed = keccak256("ed");
+        RootRecord memory c0 =
+            rec(0, bytes32(0), RecordKind.Closure, 5, 1_005, _closureWith(h, 100, root, ed));
+        // only the H round differs
+        RootRecord memory c1 =
+            rec(1, c0.recordID, RecordKind.Closure, 6, 1_006, _closureWith(h, 101, root, ed));
+        // only the H record differs
+        RootRecord memory c2 = rec(
+            2,
+            c1.recordID,
+            RecordKind.Closure,
+            7,
+            1_007,
+            _closureWith(keccak256("h2"), 100, root, ed)
+        );
+        SealRegistry.ImportedRecord[] memory es = new SealRegistry.ImportedRecord[](3);
+        es[0] = SealRegistry.ImportedRecord(c0, 1);
+        es[1] = SealRegistry.ImportedRecord(c1, 1);
+        es[2] = SealRegistry.ImportedRecord(c2, 1);
+        importOk(a.n, 7, 1_007, 3, c2.recordID, es);
+        assertEq(reg.recordCount(), 3);
+        finalizeAsSystem(a.n, keccak256("R1"));
+
+        // the first key again, with another terminal root and another exposure digest, is the same key
+        OpenArgs memory b = nextRound(a);
+        openAsSystem(b);
+        RootRecord memory same = rec(
+            3,
+            c2.recordID,
+            RecordKind.Closure,
+            8,
+            1_008,
+            _closureWith(h, 100, keccak256("another root"), keccak256("another digest"))
+        );
+        assertRefused(
+            A_SYS,
+            importCall(b.n, 8, 1_008, 4, same.recordID, _single(same, 1)),
+            SealRegistry.RecordDuplicateKey.selector
+        );
+        // and the second key (round only) again
+        RootRecord memory sameRound = rec(
+            3, c2.recordID, RecordKind.Closure, 8, 1_008, _closureWith(h, 101, root, keccak256("x"))
+        );
+        assertRefused(
+            A_SYS,
+            importCall(b.n, 8, 1_008, 4, sameRound.recordID, _single(sameRound, 1)),
+            SealRegistry.RecordDuplicateKey.selector
+        );
+    }
+
+    /// @dev With the target ahead of the imported tail the tail rule is silent, so the unchanged-count/unchanged-tip rule is the only
+    /// guard: 70 records, 32 per block, the second block repeats the target count with another tip.
+    function test_anUnchangedTargetCountNeedsAnUnchangedTipWhileTheLogIsStillBehind() public {
+        OpenArgs memory a = opened();
+        SealRegistry.ImportedRecord[] memory all = chain(0, bytes32(0), 70);
+        SealRegistry.ImportedRecord[] memory first = new SealRegistry.ImportedRecord[](32);
+        for (uint256 i = 0; i < 32; i++) {
+            first[i] = all[i];
+        }
+        importOk(a.n, 70, 1_070, 70, tipOf(all), first);
+        finalizeAsSystem(a.n, keccak256("R1"));
+
+        OpenArgs memory b = nextRound(a);
+        openAsSystem(b);
+        SealRegistry.ImportedRecord[] memory second = new SealRegistry.ImportedRecord[](32);
+        for (uint256 i = 0; i < 32; i++) {
+            second[i] = all[32 + i];
+        }
+        // 64 of 70 imported afterwards: the tail rule does not apply, the tip rule does
+        assertRefused(
+            A_SYS,
+            importCall(b.n, 70, 1_070, 70, keccak256("another tip"), second),
+            SealRegistry.RecordTargetInvalid.selector
+        );
+        importOk(b.n, 70, 1_070, 70, tipOf(all), second); // control: the same call with the unchanged tip is accepted
+        assertEq(reg.recordCount(), 64);
+    }
+
+    /// @dev The registry stores every word of an accepted record under R(i, j) (briefs/p85-pr1c-control-records.md section 6).
+    function _assertStoredWords(SealRegistry.ImportedRecord memory e) internal view {
+        RootRecord memory r = e.record;
+        bytes32 entry = keccak256("unicity.seal-registry/records.entry");
+        assertEq(
+            vm.load(A_SR, keccak256(abi.encode(entry, r.index, uint64(0)))),
+            r.recordID,
+            "R(i,0) recordID"
+        );
+        assertEq(
+            vm.load(A_SR, keccak256(abi.encode(entry, r.index, uint64(1)))),
+            r.predecessor,
+            "R(i,1) predecessor"
+        );
+        assertEq(
+            uint256(vm.load(A_SR, keccak256(abi.encode(entry, r.index, uint64(2))))),
+            uint256(uint8(r.kind)),
+            "R(i,2) kind"
+        );
+        assertEq(
+            uint256(vm.load(A_SR, keccak256(abi.encode(entry, r.index, uint64(3))))),
+            r.progress,
+            "R(i,3) progress"
+        );
+        assertEq(
+            uint256(vm.load(A_SR, keccak256(abi.encode(entry, r.index, uint64(4))))),
+            r.ucTime,
+            "R(i,4) ucTime"
+        );
+        assertEq(
+            uint256(vm.load(A_SR, keccak256(abi.encode(entry, r.index, uint64(5))))),
+            r.data.length,
+            "R(i,5) data length"
+        );
+        for (uint256 k; k < r.data.length / 32; k++) {
+            bytes32 w;
+            bytes memory d = r.data;
+            // forge-lint: disable-next-line(unsafe-typecast)
+            assembly ("memory-safe") {
+                w := mload(add(add(d, 0x20), mul(k, 0x20)))
+            }
+            assertEq(
+                vm.load(A_SR, keccak256(abi.encode(entry, r.index, uint64(6 + k)))),
+                w,
+                "R(i,6+k) payload word"
+            );
+        }
+        assertEq(
+            uint256(vm.load(A_SR, keccak256(abi.encode(entry, r.index, uint64(15))))),
+            e.closedEpoch,
+            "R(i,15) closedEpoch"
+        );
+    }
+
     // ---------------------------------------------------------------- views
 
     function test_recordAtOutsideTheCountReverts() public {
@@ -603,6 +752,7 @@ contract RootRecordsImportTest is SealRegistryBase {
                 );
                 finalizeAsSystem(a.n, keccak256(abi.encode("R", sc, b)));
                 for (uint256 i; i < es.length; i++) {
+                    _assertStoredWords(es[i]);
                     RootRecord memory r = reg.recordAt(uint64(expectCount + i));
                     assertEq(r.recordID, es[i].record.recordID);
                     assertEq(r.data, es[i].record.data);

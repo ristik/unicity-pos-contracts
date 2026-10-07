@@ -379,8 +379,12 @@ contract SealRegistry is IRootRecords {
         if (
             (targetCount == _load(SLOT_RECORDS_TARGET_COUNT)
                     && targetTip != bytes32(_load(SLOT_RECORDS_TARGET_TIP)))
+                // a zero target forces count zero and a zero tail, so the tail rule below refuses a non-zero tip too; kept as the
+                // explicit statement of the spec's rule
                 || (targetCount == 0 && targetTip != bytes32(0))
-        ) revert RecordTargetInvalid();
+        ) {
+            revert RecordTargetInvalid();
+        }
 
         bytes32 tip = bytes32(_load(SLOT_RECORDS_TIP));
         uint256 lastProgress = 0;
