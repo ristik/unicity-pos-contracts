@@ -7,7 +7,7 @@ import {RecordKind, RecoveryAckData} from "../../src/p85/P85Types.sol";
 /// @notice Custody's own digests over an assignment's exposures, written as the fixture bft-core derives them from the frozen identity
 /// records (evmassign.AssignmentExposureDigest, KeyHistoryDigestFromHashes, ExposureChainStep). Custody is normative for these words
 /// (briefs/p85-pr1c-control-records.md section 7), so the fixture is generated from its state and bft-core must reproduce it. The test
-/// fails when the committed fixture differs from what custody produces now; run with P85_WRITE_FIXTURES=1 to regenerate.
+/// fails when the committed fixture differs from what custody produces now; run with P85_WRITE_FIXTURES=true to regenerate.
 contract CustodyDigestsTest is P85Flow {
     string internal constant FIXTURE = "/test/p85/fixtures/custody-digests.json";
 
@@ -168,7 +168,7 @@ contract CustodyDigestsTest is P85Flow {
         assertEq(
             vm.readFile(path),
             json,
-            "the committed custody digest fixture is stale; regenerate with P85_WRITE_FIXTURES=1"
+            "the committed custody digest fixture is stale; regenerate with P85_WRITE_FIXTURES=true"
         );
     }
 }
