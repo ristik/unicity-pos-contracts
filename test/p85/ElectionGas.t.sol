@@ -2,6 +2,7 @@
 pragma solidity 0.8.37;
 
 import {P85Flow} from "./P85Flow.sol";
+import {MockRootRecords} from "./MockRootRecords.sol";
 import {ElectionPolicy} from "../../src/p85/ElectionPolicy.sol";
 import {Quantize} from "../../src/p85/Quantize.sol";
 import {StakeCustody} from "../../src/p85/StakeCustody.sol";
@@ -143,6 +144,7 @@ contract ElectionGasTest is P85Flow {
         returns (uint256 used)
     {
         (V, L, C, F) = (v, l, c, scale);
+        roots = new MockRootRecords(); // a scenario starts from a fresh record source (its clock only moves forward)
         _deploy(_defaultPolicy()); // again, now that the profile names the committee size
         _populate();
         _commitFirstC();
