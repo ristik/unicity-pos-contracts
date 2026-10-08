@@ -7,7 +7,7 @@ cd "$(dirname "$0")/.."
 
 forge build >/dev/null
 
-modules=(StakeCustody Evidence ElectionPolicy FixedPolicy PosFactory)
+modules=(StakeCustody Evidence ElectionPolicy FixedPolicy PosFactory SelectionEngine)
 result='{}'
 for name in "${modules[@]}"; do
 	selectors=$(forge inspect "$name" methodIdentifiers --json | jq -S .)

@@ -65,6 +65,7 @@ struct Manifest {
     address custody;
     address election;
     address evidence;
+    address selection; // the stateless SelectionEngine ElectionPolicy calls
     address policySource;
     address roots; // authenticated root-record source (SealRegistry projection, PR1 fixture)
     address treasury;

@@ -6,6 +6,7 @@ import {PosFactory} from "../../src/p85/PosFactory.sol";
 import {StakeCustody} from "../../src/p85/StakeCustody.sol";
 import {ElectionPolicy} from "../../src/p85/ElectionPolicy.sol";
 import {Evidence} from "../../src/p85/Evidence.sol";
+import {SelectionEngine} from "../../src/p85/SelectionEngine.sol";
 import {FixedPolicy} from "../../src/p85/FixedPolicy.sol";
 import {PolicyBounds} from "../../src/p85/PolicyBounds.sol";
 import {
@@ -30,7 +31,7 @@ contract Deployer {
             uint160(
                 uint256(
                     keccak256(
-                        abi.encodePacked(bytes1(0xd6), bytes1(0x94), address(this), nonce + 3)
+                        abi.encodePacked(bytes1(0xd6), bytes1(0x94), address(this), nonce + 4)
                     )
                 )
             )
@@ -38,7 +39,8 @@ contract Deployer {
         m.custody = address(new StakeCustody(f));
         m.election = address(new ElectionPolicy(f));
         m.evidence = address(new Evidence(f));
-        nonce += 4;
+        m.selection = address(new SelectionEngine());
+        nonce += 5; // three modules, the engine, the factory
         return address(new PosFactory{value: msg.value}(m));
     }
 
@@ -355,6 +357,7 @@ contract GenesisTest is P85Base {
             custody: address(0), // the Deployer helper installs fresh modules
             election: address(0),
             evidence: address(0),
+            selection: address(0),
             network: NETWORK,
             roots: address(roots),
             treasury: treasury,
