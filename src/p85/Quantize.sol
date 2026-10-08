@@ -32,10 +32,10 @@ library Quantize {
         uint256 n = x.length;
         if (n == 0) revert EmptyCommittee();
         if (n >= b) revert CommitteeAboveCap();
-        uint256 total;
+        uint256 total = 0;
         for (uint256 i = 0; i < n; ++i) {
             if (x[i] == 0) revert ZeroWeight();
-            total += x[i]; // x[i] < 2^256 and n is small: a wrap is impossible only if each x fits 2^64, which the next line enforces
+            total += x[i];
             if (total > type(uint64).max) revert WeightOverflow();
         }
         q = new uint256[](n);
