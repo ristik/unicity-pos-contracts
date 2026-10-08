@@ -17,31 +17,6 @@ import {
     ElectionParams
 } from "../src/p85/P85Types.sol";
 
-/// @notice Deploys the modules and the factory from its own address and balance (a script contract may not rely on its own). A fresh contract's first
-/// six creations are the three modules, the engine, the reader and the factory, at nonces 1..6.
-contract P85Deployer {
-    function deploy(PosFactory.Config memory c) external returns (PosFactory) {
-        // RLP of [address, nonce 6]: 0xd6 (list of 22 bytes), 0x94 (20-byte string), the address, the nonce byte
-        address f = address(
-            uint160(
-                uint256(
-                    keccak256(
-                        abi.encodePacked(bytes1(0xd6), bytes1(0x94), address(this), bytes1(0x06))
-                    )
-                )
-            )
-        );
-        c.custody = address(new StakeCustody(f));
-        c.election = address(new ElectionPolicy(f));
-        c.evidence = address(new Evidence(f));
-        c.selection = address(new SelectionEngine());
-        c.reader = address(new EligibilityReader(c.custody, c.evidence));
-        PosFactory factory = new PosFactory{value: address(this).balance}(c);
-        require(address(factory) == f, "factory address");
-        return factory;
-    }
-}
-
 /// @notice Produces the proof-of-stake genesis state of the EVM shard: the P85 modules deployed and initialized by the factory in one
 /// constructor, with the genesis identities bonded. `script/p85-genesis.sh` runs it and folds the state dump into a genesis alloc.
 ///
@@ -112,9 +87,20 @@ contract P85Genesis is Script {
         // manifest names. Here it is a stand-in that is not part of the genesis alloc (the lane's registry is allocated by the B1 genesis).
         address roots = vm.envAddress("P85_ROOTS");
         vm.etch(roots, address(new MockRootRecords()).code);
-        P85Deployer deployer = new P85Deployer();
-        vm.deal(address(deployer), total);
-        PosFactory factory = deployer.deploy(c);
+        // The creations run as a fixed deployer account (a script contract may not rely on its own address): the first five are the three
+        // modules, the engine and the reader, the sixth is the factory, so the modules can be constructed with its future address.
+        address deployer = address(uint160(uint256(keccak256("p85-genesis-deployer"))));
+        vm.deal(deployer, total);
+        vm.startPrank(deployer);
+        address f = vm.computeCreateAddress(deployer, vm.getNonce(deployer) + 5);
+        c.custody = address(new StakeCustody(f));
+        c.election = address(new ElectionPolicy(f));
+        c.evidence = address(new Evidence(f));
+        c.selection = address(new SelectionEngine());
+        c.reader = address(new EligibilityReader(c.custody, c.evidence));
+        PosFactory factory = new PosFactory{value: total}(c);
+        vm.stopPrank();
+        require(address(factory) == f, "factory address");
 
         string memory d = "deployment";
         vm.serializeAddress(d, "factory", address(factory));
