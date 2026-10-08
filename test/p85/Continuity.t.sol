@@ -59,6 +59,9 @@ contract ContinuityTest is Test {
         string memory json = vm.readFile(string.concat(vm.projectRoot(), VECTORS));
         VCase[] memory cases = abi.decode(vm.parseJson(json, ".cases"), (VCase[]));
         assertGt(cases.length, 400);
+        assertEq(cases[0].name, "identical committees of ten");
+        assertEq(cases[0].oldCommittee.length, 10);
+        assertEq(cases[0].maxM, 4);
         uint256 invalid;
         for (uint256 c; c < cases.length; ++c) {
             VCase memory k = cases[c];
