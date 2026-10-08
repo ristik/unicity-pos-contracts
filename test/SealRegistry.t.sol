@@ -43,7 +43,14 @@ contract SealRegistryTest is SealRegistryBase {
             0xed1d3da064f55047710c1067080e0914ea5f3e1526c4c70cdb7c2dc768a23db9,
             0x3d757b6a4784611a540ddb25254ed92d49550a4d59419156b8efcecab4b7e8ab,
             0x21bb45ea32d44dc2e8e963e554010b26131eebc932bbf8789c4f13b84054261e,
-            0x56d9e67e7cd6c7be08d7d04ecc09d9cff4704c1c8469af99237930ab4f868ef4
+            0x56d9e67e7cd6c7be08d7d04ecc09d9cff4704c1c8469af99237930ab4f868ef4,
+            0x4875296f53228961ca8d88976a848994394d0830e63ca03d248152b4f6900490,
+            0x20742a05ea9172ccae1cb52d761b1be6a5ec108fd7aef41e7c41118b2365eeb7,
+            0x51d99d84e1b34a26a6a37cb8491d5153dcb826b4ce67cbc64ceec105bab1f10a,
+            0x82d76f7ca834315ad1e396b97a1ae7d22ee90059c73924d436b87050e309c6b7,
+            0xeeedfa05f280e42d25db82cb4c09e39001efa94c9fa7251bde8fe0d2b54b101a,
+            0x05bca8c242baf843b08f502625a7eb5e8f31556f2566ec5e2b3be7ffd0c4ca6b,
+            0xd32e71858a1464989467b55f75261fd547930310ce9070255dd4efb53f5865d8
         ];
         string[FIELD_COUNT] memory names = fieldNames();
         for (uint256 i = 0; i < FIELD_COUNT; i++) {
@@ -65,7 +72,7 @@ contract SealRegistryTest is SealRegistryBase {
         assertEq(uint256(bytes32(slice(projected, 4 + 32 * 32, 32))), 33 * 32, "update offset");
     }
 
-    function test_operationalGenesisWordsAreTheSixSpecifiedOnes() public view {
+    function test_operationalGenesisWordsAreTheSevenSpecifiedOnes() public view {
         string[FIELD_COUNT] memory names = fieldNames();
         for (uint256 i = 0; i < FIELD_COUNT; i++) {
             bytes32 got = vm.load(A_SR, slotKey(names[i]));
@@ -80,6 +87,8 @@ contract SealRegistryTest is SealRegistryBase {
                 assertEq(got, bytes32(uint256(ROOT_EPOCH)));
             } else if (name == keccak256("assignment.activeConfHash")) {
                 assertEq(got, FULL_SHARD_CONF_HASH);
+            } else if (name == keccak256("records.ucTime")) {
+                assertEq(got, bytes32(uint256(GENESIS_UC_TIME)));
             } else if (name == keccak256("phase")) {
                 assertEq(got, bytes32(uint256(2)));
             } else {

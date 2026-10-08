@@ -79,12 +79,13 @@ contract SealRegistryArtifactTest is SealRegistryBase {
 
     function test_artifactNamesTheGenesisWordsAndCaller() public view {
         string memory json = vm.readFile(ARTIFACT);
-        string[14] memory genesis = [
+        string[15] memory genesis = [
             "genesisCommitment",
             "config.shardConfHash",
             "assignment.epoch",
             "assignment.rootEpoch",
             "assignment.activeConfHash",
+            "records.ucTime",
             "phase",
             "b1.network",
             "b1.wCert",

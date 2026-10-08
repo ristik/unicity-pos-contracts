@@ -49,10 +49,10 @@ contract SealRegistryB1GenesisTest is SealRegistryBase {
 
     function test_thereAreExactlyTheNonZeroGenesisWords() public view {
         B1Word[] memory ws = _build(genesisParams());
-        // 5 operational (genesisCommitment, config, rootEpoch, activeConf, phase; shard epoch 0 is
+        // 6 operational (genesisCommitment, config, rootEpoch, activeConf, records.ucTime, phase; shard epoch 0 is
         // absent) + 6 profile/queue (network, wCert, profileHash, initialized, count, queue[0] = 1)
         // + 8 entry metadata (activationCommitID, end, hasEnd are zero) + the non-zero member words.
-        assertEq(ws.length, 5 + 6 + 8 + nonZeroMemberWords(genesisEntry().members));
+        assertEq(ws.length, 6 + 6 + 8 + nonZeroMemberWords(genesisEntry().members));
         for (uint256 i = 0; i < ws.length; i++) {
             assertTrue(ws[i].value != bytes32(0), "zero words are omitted");
             for (uint256 j = 0; j < i; j++) {
@@ -81,7 +81,7 @@ contract SealRegistryB1GenesisTest is SealRegistryBase {
     }
 
     bytes32 internal constant GENESIS_STORAGE_DIGEST =
-        0x03750016f14719822fa46425d9c8c4d921203051f808c346371dd5b93d0131b5;
+        0x7f69338f0f9ebc1140fb3c43c3f21ea570c8c61f8abe3038f53a3ee5033cb065;
 
     function test_theInstalledGenesisRoundTripsThroughTheIndependentReaders() public view {
         assertEntryStored(genesisEntry(), 8);
@@ -98,7 +98,7 @@ contract SealRegistryB1GenesisTest is SealRegistryBase {
         for (uint256 j = 0; j < 64; j++) {
             p.entry.members[j] = member(0xA0, uint8(j));
         }
-        assertEq(_build(p).length, 5 + 6 + 8 + nonZeroMemberWords(p.entry.members));
+        assertEq(_build(p).length, 6 + 6 + 8 + nonZeroMemberWords(p.entry.members));
         // and it installs, and the registry's own storage view agrees
         B1Word[] memory ws = _build(p);
         for (uint256 i = 0; i < ws.length; i++) {
