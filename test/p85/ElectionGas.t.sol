@@ -3,8 +3,10 @@ pragma solidity 0.8.37;
 
 import {P85Flow} from "./P85Flow.sol";
 import {ElectionPolicy} from "../../src/p85/ElectionPolicy.sol";
+import {StakeCustody} from "../../src/p85/StakeCustody.sol";
 import {
     ElectionParams,
+    Limits,
     Delegation,
     DelegationRequest,
     ReserveInput,
@@ -21,11 +23,19 @@ contract ElectionGasTest is P85Flow {
     uint256 internal L;
     uint256 internal C;
 
+    /// @dev The deployment is capped at exactly the measured profile (limits.vMax = V, limits.lMax = L, election nMax = C): the figure
+    /// is the worst case of a chain deployed with those caps and of no other. Before a scenario is chosen, the profile ceilings.
+    function _manifestLimits() internal view override returns (Limits memory) {
+        return Limits({
+            vMax: uint32(V == 0 ? 128 : V), lMax: uint32(L == 0 ? 8 : L), rMax: 4, maxBatch: 32
+        });
+    }
+
     function _electionParams() internal view override returns (ElectionParams memory) {
         return ElectionParams({
             nMin: 4,
             nTarget: uint32(C == 0 ? 32 : C),
-            nMax: 32,
+            nMax: uint32(C == 0 ? 32 : C),
             maxM: 4,
             distNum: 1,
             distDen: 4,
@@ -169,5 +179,29 @@ contract ElectionGasTest is P85Flow {
 
     function test_measureV16L2C8() public {
         _measureElection(16, 2, 8, 5_100_000);
+    }
+
+    /// @dev The measured worst case is the worst case only because the deployment cannot exceed it: at the devnet/testnet profile caps
+    /// (V16, L2, C8) a seventeenth live identity and a third lot are refused, and the committee is bounded by nMax.
+    function test_theDeployedCapsAreTheMeasuredProfile() public {
+        (V, L, C) = (16, 2, 8);
+        _deploy(_defaultPolicy());
+        assertEq(election.vMax(), 16);
+        _populate();
+        assertEq(election.liveCount(), 16, "the index is full at V");
+
+        uint64 extra = register(ownerPk(16), rootPk(16), vm.addr(wdPk(16)));
+        // joining the live index is what the cap bounds: the seventeenth identity cannot become a candidate
+        vm.expectRevert(ElectionPolicy.IndexFull.selector);
+        this.bondExtra(extra);
+
+        uint64 id = gid(0); // a genesis identity holds one lot
+        bondFor(id, 100 * UCT); // the second of L = 2
+        vm.expectRevert(StakeCustody.LotCapacity.selector);
+        this.bondExtra(id);
+    }
+
+    function bondExtra(uint64 id) external {
+        bondFor(id, 100 * UCT);
     }
 }

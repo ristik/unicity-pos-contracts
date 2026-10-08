@@ -77,6 +77,11 @@ abstract contract P85Base is Test {
     /// @dev B_min of manual deployments (the factory's deployments use the unit).
     uint128 internal manualMinBond = uint128(100 * UCT);
 
+    /// @dev The manifest's resource ceilings; a test whose result depends on them overrides it.
+    function _manifestLimits() internal view virtual returns (Limits memory) {
+        return Limits({vMax: 128, lMax: 8, rMax: 4, maxBatch: 32});
+    }
+
     function _electionParams() internal view virtual returns (ElectionParams memory) {
         return ElectionParams({
             nMin: 4,
@@ -121,7 +126,7 @@ abstract contract P85Base is Test {
             treasury: treasury,
             bondUnit: uint128(100 * UCT),
             minBond: uint128(100 * UCT),
-            limits: Limits({vMax: 128, lMax: 8, rMax: 4, maxBatch: 32}),
+            limits: _manifestLimits(),
             genesis: GenesisAssignment({
                 assignmentID: GENESIS_ASSIGNMENT,
                 lineage: LINEAGE,
