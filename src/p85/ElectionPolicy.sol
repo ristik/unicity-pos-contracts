@@ -41,6 +41,11 @@ contract ElectionPolicy {
     bytes32 internal constant RESULT_DOMAIN = keccak256("unicity.p85.election-result");
     bytes32 internal constant ASSIGNMENT_DOMAIN = keccak256("unicity.p85.primary-assignment");
     bytes32 internal constant SNAPSHOT_DOMAIN = keccak256("unicity.p85.election-snapshot");
+    bytes32 internal constant POP_DOMAIN = keccak256("unicity.p85.assignment-pop");
+    bytes32 internal constant POPSET_DOMAIN = keccak256("unicity.p85.pop-set");
+    bytes32 internal constant PRIMARY_DOMAIN = keccak256("unicity.p85.primary-commitment");
+    bytes32 internal constant K_DOMAIN = keccak256("unicity.p85.recovery-authorization");
+    bytes32 internal constant CONTRACTS_DOMAIN = keccak256("unicity.p85.contracts");
     /// @dev The EIP-4788 system address the mandatory hook calls from.
     address internal constant SYSTEM_CALLER = 0xffffFFFfFFffffffffffffffFfFFFfffFFFfFFfE;
 
@@ -64,6 +69,16 @@ contract ElectionPolicy {
     error NotSelf();
     error InvalidParams();
     error CustodyRead();
+    error NotReserved();
+    error AlreadyPublished();
+    error BatchSize();
+    error NotMember(uint64 id);
+    error WrongEvmKey(uint64 id);
+    error BadPossession(uint64 id);
+    error PoPConflict(uint64 id);
+    error MissingProofs();
+    error SessionNotOpen();
+    error NotCovered(uint64 id);
     error ReferenceCapacity();
 
     event Initialized(bytes32 manifestHash);
@@ -80,6 +95,8 @@ contract ElectionPolicy {
     );
     event NoCandidate(bytes32 indexed resultID, uint64 attempt, Reason reason, bytes32 origin);
     event ResultResolved(bytes32 indexed resultID, uint8 outcome);
+    event PoPAccepted(bytes32 indexed resultID, uint64 indexed id, bytes32 signatureHash);
+    event CandidatePublished(bytes32 indexed resultID, bytes32 primaryHash);
 
     /// @dev Why an election produced no candidate. 1-4 are Selection.Reason; the others are the election's own.
     enum Reason {
@@ -117,6 +134,44 @@ contract ElectionPolicy {
         uint64 generation;
         uint64 weight;
         bytes32 bindingHash;
+    }
+
+    /// @dev The fixed proof slots of one result (design v5 section 5): everything Prepare proves at the last certified EVM state. The
+    /// first ten words are one hash each; `published` and `popCount` share the last. The K fields are written when the result is
+    /// reserved and never change; `primaryHash`, `popSetDigest` and `published` are written by `finalizeCandidate`.
+    struct Publication {
+        bytes32 primaryHash;
+        bytes32 kCommit; // the mandatory recovery-authorization commitment
+        bytes32 incumbent; // K: the last acknowledged assignment this result replaces
+        bytes32 incumbentExposureDigest; // K's custody exposure digest
+        bytes32 incumbentKeyDigest; // K's custody key-history digest
+        bytes32 policyDigest; // the policy terms captured by K's assignment
+        bytes32 contractsDigest; // the module addresses and code hashes
+        bytes32 snapshotDigest;
+        bytes32 assignmentID;
+        bytes32 popSetDigest;
+        bool published; // the last word packs, from the low-order byte: published (1), popCount (4), attempt (8)
+        uint32 popCount;
+        uint64 attempt; // the election attempt that produced the result (the root's own attempt number is another count)
+    }
+
+    /// @dev One member's possession proof: its EVM key and a signature by it over `popDigest`.
+    struct PoPInput {
+        uint64 id;
+        bytes evmKey;
+        bytes signature;
+    }
+
+    /// @dev The read-only view of the recovery authorization of one result (K is exactly the incumbent committee).
+    struct RecoveryAuthorization {
+        bytes32 resultID;
+        bytes32 snapshotDigest;
+        bytes32 incumbent;
+        bytes32 incumbentExposureDigest;
+        bytes32 incumbentKeyDigest;
+        bytes32 policyDigest;
+        bytes32 contractsDigest;
+        bytes32 kCommit;
     }
 
     struct Result {
@@ -164,6 +219,9 @@ contract ElectionPolicy {
 
     mapping(bytes32 => Result) internal _results;
     mapping(bytes32 => Frozen[]) internal _frozen;
+    uint32 public maxBatch;
+    mapping(bytes32 => Publication) internal _publications;
+    mapping(bytes32 => mapping(uint64 => bytes32)) internal _popHashes;
 
     mapping(uint64 => mapping(uint64 => Staged)) internal _staged;
     uint64[] internal _index;
@@ -192,6 +250,7 @@ contract ElectionPolicy {
         roots = IRootRecords(m.roots);
         vMax = m.limits.vMax;
         evidence = IEvidence(m.evidence);
+        maxBatch = m.limits.maxBatch;
         if (m.selection.code.length == 0) revert InvalidParams();
         selection = SelectionEngine(m.selection);
         policySource = IPolicySource(m.policySource);
@@ -488,10 +547,10 @@ contract ElectionPolicy {
             members: new ReserveMember[](chosen.length)
         });
         {
-            (, bytes32 lineage, uint64 rootEpoch, uint64 evmEpoch) = _assignmentHead(predecessor);
-            in_.lineage = lineage;
-            in_.rootEpoch = rootEpoch + 1;
-            in_.evmEpoch = evmEpoch + 1;
+            AssignmentView memory inc = _assignment(predecessor);
+            in_.lineage = inc.lineage;
+            in_.rootEpoch = inc.rootEpoch + 1;
+            in_.evmEpoch = inc.evmEpoch + 1;
         }
         uint256 k = 0;
         for (uint256 i = 0; i < chosen.length; ++i) {
@@ -525,6 +584,7 @@ contract ElectionPolicy {
             while (c[k].id != chosen[i].id) ++k;
             f.push(Frozen(c[k].id, c[k].generation, c[k].weight, c[k].bindingHash));
         }
+        _openPublication(resultID, in_.assignmentID, predecessor, digest);
         attemptCursor = attempt;
         attemptProgress = p;
         attemptTime = t;
@@ -571,15 +631,31 @@ contract ElectionPolicy {
         );
     }
 
-    function _assignmentHead(bytes32 assignmentID)
-        private
-        view
-        returns (uint8 state, bytes32 lineage, uint64 rootEpoch, uint64 evmEpoch)
-    {
+    /// @dev custody's assignment record, all static fields.
+    struct AssignmentView {
+        uint8 state;
+        bytes32 lineage;
+        uint64 rootEpoch;
+        uint64 evmEpoch;
+        uint64 offset;
+        uint64 firstRound;
+        bool offsetSet;
+        bool hKnown;
+        uint64 hRound;
+        bool closed;
+        uint64 pClose;
+        uint64 tClose;
+        bytes32 closureKey;
+        bytes32 exposureDigest;
+        bytes32 keyDigest;
+        uint32 policyID;
+    }
+
+    function _assignment(bytes32 assignmentID) private view returns (AssignmentView memory) {
         (bool ok, bytes memory ret) =
             address(custody).staticcall(abi.encodeCall(IStakeCustody.assignments, (assignmentID)));
         if (!ok) revert CustodyRead();
-        return abi.decode(ret, (uint8, bytes32, uint64, uint64)); // the head of the longer return tuple
+        return abi.decode(ret, (AssignmentView));
     }
 
     /// @dev The last committed committee O with its committed weights, from custody's exposures of the last acknowledged assignment
@@ -680,6 +756,23 @@ contract ElectionPolicy {
         return (eligible, c);
     }
 
+    /// @dev Only the first six words of the lot getter are read: (id, generation, initial, remaining, penalized, category).
+    function _lotWords(uint256 lotID) private view returns (uint256 remaining, uint256 category) {
+        address c = address(custody);
+        bytes4 selector = IStakeCustody.lots.selector;
+        bool ok;
+        assembly ("memory-safe") {
+            let ptr := mload(0x40)
+            mstore(ptr, selector)
+            mstore(add(ptr, 4), lotID)
+            ok := staticcall(gas(), c, ptr, 0x24, ptr, 0xc0)
+            ok := and(ok, iszero(lt(returndatasize(), 0xc0)))
+            remaining := and(mload(add(ptr, 0x60)), 0xffffffffffffffffffffffffffffffff)
+            category := and(mload(add(ptr, 0xa0)), 0xff)
+        }
+        if (!ok) revert CustodyRead();
+    }
+
     /// @dev Every unreleased lot of the open generation, ascending, and their remaining principal.
     function _openLots(uint64 id, uint64 generation)
         private
@@ -689,24 +782,8 @@ contract ElectionPolicy {
         uint256[] memory all = custody.generationLots(id, generation);
         uint256[] memory keep = new uint256[](all.length);
         uint256 count = 0;
-        address c = address(custody);
         for (uint256 i = 0; i < all.length; ++i) {
-            // Only the first six words of the lot getter are read: (id, generation, initial, remaining, penalized, category).
-            uint256 remaining;
-            uint256 category;
-            bool ok;
-            bytes4 selector = IStakeCustody.lots.selector;
-            uint256 lotID = all[i];
-            assembly ("memory-safe") {
-                let ptr := mload(0x40)
-                mstore(ptr, selector)
-                mstore(add(ptr, 4), lotID)
-                ok := staticcall(gas(), c, ptr, 0x24, ptr, 0xc0)
-                ok := and(ok, iszero(lt(returndatasize(), 0xc0)))
-                remaining := and(mload(add(ptr, 0x60)), 0xffffffffffffffffffffffffffffffff)
-                category := and(mload(add(ptr, 0xa0)), 0xff)
-            }
-            if (!ok) revert CustodyRead();
+            (uint256 remaining, uint256 category) = _lotWords(all[i]);
             if (category == 4) continue; // released
             keep[count++] = all[i];
             principal += remaining;
@@ -750,6 +827,238 @@ contract ElectionPolicy {
                 )
             );
         }
+    }
+
+    // --- primary assembly and K (slice 4) --------------------------------------------------------
+
+    /// @dev Written when the result is reserved: K is exactly the incumbent committee, so its commitment is custody's own digests of
+    /// the last acknowledged assignment plus the policy terms it captured and the deployed modules, all bound to the result.
+    function _openPublication(
+        bytes32 resultID,
+        bytes32 assignmentID,
+        bytes32 incumbent,
+        bytes32 snapshotDigest
+    ) private {
+        Publication storage pub = _publications[resultID];
+        AssignmentView memory inc = _assignment(incumbent);
+        pub.incumbent = incumbent;
+        pub.incumbentExposureDigest = inc.exposureDigest;
+        pub.incumbentKeyDigest = inc.keyDigest;
+        pub.policyDigest = keccak256(abi.encode(custody.policyTerms(incumbent)));
+        pub.contractsDigest = _contractsDigest();
+        pub.snapshotDigest = snapshotDigest;
+        pub.assignmentID = assignmentID;
+        pub.attempt = _results[resultID].attempt;
+        pub.kCommit = keccak256(
+            abi.encode(
+                K_DOMAIN,
+                network,
+                block.chainid,
+                resultID,
+                snapshotDigest,
+                incumbent,
+                inc.exposureDigest,
+                inc.keyDigest,
+                pub.policyDigest,
+                pub.contractsDigest
+            )
+        );
+    }
+
+    /// @dev The module addresses with their code hashes: a recovery authorization names the exact deployment it was made under.
+    function _contractsDigest() private view returns (bytes32) {
+        return keccak256(
+            abi.encode(
+                CONTRACTS_DOMAIN,
+                block.chainid,
+                address(custody),
+                address(custody).codehash,
+                address(this),
+                address(this).codehash,
+                address(evidence),
+                address(evidence).codehash,
+                address(selection),
+                address(selection).codehash,
+                address(policySource),
+                address(policySource).codehash,
+                address(roots)
+            )
+        );
+    }
+
+    /// @notice The digest a member's EVM key signs to prove possession for one frozen result: it names the network, chain, this
+    /// module, the result, its assignment and snapshot, the attempt and the member's identity, generation and EVM key. Registration and
+    /// delegation signatures cover other domains and cannot substitute.
+    function popDigest(bytes32 resultID, uint64 id, bytes32 evmKeyHash)
+        public
+        view
+        returns (bytes32)
+    {
+        Result storage r = _results[resultID];
+        Frozen[] storage f = _frozen[resultID];
+        uint64 generation = 0;
+        for (uint256 i = 0; i < f.length; ++i) {
+            if (f[i].id == id) generation = f[i].generation;
+        }
+        return keccak256(
+            abi.encode(
+                POP_DOMAIN,
+                network,
+                block.chainid,
+                address(this),
+                resultID,
+                r.assignmentID,
+                r.snapshotDigest,
+                r.attempt,
+                id,
+                generation,
+                evmKeyHash
+            )
+        );
+    }
+
+    /// @notice Store the possession proofs of frozen members of a reserved result. Anyone may relay; a proof is valid only as a
+    /// signature by the member's frozen EVM key over `popDigest`. An exact repeat is a no-op, a different proof for a stored slot is
+    /// refused, and nothing is accepted once the result is published or no longer reserved.
+    function submitAssignmentPoPs(bytes32 resultID, PoPInput[] calldata pops)
+        external
+        whenInitialized
+    {
+        Result storage r = _results[resultID];
+        Publication storage pub = _publications[resultID];
+        if (r.state != ResultState.Reserved) revert NotReserved();
+        if (pub.published) revert AlreadyPublished();
+        if (pops.length == 0 || pops.length > maxBatch) revert BatchSize();
+        Frozen[] storage f = _frozen[resultID];
+        bytes32[] memory eids = custody.assignmentExposures(r.assignmentID);
+        for (uint256 n = 0; n < pops.length; ++n) {
+            PoPInput calldata pop = pops[n];
+            uint256 pos = f.length;
+            for (uint256 i = 0; i < f.length; ++i) {
+                if (f[i].id == pop.id) pos = i;
+            }
+            if (pos == f.length) revert NotMember(pop.id);
+            bytes32 evmKeyHash = keccak256(pop.evmKey);
+            if (_exposure(eids[pos]).evmKeyHash != evmKeyHash) revert WrongEvmKey(pop.id);
+            if (!KeyLib.verify(pop.evmKey, popDigest(resultID, pop.id, evmKeyHash), pop.signature))
+            {
+                revert BadPossession(pop.id);
+            }
+            bytes32 h = keccak256(pop.signature);
+            bytes32 stored = _popHashes[resultID][pop.id];
+            if (stored == h) continue;
+            if (stored != bytes32(0)) revert PoPConflict(pop.id);
+            _popHashes[resultID][pop.id] = h;
+            ++pub.popCount;
+            emit PoPAccepted(resultID, pop.id, h);
+        }
+    }
+
+    /// @notice Publish a reserved result: every member has a stored proof, the session and the assignment are still open, and every
+    /// member is still eligible and fully covered by the unreleased lots of its exposure. A result that cannot be published stays
+    /// reserved until the root orders its rejection. Publishing derives the primary commitment and writes the fixed proof slots.
+    function finalizeCandidate(bytes32 resultID) external whenInitialized {
+        Result storage r = _results[resultID];
+        Publication storage pub = _publications[resultID];
+        if (r.state != ResultState.Reserved) revert NotReserved();
+        if (pub.published) revert AlreadyPublished();
+        Frozen[] storage f = _frozen[resultID];
+        if (pub.popCount != f.length) revert MissingProofs();
+        AssignmentView memory a = _assignment(r.assignmentID);
+        if (a.state != 1 || _sessionState(resultID) != 1) revert SessionNotOpen();
+        bytes32[] memory eids = custody.assignmentExposures(r.assignmentID);
+        bytes32 popSet = POPSET_DOMAIN;
+        uint128 unit = custody.bondUnit();
+        for (uint256 i = 0; i < f.length; ++i) {
+            if (!_covered(f[i], eids[i], unit)) revert NotCovered(f[i].id);
+            popSet = keccak256(abi.encode(popSet, f[i].id, _popHashes[resultID][f[i].id]));
+        }
+        pub.popSetDigest = popSet;
+        pub.primaryHash = keccak256(
+            abi.encode(
+                PRIMARY_DOMAIN,
+                network,
+                block.chainid,
+                address(custody),
+                address(this),
+                resultID,
+                r.assignmentID,
+                r.predecessor,
+                pub.attempt,
+                r.snapshotDigest,
+                a.exposureDigest,
+                a.keyDigest,
+                popSet
+            )
+        );
+        pub.published = true;
+        emit CandidatePublished(resultID, pub.primaryHash);
+    }
+
+    /// @dev The member is still a valid primary: same open generation, no retirement request, not excluded, and the unreleased lots
+    /// of its exposure still carry its committed weight.
+    function _covered(Frozen storage m, bytes32 exposureID, uint128 unit)
+        private
+        view
+        returns (bool)
+    {
+        (bool ok, bytes memory ret) =
+            address(custody).staticcall(abi.encodeCall(IStakeCustody.positions, (m.id)));
+        if (!ok) revert CustodyRead();
+        Position memory pos = abi.decode(ret, (Position));
+        if (
+            pos.owner == address(0) || pos.retirementRequested || pos.generation != m.generation
+                || evidence.excluded(m.id)
+        ) return false;
+        uint256[] memory lots = custody.exposureLots(exposureID);
+        uint256 backing = 0;
+        for (uint256 j = 0; j < lots.length; ++j) {
+            (uint256 remaining, uint256 category) = _lotWords(lots[j]);
+            if (category == 4) return false;
+            backing += remaining;
+        }
+        return backing >= uint256(m.weight) * unit;
+    }
+
+    function _exposure(bytes32 exposureID) private view returns (ExposureHead memory) {
+        (bool ok, bytes memory ret) =
+            address(custody).staticcall(abi.encodeCall(IStakeCustody.exposures, (exposureID)));
+        if (!ok) revert CustodyRead();
+        return abi.decode(ret, (ExposureHead));
+    }
+
+    function _sessionState(bytes32 resultID) private view returns (uint8 state) {
+        (bool ok, bytes memory ret) =
+            address(custody).staticcall(abi.encodeWithSignature("session(bytes32)", resultID));
+        if (!ok) revert CustodyRead();
+        (state,,,,) = abi.decode(ret, (uint8, bytes32, bytes32, uint64, bytes32));
+    }
+
+    function publication(bytes32 resultID) external view returns (Publication memory) {
+        return _publications[resultID];
+    }
+
+    function popHash(bytes32 resultID, uint64 id) external view returns (bytes32) {
+        return _popHashes[resultID][id];
+    }
+
+    /// @notice The recovery authorization of a result: K, its custody commitments, the captured policies and the deployment.
+    function recoveryAuthorization(bytes32 resultID)
+        external
+        view
+        returns (RecoveryAuthorization memory a)
+    {
+        Publication storage p = _publications[resultID];
+        return RecoveryAuthorization(
+            resultID,
+            p.snapshotDigest,
+            p.incumbent,
+            p.incumbentExposureDigest,
+            p.incumbentKeyDigest,
+            p.policyDigest,
+            p.contractsDigest,
+            p.kCommit
+        );
     }
 
     function result(bytes32 resultID) external view returns (Result memory) {

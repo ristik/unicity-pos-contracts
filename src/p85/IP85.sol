@@ -52,7 +52,6 @@ interface IStakeCustody {
             bool referencesReleased,
             uint32 sessionLocks
         );
-    function exposureLots(bytes32 exposureID) external view returns (uint256[] memory);
     function assignments(bytes32 assignmentID)
         external
         view
@@ -99,6 +98,7 @@ interface IStakeCustody {
         view
         returns (bool imported, uint64 pRet, uint64 tRet);
     function generationLots(uint64 id, uint64 generation) external view returns (uint256[] memory);
+    function exposureLots(bytes32 exposureID) external view returns (uint256[] memory);
     function keyOwner(bytes32 keyHash) external view returns (uint64 id, uint8 role);
     function lastAckedAssignment() external view returns (bytes32);
     function recordCursor() external view returns (uint64);

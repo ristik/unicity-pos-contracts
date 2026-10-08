@@ -122,18 +122,18 @@ contract ElectionGasTest is P85Flow {
     }
 
     function test_measureV128L8C32() public {
-        _measureElection(128, 8, 32, 47_000_000);
+        _measureElection(128, 8, 32, 47_500_000);
     }
 
     function test_measureV64L8C16() public {
-        _measureElection(64, 8, 16, 22_000_000);
+        _measureElection(64, 8, 16, 22_500_000);
     }
 
     function test_measureV32L4C10() public {
-        _measureElection(32, 4, 10, 8_700_000);
+        _measureElection(32, 4, 10, 8_900_000);
     }
 
     function test_measureV16L2C8() public {
-        _measureElection(16, 2, 8, 4_900_000);
+        _measureElection(16, 2, 8, 5_100_000);
     }
 }
