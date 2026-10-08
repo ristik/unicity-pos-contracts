@@ -4,7 +4,7 @@ pragma solidity 0.8.37;
 import {Continuity} from "./Continuity.sol";
 
 // Loops are bounded by the immutable V ceiling (at most 128 eligible identities) and the committee ceiling (at most 32 members).
-// forge-lint: disable-start(unsafe-typecast)
+// forge-lint: disable-start(unsafe-typecast, calls-loop)
 
 /// @title Selection
 /// @notice The ranking and the deterministic bounded greedy election of design v5 section 5, over a frozen snapshot. It is a pure
@@ -70,7 +70,7 @@ library Selection {
 
         // the seed
         bool[] memory inS = new bool[](n);
-        uint256 count;
+        uint256 count = 0;
         for (uint256 r = 0; r < n && count < cfg.nTarget; ++r) {
             if (incumbent[rank[r]]) {
                 inS[rank[r]] = true;
@@ -133,7 +133,7 @@ library Selection {
         returns (bool[] memory incumbent)
     {
         incumbent = new bool[](e.length);
-        uint256 i;
+        uint256 i = 0;
         for (uint256 j = 0; j < e.length; ++j) {
             while (i < o.length && o[i].id < e[j].id) ++i;
             if (i < o.length && o[i].id == e[j].id) incumbent[j] = true;
@@ -146,7 +146,7 @@ library Selection {
         returns (Continuity.Member[] memory out)
     {
         out = new Continuity.Member[](count);
-        uint256 k;
+        uint256 k = 0;
         for (uint256 i = 0; i < e.length; ++i) {
             if (inS[i]) out[k++] = Continuity.Member(e[i].id, e[i].binding, e[i].weight);
         }
