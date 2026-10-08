@@ -130,6 +130,8 @@ interface IEvidence {
 
 interface IElectionPolicy {
     function syncLiveIndex(uint64 id) external;
+    /// @notice Evidence-only: an identity was excluded or had a penalty settled; the open result re-checks that member's coverage.
+    function coverageChanged(uint64 id) external;
     /// @notice Custody-only: a reserved result reached its end (acknowledged, recovered or closed) at the record's anchors.
     function resultResolved(bytes32 resultID, uint8 outcome, uint64 progress, uint64 ucTime)
         external;

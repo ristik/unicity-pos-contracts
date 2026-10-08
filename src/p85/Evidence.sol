@@ -6,7 +6,7 @@ pragma solidity 0.8.37;
 // forge-lint: disable-start(require-revert-in-loop, calls-loop)
 
 import {Manifest, Policy} from "./P85Types.sol";
-import {IRootRecords, IStakeCustody, CaseView} from "./IP85.sol";
+import {IRootRecords, IStakeCustody, IElectionPolicy, CaseView} from "./IP85.sol";
 import {KeyLib} from "./KeyLib.sol";
 
 /// @title Evidence
@@ -93,6 +93,7 @@ contract Evidence {
     bytes32 public manifestHash;
     bytes32 public network;
     IStakeCustody public custody;
+    IElectionPolicy public election;
     IRootRecords public roots;
     uint32 public maxBatch;
 
@@ -119,6 +120,7 @@ contract Evidence {
         network = m.network;
         // forge-lint: disable-next-line(missing-events-access-control)
         custody = IStakeCustody(m.custody);
+        election = IElectionPolicy(m.election);
         roots = IRootRecords(m.roots);
         maxBatch = m.limits.maxBatch;
         emit Initialized(manifestHash_);
@@ -206,6 +208,7 @@ contract Evidence {
         }
         uint256 budget = (total * terms.penaltyBps) / 10_000;
         _excluded[identity] = true;
+        election.coverageChanged(identity);
         _cases[caseID] = Case({
             offenceID: offenceID,
             exposureID: exposureID,
@@ -262,6 +265,7 @@ contract Evidence {
             bounty += b;
             _holds[lotIDs[i]]--;
         }
+        election.coverageChanged(c.id);
         emit EvidenceSettled(caseID, c.cursor, actualDebit, bounty);
     }
 

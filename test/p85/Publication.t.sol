@@ -15,7 +15,7 @@ import {
 
 /// @notice PR3 slice 4: possession proofs, publication and the mandatory K commitment of a reserved result.
 contract PublicationTest is P85Flow {
-    address internal constant SYS = 0xffffFFFfFFffffffffffffffFfFFFfffFFFfFFfE;
+    address internal constant SYS = address(0xff00000000000000000000000000000000000001);
     bytes32 internal constant ORIGIN = keccak256("origin/1");
     bytes32 internal resultID;
 
@@ -349,7 +349,7 @@ contract PublicationTest is P85Flow {
 
 /// @notice K carries the policy terms captured by the incumbent assignment, not the snapshot in force when the result is reserved.
 contract PublicationPolicyTest is P85Flow {
-    address internal constant SYS = 0xffffFFFfFFffffffffffffffFfFFFfffFFFfFFfE;
+    address internal constant SYS = address(0xff00000000000000000000000000000000000001);
 
     function _electionParams() internal pure override returns (ElectionParams memory) {
         return ElectionParams({

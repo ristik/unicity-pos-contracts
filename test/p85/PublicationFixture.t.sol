@@ -11,7 +11,7 @@ import {ElectionParams} from "../../src/p85/P85Types.sol";
 /// P85_WRITE_FIXTURES=true.
 contract PublicationFixtureTest is P85Flow {
     string internal constant FIXTURE = "/test/p85/fixtures/publication.json";
-    address internal constant SYS = 0xffffFFFfFFffffffffffffffFfFFFfffFFFfFFfE;
+    address internal constant SYS = address(0xff00000000000000000000000000000000000001);
     bytes32 internal constant ORIGIN = keccak256("origin/1");
 
     function _electionParams() internal pure override returns (ElectionParams memory) {
@@ -141,6 +141,14 @@ contract PublicationFixtureTest is P85Flow {
         );
     }
 
+    /// @dev The same result after a member fell short of its committed weight and the loss was recorded.
+    function _lostSlots(bytes32 resultID) internal returns (string memory) {
+        bytes32 slot = bytes32(uint256(keccak256(abi.encode(lotOf(gid(1)), uint256(27)))) + 1); // lots[id] word 1: remaining
+        vm.store(address(custody), slot, bytes32(uint256(vm.load(address(custody), slot)) - 1));
+        require(election.reconcileCandidate(resultID), "the loss is recorded");
+        return _slots(resultID);
+    }
+
     function _pops(bytes32 resultID) internal returns (string memory out) {
         ElectionPolicy.Frozen[] memory f = election.frozenMembers(resultID);
         out = "[";
@@ -243,7 +251,9 @@ contract PublicationFixtureTest is P85Flow {
             _slots(resultID),
             "},",
             _otherReads(resultID, r.assignmentID),
-            "}\n"
+            ',"lost":{',
+            _lostSlots(resultID),
+            "}}\n"
         );
         string memory json = string.concat(head, body);
         string memory path = string.concat(vm.projectRoot(), FIXTURE);

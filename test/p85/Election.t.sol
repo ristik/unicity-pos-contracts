@@ -18,7 +18,7 @@ import {
 /// @notice PR3 slice 3: the threshold, the snapshot, the attempt cursor and `elect(origin)`. The hook caller is the system address; a
 /// failure of the election or of the reservation is an ordered NoCandidate, never a revert.
 contract ElectionTest is P85Flow {
-    address internal constant SYS = 0xffffFFFfFFffffffffffffffFfFFFfffFFFfFFfE;
+    address internal constant SYS = address(0xff00000000000000000000000000000000000001);
     bytes32 internal constant ORIGIN = keccak256("origin/1");
     uint64 internal constant CAD_P = 100_000;
     uint64 internal constant CAD_T = 604_800;
@@ -394,6 +394,66 @@ contract ElectionTest is P85Flow {
         vm.mockCall(
             address(evidence), abi.encodeWithSignature("excluded(uint64)", id), abi.encode(true)
         );
+        _due();
+        assertEq(uint8(_elect()), uint8(ElectionPolicy.Outcome.Reserved));
+        assertEq(election.frozenMembers(_resultID(1, ORIGIN)).length, N_GENESIS);
+    }
+
+    function test_aMinimumBondAboveTheUnitExcludesAnIdentityBelowIt() public {
+        manualMinBond = uint128(300 * UCT); // B_min three units; the 1,000 UCT genesis lots are far above
+        _deployManual(
+            address(new FixedPolicy(_defaultPolicy())),
+            Limits({vMax: 128, lMax: 8, rMax: 4, maxBatch: 32})
+        );
+        // a joiner holding 250 UCT: weight two, below B_min
+        uint64 id = register(0x5001, 0x5002, vm.addr(0x5003));
+        vm.deal(vm.addr(0x5001), 300 * UCT);
+        vm.prank(vm.addr(0x5001));
+        // custody itself refuses lots under B_min, so the identity is brought under it by a penalty-sized debit of its only lot
+        custody.bond{value: 300 * UCT}(id);
+        _admit(id, 0x5001, 0x5002, 0x5004);
+        bytes32 slot = bytes32(uint256(keccak256(abi.encode(lotOf(id), uint256(27)))) + 1);
+        vm.store(address(custody), slot, bytes32(uint256(250 * UCT))); // remaining: 250 UCT
+        _due();
+        assertEq(uint8(_elect()), uint8(ElectionPolicy.Outcome.Reserved));
+        assertEq(
+            election.frozenMembers(_resultID(1, ORIGIN)).length,
+            N_GENESIS,
+            "below B_min: not eligible"
+        );
+    }
+
+    function test_reservationEpochsAreTheIncumbentsOwnEpochsPlusOne() public {
+        genesisRootEpoch = 7;
+        genesisEvmEpoch = 3;
+        _deploy(_defaultPolicy());
+        _due();
+        _elect();
+        Asg memory a = asg(election.result(election.openResult()).assignmentID);
+        assertEq(a.rootEpoch, 8, "the incumbent's root epoch + 1");
+        assertEq(a.evmEpoch, 4, "the incumbent's EVM epoch + 1");
+    }
+
+    function _joinerWithKeyOwner(uint64 owner, uint8 role) internal {
+        uint64 id = register(0x5001, 0x5002, vm.addr(0x5003));
+        bondFor(id, 100 * UCT);
+        _admit(id, 0x5001, 0x5002, 0x5004);
+        vm.mockCall(
+            address(custody),
+            abi.encodeCall(IStakeCustody.keyOwner, (keccak256(compressed(0x5004)))),
+            abi.encode(owner, role)
+        );
+    }
+
+    function test_anEvmKeyRegisteredToAnotherIdentityDoesNotQualify() public {
+        _joinerWithKeyOwner(gid(0), 2);
+        _due();
+        assertEq(uint8(_elect()), uint8(ElectionPolicy.Outcome.Reserved));
+        assertEq(election.frozenMembers(_resultID(1, ORIGIN)).length, N_GENESIS);
+    }
+
+    function test_anEvmKeyRegisteredInAnotherRoleDoesNotQualify() public {
+        _joinerWithKeyOwner(5, 1); // the joiner's own id, but registered as a root key
         _due();
         assertEq(uint8(_elect()), uint8(ElectionPolicy.Outcome.Reserved));
         assertEq(election.frozenMembers(_resultID(1, ORIGIN)).length, N_GENESIS);

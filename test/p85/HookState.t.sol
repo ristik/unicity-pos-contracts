@@ -4,7 +4,8 @@ pragma solidity 0.8.37;
 import {P85Flow} from "./P85Flow.sol";
 import {MockRootRecords} from "./MockRootRecords.sol";
 import {StakeCustody} from "../../src/p85/StakeCustody.sol";
-import {RecordKind, RecoveryAckData, RootRecord} from "../../src/p85/P85Types.sol";
+import {ElectionPolicy} from "../../src/p85/ElectionPolicy.sol";
+import {RecordKind, RecoveryAckData, RootRecord, ElectionParams} from "../../src/p85/P85Types.sol";
 
 /// @notice Generates the custody states the ureth records hook is tested against: the real `StakeCustody` runtime and its storage
 /// before and after it applies real root records, on the execution chain id the profile pins (1337) and with `roots` pointing at the
@@ -19,13 +20,14 @@ abstract contract HookStateBase is P85Flow {
     address internal constant REGISTRY = address(0xff00000000000000000000000000000000000002);
     uint256 internal constant ROOTS_SLOT = 8;
     uint256 internal constant LIMITS_SLOT = 11;
+    uint256 internal constant ELECTION_ROOTS_SLOT = 4;
     uint64 internal constant CHAIN_ID = 1337;
 
     /// @dev Nothing is deployed in `setUp`: `vm.dumpState` holds only the accounts and slots the current transaction touched, so the
     /// whole deployment, the scenario's setup and the dumps all happen inside the one test transaction (`_deployAll`).
     function setUp() public virtual override {}
 
-    function _deployAll() internal {
+    function _deployAll() internal virtual {
         vm.chainId(CHAIN_ID);
         roots = new MockRootRecords();
         _deploy(_defaultPolicy());
@@ -41,11 +43,23 @@ abstract contract HookStateBase is P85Flow {
             address(custody).balance + address(election).balance + address(evidence).balance;
         touched += address(custody).code.length + address(election).code.length
         + address(evidence).code.length;
+        touched += address(election.reader()).code.length
+        + address(election.selection()).code.length;
         assertGt(touched, 0);
         address mock = address(roots);
         vm.store(address(custody), bytes32(ROOTS_SLOT), bytes32(uint256(uint160(REGISTRY))));
         vm.dumpState(string.concat(dir, "/", name, ".json"));
         vm.store(address(custody), bytes32(ROOTS_SLOT), bytes32(uint256(uint160(mock))));
+    }
+
+    /// @dev The dump of the election scenario: every module that points at the registry points at its fixed address.
+    function _dumpElect(string memory dir, string memory name) internal {
+        address mock = address(roots);
+        vm.store(
+            address(election), bytes32(ELECTION_ROOTS_SLOT), bytes32(uint256(uint160(REGISTRY)))
+        );
+        _dump(dir, name);
+        vm.store(address(election), bytes32(ELECTION_ROOTS_SLOT), bytes32(uint256(uint160(mock))));
     }
 
     function _records(uint256 n) internal returns (string memory out) {
@@ -71,6 +85,9 @@ abstract contract HookStateBase is P85Flow {
         vm.serializeAddress(m, "custody", address(custody));
         vm.serializeAddress(m, "election", address(election));
         vm.serializeAddress(m, "evidence", address(evidence));
+        vm.serializeAddress(m, "reader", address(election.reader()));
+        vm.serializeAddress(m, "selection", address(election.selection()));
+        vm.serializeAddress(m, "policySource", address(election.policySource()));
         vm.serializeAddress(m, "registry", REGISTRY);
         vm.serializeBytes32(m, "rolesNote", bytes32(0));
         vm.serializeUint(m, "recordCount", n);
@@ -115,6 +132,59 @@ contract HookStateRecoveryTest is HookStateBase {
         assertEq(custody.lastAckedAssignment(), ASG_K);
         _dump(dir, "recovery.post");
         _meta(dir, "recovery", 1);
+    }
+}
+
+/// @dev Scenario `elect`: J is reserved over every member and acknowledged by a real record, then the election is due: the unchanged
+/// committee is elected and reserved in the same block. The hook applies the record (step 1) and elects (step 4); the registry's
+/// progress and UC time are the record's own anchors (120, 1,000), above the profile's small cadence (100 rounds, 900 seconds).
+contract HookStateElectTest is HookStateBase {
+    address internal constant SYS = address(0xff00000000000000000000000000000000000001);
+    /// @dev The identity of the root origin the ureth test world carries (`RootInputV2::origin_identity`); the Rust test asserts it.
+    bytes32 internal constant ORIGIN =
+        0x3c62f1e36e798991901768bcb0eeadbf5baa29866fd1d603ba3a5c4af99c3db8;
+
+    function _electionParams() internal pure override returns (ElectionParams memory) {
+        return ElectionParams({
+            nMin: 2,
+            nTarget: 10,
+            nMax: 32,
+            maxM: 4,
+            distNum: 1,
+            distDen: 4,
+            cadenceRounds: 100,
+            cadenceSeconds: 900
+        });
+    }
+
+    /// @dev The registry stand-in lives at the registry's fixed address from the start, so every address the election hashes into its
+    /// recovery authorization (the contracts digest names `roots`) is the one ureth's world has.
+    function _deployAll() internal override {
+        vm.chainId(CHAIN_ID);
+        MockRootRecords impl = new MockRootRecords();
+        vm.etch(REGISTRY, address(impl).code);
+        roots = MockRootRecords(REGISTRY);
+        _deploy(_defaultPolicy());
+    }
+
+    function test_writeElect() public {
+        string memory dir = _out();
+        if (bytes(dir).length == 0) return;
+        _deployAll();
+        reserve(RES_J, ASG_J, allMembers(), 1);
+        _dumpElect(dir, "elect.pre");
+        clock(150, 2_000);
+        pushRecord(RecordKind.Ack, ackData(RES_J, H_ROUND, 100, 101));
+        applyAll();
+        vm.prank(SYS);
+        ElectionPolicy.Outcome out = election.elect(ORIGIN);
+        assertEq(uint8(out), uint8(ElectionPolicy.Outcome.Reserved));
+        _dumpElect(dir, "elect.post");
+        _meta(dir, "elect", 1);
+        string memory e = "elect";
+        vm.serializeBytes32(e, "origin", ORIGIN);
+        string memory body = vm.serializeBytes32(e, "resultId", election.openResult());
+        vm.writeJson(body, string.concat(dir, "/elect.extra.json"));
     }
 }
 

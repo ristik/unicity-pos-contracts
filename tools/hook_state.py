@@ -49,7 +49,9 @@ def main(raw, dest):
         meta = json.loads(meta_path.read_text())
         pre = {norm(k): v for k, v in json.loads((raw / f"{name}.pre.json").read_text()).items()}
         post = {norm(k): v for k, v in json.loads((raw / f"{name}.post.json").read_text()).items()}
-        modules = {m: norm(meta[m]) for m in ("custody", "election", "evidence")}
+        modules = {m: norm(meta[m]) for m in ("custody", "election", "evidence", "reader", "selection", "policySource") if m in meta}
+        extra_path = raw / f"{name}.extra.json"
+        extra = json.loads(extra_path.read_text()) if extra_path.exists() else None
         records = [meta["records"][f"r{i}"] for i in range(meta["recordCount"])]
         fixture = {
             "scenario": name,
@@ -58,6 +60,7 @@ def main(raw, dest):
             "modules": {m: a for m, a in modules.items()},
             "pre": {a: account(pre[a], True) for a in modules.values()},
             "post": {a: account(post[a], False) for a in modules.values()},
+            **({"extra": extra} if extra else {}),
             "records": [
                 {k: (v if isinstance(v, str) or k in ("index", "kind", "progress", "ucTime") else v) for k, v in r.items()} for r in records
             ],

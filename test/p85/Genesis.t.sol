@@ -7,6 +7,7 @@ import {StakeCustody} from "../../src/p85/StakeCustody.sol";
 import {ElectionPolicy} from "../../src/p85/ElectionPolicy.sol";
 import {Evidence} from "../../src/p85/Evidence.sol";
 import {SelectionEngine} from "../../src/p85/SelectionEngine.sol";
+import {EligibilityReader} from "../../src/p85/EligibilityReader.sol";
 import {FixedPolicy} from "../../src/p85/FixedPolicy.sol";
 import {PolicyBounds} from "../../src/p85/PolicyBounds.sol";
 import {
@@ -31,7 +32,7 @@ contract Deployer {
             uint160(
                 uint256(
                     keccak256(
-                        abi.encodePacked(bytes1(0xd6), bytes1(0x94), address(this), nonce + 4)
+                        abi.encodePacked(bytes1(0xd6), bytes1(0x94), address(this), nonce + 5)
                     )
                 )
             )
@@ -40,7 +41,8 @@ contract Deployer {
         m.election = address(new ElectionPolicy(f));
         m.evidence = address(new Evidence(f));
         m.selection = address(new SelectionEngine());
-        nonce += 5; // three modules, the engine, the factory
+        m.reader = address(new EligibilityReader(m.custody, m.evidence));
+        nonce += 6; // three modules, the engine, the reader, the factory
         return address(new PosFactory{value: msg.value}(m));
     }
 
@@ -154,6 +156,30 @@ contract GenesisTest is P85Base {
         ElectionPolicy fresh = new ElectionPolicy(address(this));
         Manifest memory m; // m.election is not this contract
         vm.expectRevert(ElectionPolicy.ManifestMismatch.selector);
+        fresh.initialize(bytes32(0), m);
+    }
+
+    function test_electionRefusesAReaderWiredToOtherModules() public {
+        ElectionPolicy fresh = new ElectionPolicy(address(this));
+        Manifest memory m;
+        m.election = address(fresh);
+        m.custody = address(custody);
+        m.evidence = address(evidence);
+        m.roots = address(roots);
+        m.selection = address(new SelectionEngine());
+        m.electionParams = _electionParams();
+        m.limits = Limits({vMax: 128, lMax: 8, rMax: 4, maxBatch: 32});
+        m.reader = address(new EligibilityReader(address(evidence), address(custody))); // swapped
+        vm.expectRevert(ElectionPolicy.InvalidParams.selector);
+        fresh.initialize(bytes32(0), m);
+        m.reader = address(new EligibilityReader(address(custody), address(roots))); // swapped evidence
+        vm.expectRevert(ElectionPolicy.InvalidParams.selector);
+        fresh.initialize(bytes32(0), m);
+        m.reader = address(new EligibilityReader(address(roots), address(evidence))); // swapped custody only
+        vm.expectRevert(ElectionPolicy.InvalidParams.selector);
+        fresh.initialize(bytes32(0), m);
+        m.reader = address(0xdead); // no code
+        vm.expectRevert(ElectionPolicy.InvalidParams.selector);
         fresh.initialize(bytes32(0), m);
     }
 
@@ -358,6 +384,7 @@ contract GenesisTest is P85Base {
             election: address(0),
             evidence: address(0),
             selection: address(0),
+            reader: address(0),
             network: NETWORK,
             roots: address(roots),
             treasury: treasury,
