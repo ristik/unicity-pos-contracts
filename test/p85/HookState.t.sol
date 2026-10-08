@@ -2,6 +2,7 @@
 pragma solidity 0.8.37;
 
 import {P85Flow} from "./P85Flow.sol";
+import {MockRootRecords} from "./MockRootRecords.sol";
 import {StakeCustody} from "../../src/p85/StakeCustody.sol";
 import {RecordKind, RecoveryAckData, RootRecord} from "../../src/p85/P85Types.sol";
 
@@ -13,16 +14,21 @@ import {RecordKind, RecoveryAckData, RootRecord} from "../../src/p85/P85Types.so
 /// `test/p85/fixtures/hook-<scenario>.json`. The post state is what custody computed with `block.chainid == 1337`: ureth must reproduce
 /// it slot for slot, which a hook that runs under revm's default chain id (1) cannot (exposure identifiers hash the chain id).
 ///
-///     P85_WRITE_HOOK_STATE=/tmp/hook forge test --match-contract HookStateTest
-contract HookStateTest is P85Flow {
+///     P85_WRITE_HOOK_STATE=/tmp/hook forge test --match-contract "HookState.*"
+abstract contract HookStateBase is P85Flow {
     address internal constant REGISTRY = address(0xff00000000000000000000000000000000000002);
     uint256 internal constant ROOTS_SLOT = 8;
     uint256 internal constant LIMITS_SLOT = 11;
     uint64 internal constant CHAIN_ID = 1337;
 
-    function setUp() public override {
+    /// @dev Nothing is deployed in `setUp`: `vm.dumpState` holds only the accounts and slots the current transaction touched, so the
+    /// whole deployment, the scenario's setup and the dumps all happen inside the one test transaction (`_deployAll`).
+    function setUp() public virtual override {}
+
+    function _deployAll() internal {
         vm.chainId(CHAIN_ID);
-        super.setUp();
+        roots = new MockRootRecords();
+        _deploy(_defaultPolicy());
     }
 
     function _out() internal view returns (string memory dir) {
@@ -30,6 +36,12 @@ contract HookStateTest is P85Flow {
     }
 
     function _dump(string memory dir, string memory name) internal {
+        // vm.dumpState holds the accounts the current transaction has touched: touch every module
+        uint256 touched =
+            address(custody).balance + address(election).balance + address(evidence).balance;
+        touched += address(custody).code.length + address(election).code.length
+        + address(evidence).code.length;
+        assertGt(touched, 0);
         address mock = address(roots);
         vm.store(address(custody), bytes32(ROOTS_SLOT), bytes32(uint256(uint160(REGISTRY))));
         vm.dumpState(string.concat(dir, "/", name, ".json"));
@@ -66,11 +78,14 @@ contract HookStateTest is P85Flow {
         string memory body = vm.serializeString(m, "records", recs);
         vm.writeJson(body, string.concat(dir, "/", name, ".meta.json"));
     }
+}
 
-    /// @dev Scenario `ack`: J is reserved over members 1..3 and acknowledged.
+/// @dev Scenario `ack`: J is reserved over members 1..3 (in `setUp`, so the pre-state dump is committed state) and acknowledged.
+contract HookStateAckTest is HookStateBase {
     function test_writeAck() public {
         string memory dir = _out();
         if (bytes(dir).length == 0) return;
+        _deployAll();
         reserve(RES_J, ASG_J, allExcept(0), 1);
         _dump(dir, "ack.pre");
         clock(120, 1_000);
@@ -80,11 +95,14 @@ contract HookStateTest is P85Flow {
         _dump(dir, "ack.post");
         _meta(dir, "ack", 1);
     }
+}
 
-    /// @dev Scenario `recovery`: identity 0 asks to retire, J is reserved without it, and the RecoveryAck derives the exposures of K.
+/// @dev Scenario `recovery`: identity 0 asks to retire, J is reserved without it, and the RecoveryAck derives the exposures of K.
+contract HookStateRecoveryTest is HookStateBase {
     function test_writeRecovery() public {
         string memory dir = _out();
         if (bytes(dir).length == 0) return;
+        _deployAll();
         requestRetirement(0);
         reserve(RES_J, ASG_J, allExcept(0), 1);
         _dump(dir, "recovery.pre");
@@ -97,6 +115,12 @@ contract HookStateTest is P85Flow {
         assertEq(custody.lastAckedAssignment(), ASG_K);
         _dump(dir, "recovery.post");
         _meta(dir, "recovery", 1);
+    }
+}
+
+contract HookStateLayoutTest is HookStateBase {
+    function setUp() public override {
+        _deployAll();
     }
 
     /// @dev The slot layout the Rust side edits: `roots` and the packed limits (maxBatch is the high 32 bits of the struct's slot).
