@@ -98,6 +98,11 @@ contract ElectionGasTest is P85Flow {
     }
 
     function _measureElection(uint256 v, uint256 l, uint256 c, uint256 ceiling) internal {
+        uint256 used = _elect(v, l, c);
+        assertLt(used, ceiling);
+    }
+
+    function _elect(uint256 v, uint256 l, uint256 c) internal returns (uint256 used) {
         (V, L, C) = (v, l, c);
         _deploy(_defaultPolicy()); // again, now that the profile names the committee size
         _populate();
@@ -110,7 +115,7 @@ contract ElectionGasTest is P85Flow {
         vm.resumeGasMetering();
         uint256 before_ = gasleft();
         ElectionPolicy.Outcome out = election.elect(keccak256("origin"));
-        uint256 used = before_ - gasleft();
+        used = before_ - gasleft();
         emit log_named_uint(
             string.concat(
                 "elect gas V=", vm.toString(v), " L=", vm.toString(l), " C=", vm.toString(c)
@@ -118,7 +123,36 @@ contract ElectionGasTest is P85Flow {
             used
         );
         assertEq(uint8(out), uint8(ElectionPolicy.Outcome.Reserved));
-        assertLt(used, ceiling);
+    }
+
+    /// @dev The genesis tool's measurement of the worst-case election for a chosen (V, L, C): V identities of L lots each, a committed
+    /// committee of C, and every outsider outranking the weakest incumbent so the greedy pass tries all of them. Run through
+    /// `script/measure-elect.sh V L C`, which prints one JSON line; the test refuses parameters outside the profile ceilings.
+    function test_measureFromTheEnvironment() public {
+        uint256 v = vm.envOr("P85_MEASURE_V", uint256(0));
+        uint256 l = vm.envOr("P85_MEASURE_L", uint256(0));
+        uint256 c = vm.envOr("P85_MEASURE_C", uint256(0));
+        if (v == 0) return; // not a measurement run
+        require(
+            v >= 5 && v <= 128 && l >= 1 && l <= 8 && c >= 4 && c <= 32 && c <= v,
+            "parameters outside the profile ceilings"
+        );
+        require(
+            l == 1 || l == 2 || l == 4 || l == 8,
+            "L must divide the 1,000 UCT principal into whole lots"
+        );
+        uint256 used = _elect(v, l, c);
+        emit log_string(string.concat(
+                "ELECT-MEASURE {\"v\":",
+                vm.toString(v),
+                ",\"l\":",
+                vm.toString(l),
+                ",\"c\":",
+                vm.toString(c),
+                ",\"gas\":",
+                vm.toString(used),
+                "}"
+            ));
     }
 
     function test_measureV128L8C32() public {
