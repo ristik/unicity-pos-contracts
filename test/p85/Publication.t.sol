@@ -283,6 +283,60 @@ contract PublicationTest is P85Flow {
         election.finalizeCandidate(resultID);
     }
 
+    // custody storage slots (forge inspect StakeCustody storageLayout; the same constants bft-core's evmstate layout uses)
+    uint256 internal constant CUSTODY_POSITIONS = 22;
+    uint256 internal constant CUSTODY_LOTS = 27;
+    uint256 internal constant CUSTODY_SESSIONS = 35;
+    uint256 internal constant CUSTODY_ASSIGNMENTS = 32;
+
+    function test_anExcludedMemberBlocksPublication() public {
+        election.submitAssignmentPoPs(resultID, _all());
+        vm.mockCall(
+            address(evidence), abi.encodeWithSignature("excluded(uint64)", gid(1)), abi.encode(true)
+        );
+        vm.expectRevert(abi.encodeWithSelector(ElectionPolicy.NotCovered.selector, gid(1)));
+        election.finalizeCandidate(resultID);
+    }
+
+    function test_aReleasedLotInAnExposureBlocksPublication() public {
+        election.submitAssignmentPoPs(resultID, _all());
+        // only the category changes (word 2 of the lot, low byte: 4 = released); the remaining principal still covers the weight
+        bytes32 slot = bytes32(uint256(keccak256(abi.encode(lotOf(gid(3)), CUSTODY_LOTS))) + 2);
+        bytes32 word = vm.load(address(custody), slot);
+        vm.store(address(custody), slot, bytes32((uint256(word) >> 8 << 8) | 4));
+        vm.expectRevert(abi.encodeWithSelector(ElectionPolicy.NotCovered.selector, gid(3)));
+        election.finalizeCandidate(resultID);
+    }
+
+    function test_aGenerationChangeAfterTheSnapshotBlocksPublication() public {
+        election.submitAssignmentPoPs(resultID, _all());
+        // the member's open generation moves on (word 4 of the position, low 8 bytes)
+        bytes32 slot = bytes32(uint256(keccak256(abi.encode(gid(0), CUSTODY_POSITIONS))) + 4);
+        vm.store(address(custody), slot, bytes32(uint256(vm.load(address(custody), slot)) + 1));
+        vm.expectRevert(abi.encodeWithSelector(ElectionPolicy.NotCovered.selector, gid(0)));
+        election.finalizeCandidate(resultID);
+    }
+
+    /// @dev Custody and the election move together (`resultResolved` closes the election's result in the same transaction that closes the
+    /// session), so a closed session under a still-reserved result cannot arise from records; the guard is forced here with custody's
+    /// session state written directly.
+    function test_aSessionClosedUnderAReservedResultCannotBePublished() public {
+        election.submitAssignmentPoPs(resultID, _all());
+        bytes32 slot = keccak256(abi.encode(resultID, CUSTODY_SESSIONS)); // sessions[resultID].state
+        vm.store(address(custody), slot, bytes32(uint256(3)));
+        vm.expectRevert(ElectionPolicy.SessionNotOpen.selector);
+        election.finalizeCandidate(resultID);
+    }
+
+    function test_anAssignmentNoLongerReservedUnderAnOpenSessionCannotBePublished() public {
+        election.submitAssignmentPoPs(resultID, _all());
+        bytes32 slot =
+            keccak256(abi.encode(election.result(resultID).assignmentID, CUSTODY_ASSIGNMENTS));
+        vm.store(address(custody), slot, bytes32(uint256(2))); // assignments[id].state = Active
+        vm.expectRevert(ElectionPolicy.SessionNotOpen.selector);
+        election.finalizeCandidate(resultID);
+    }
+
     function test_aClosedSessionCannotBePublished() public {
         election.submitAssignmentPoPs(resultID, _all());
         clock(100_010, 604_810);

@@ -888,7 +888,8 @@ contract ElectionPolicy {
 
     /// @notice The digest a member's EVM key signs to prove possession for one frozen result: it names the network, chain, this
     /// module, the result, its assignment and snapshot, the attempt and the member's identity, generation and EVM key. Registration and
-    /// delegation signatures cover other domains and cannot substitute.
+    /// delegation signatures cover other domains and cannot substitute. For an id that is not a frozen member of the result the
+    /// generation word is zero; every caller checks membership first.
     function popDigest(bytes32 resultID, uint64 id, bytes32 evmKeyHash)
         public
         view
