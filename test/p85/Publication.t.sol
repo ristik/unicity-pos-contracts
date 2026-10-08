@@ -3,8 +3,11 @@ pragma solidity 0.8.37;
 
 import {P85Flow} from "./P85Flow.sol";
 import {ElectionPolicy} from "../../src/p85/ElectionPolicy.sol";
+import {UncheckedPolicy} from "./UncheckedPolicy.sol";
 import {
     ElectionParams,
+    Limits,
+    Policy,
     RecordKind,
     SessionClosedData,
     ReserveInput
@@ -287,5 +290,38 @@ contract PublicationTest is P85Flow {
         applyAll();
         vm.expectRevert(ElectionPolicy.NotReserved.selector);
         election.finalizeCandidate(resultID);
+    }
+}
+
+/// @notice K carries the policy terms captured by the incumbent assignment, not the snapshot in force when the result is reserved.
+contract PublicationPolicyTest is P85Flow {
+    address internal constant SYS = 0xffffFFFfFFffffffffffffffFfFFFfffFFFfFFfE;
+
+    function _electionParams() internal pure override returns (ElectionParams memory) {
+        return ElectionParams({
+            nMin: 2,
+            nTarget: 10,
+            nMax: 32,
+            maxM: 4,
+            distNum: 1,
+            distDen: 4,
+            cadenceRounds: 100_000,
+            cadenceSeconds: 604_800
+        });
+    }
+
+    function test_kCapturesTheIncumbentsPolicyNotTheCurrentOne() public {
+        UncheckedPolicy source = new UncheckedPolicy(_defaultPolicy());
+        _deployManual(address(source), Limits({vMax: 128, lMax: 8, rMax: 4, maxBatch: 32}));
+        Policy memory later = _defaultPolicy();
+        later.penaltyBps = 150;
+        source.addSnapshot(later);
+        clock(100_000, 604_800);
+        vm.prank(SYS);
+        election.elect(keccak256("origin"));
+        ElectionPolicy.RecoveryAuthorization memory a =
+            election.recoveryAuthorization(election.openResult());
+        assertEq(a.policyDigest, keccak256(abi.encode(_defaultPolicy())), "the genesis terms");
+        assertTrue(a.policyDigest != keccak256(abi.encode(later)));
     }
 }
