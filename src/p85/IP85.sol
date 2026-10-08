@@ -98,6 +98,12 @@ interface IStakeCustody {
         external
         view
         returns (bool imported, uint64 pRet, uint64 tRet);
+    function generationLots(uint64 id, uint64 generation) external view returns (uint256[] memory);
+    function keyOwner(bytes32 keyHash) external view returns (uint64 id, uint8 role);
+    function lastAckedAssignment() external view returns (bytes32);
+    function recordCursor() external view returns (uint64);
+    function bondUnit() external view returns (uint128);
+    function minBond() external view returns (uint128);
     function registerEvmKey(uint64 id, bytes32 evmKeyHash) external;
     function reserveCandidate(ReserveInput calldata input) external returns (bytes32 exposureDigest);
     function applyPenalty(bytes32 caseID, uint256 lotID)
@@ -124,6 +130,9 @@ interface IEvidence {
 
 interface IElectionPolicy {
     function syncLiveIndex(uint64 id) external;
+    /// @notice Custody-only: a reserved result reached its end (acknowledged, recovered or closed) at the record's anchors.
+    function resultResolved(bytes32 resultID, uint8 outcome, uint64 progress, uint64 ucTime)
+        external;
     function liveCount() external view returns (uint32);
     function isIndexed(uint64 id) external view returns (bool);
     function delegation(uint64 id, uint64 generation)

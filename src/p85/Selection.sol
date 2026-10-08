@@ -65,7 +65,8 @@ library Selection {
         }
         if (n < cfg.nMin) return (Reason.Cardinality, chosen);
 
-        bool[] memory incumbent = _incumbents(o, e);
+        Prior memory prior = _prior(o, e);
+        bool[] memory incumbent = prior.incumbent;
         uint256[] memory rank = _rank(e);
 
         // the seed
@@ -84,33 +85,141 @@ library Selection {
             }
         }
         chosen = _committee(e, inS, count);
-        (uint8 failed,) = Continuity.check(o, chosen, cfg.churn);
+        (uint8 failed, Continuity.Measured memory r0) = Continuity.check(o, chosen, cfg.churn);
         if (failed != 0) return (_churnReason(failed), new Continuity.Member[](0));
 
-        // each remaining outsider, once, in rank order
+        // Each remaining outsider, once, in rank order. A trial replaces the lowest-ranked retained incumbent by the outsider; its
+        // measurement against the same `o` follows from the running one by constant-size deltas plus one pass over the retained
+        // incumbents (the weight distance depends on the new total), instead of a fresh merge of both committees.
+        Trial memory t = Trial({
+            total: Continuity.totalWeight(o, false),
+            totalNew: 0,
+            replaced: r0.replaced,
+            onlyOld: r0.removed - r0.replaced,
+            onlyNew: r0.added - r0.replaced,
+            unchangedOld: r0.unchangedOld,
+            unchangedNew: r0.unchangedNew,
+            sharedNew: 0,
+            sharedOld: 0
+        });
+        for (uint256 i = 0; i < n; ++i) {
+            if (inS[i]) {
+                t.totalNew += e[i].weight;
+                if (incumbent[i]) {
+                    t.sharedNew += e[i].weight;
+                    t.sharedOld += prior.weight[i];
+                }
+            }
+        }
+        bool replacedAny = false;
+        // The lowest-ranked retained incumbent only ever moves toward better ranks (a removed incumbent is never re-added), so one
+        // downward pointer over the whole pass finds it.
+        uint256 q = n;
         for (uint256 r = 0; r < n; ++r) {
             uint256 x = rank[r];
             if (incumbent[x] || inS[x]) continue;
-            uint256 low = n; // the lowest-ranked retained incumbent: the last in rank order that is one
-            for (uint256 q = n; q > 0; --q) {
-                uint256 idx = rank[q - 1];
-                if (incumbent[idx] && inS[idx]) {
-                    low = idx;
-                    break;
-                }
-            }
-            if (low == n || !_better(e[x], e[low])) continue;
-            inS[low] = false;
-            inS[x] = true;
-            Continuity.Member[] memory trial = _committee(e, inS, count);
-            (failed,) = Continuity.check(o, trial, cfg.churn);
+            while (q > 0 && !(incumbent[rank[q - 1]] && inS[rank[q - 1]])) --q;
+            if (q == 0) continue; // no retained incumbent left to replace
+            uint256 low = rank[q - 1];
+            if (!_better(e[x], e[low])) continue;
+            Trial memory next = _step(t, e, prior, low, x);
+            failed = Continuity.judge(
+                _measured(next, _sharedDistance(next, e, prior, inS, low)),
+                o.length,
+                count,
+                cfg.churn
+            );
             if (failed == 0) {
-                chosen = trial;
-            } else {
-                inS[low] = true;
-                inS[x] = false;
+                inS[low] = false;
+                inS[x] = true;
+                t = next;
+                replacedAny = true;
             }
         }
+        if (replacedAny) chosen = _committee(e, inS, count);
+    }
+
+    /// @dev The running measurement of the current successor against `o`. Every retained incumbent is shared with `o`; every other
+    /// member of the successor is an outsider.
+    struct Trial {
+        uint256 total; // V, the committed weight of o
+        uint256 totalNew; // W
+        uint256 replaced; // shared identities with a changed binding
+        uint256 onlyOld;
+        uint256 onlyNew;
+        uint256 unchangedOld;
+        uint256 unchangedNew;
+        uint256 sharedNew; // successor weight of the shared identities
+        uint256 sharedOld; // their committed weight
+    }
+
+    /// @dev What the last committed committee says about each eligible identity (both ascending by identity).
+    struct Prior {
+        bool[] incumbent;
+        uint256[] weight; // committed weight, zero for an outsider
+        bool[] same; // an incumbent whose binding is unchanged
+        uint256[] list; // the eligible incumbents, as indices into the eligible list
+    }
+
+    /// @dev `t` after the lowest-ranked retained incumbent `low` is replaced by the outsider `x`.
+    function _step(Trial memory t, Entry[] memory e, Prior memory prior, uint256 low, uint256 x)
+        private
+        pure
+        returns (Trial memory n)
+    {
+        n = Trial(
+            t.total,
+            t.totalNew - e[low].weight + e[x].weight,
+            t.replaced,
+            t.onlyOld + 1,
+            t.onlyNew + 1,
+            t.unchangedOld,
+            t.unchangedNew,
+            t.sharedNew - e[low].weight,
+            t.sharedOld - prior.weight[low]
+        );
+        if (prior.same[low]) {
+            n.unchangedOld -= prior.weight[low];
+            n.unchangedNew -= e[low].weight;
+        } else {
+            n.replaced -= 1;
+        }
+    }
+
+    /// @dev The shared identities' share of D's numerator at the trial's totals: the retained incumbents except `low`.
+    function _sharedDistance(
+        Trial memory t,
+        Entry[] memory e,
+        Prior memory prior,
+        bool[] memory inS,
+        uint256 low
+    ) private pure returns (uint256 sum) {
+        for (uint256 k = 0; k < prior.list.length; ++k) {
+            uint256 i = prior.list[k];
+            if (i == low || !inS[i]) continue;
+            uint256 a = uint256(e[i].weight) * t.total;
+            uint256 b = prior.weight[i] * t.totalNew;
+            sum += a > b ? a - b : b - a;
+        }
+    }
+
+    /// @dev D's numerator: successor-only members weigh against zero, committed-only ones against zero, shared ones by their
+    /// difference at the new total (`sharedDistance`).
+    function _measured(Trial memory t, uint256 sharedDistance)
+        private
+        pure
+        returns (Continuity.Measured memory r)
+    {
+        r.replaced = uint64(t.replaced);
+        r.removed = uint64(t.onlyOld + t.replaced);
+        r.added = uint64(t.onlyNew + t.replaced);
+        r.m = r.removed + r.added;
+        r.unchangedOld = t.unchangedOld;
+        r.unchangedNew = t.unchangedNew;
+        r.totalOld = t.total;
+        r.totalNew = t.totalNew;
+        r.distanceNumerator = t.total * (t.totalNew - t.sharedNew) + t.totalNew
+            * (t.total - t.sharedOld) + sharedDistance;
     }
 
     function _churnReason(uint8 failed) private pure returns (Reason) {
@@ -126,17 +235,30 @@ library Selection {
         return a.id < b.id;
     }
 
-    /// @dev Which eligible identities are members of the committee `o` (both ascending by identity).
-    function _incumbents(Continuity.Member[] memory o, Entry[] memory e)
+    /// @dev What the committee `o` says about each eligible identity (both ascending by identity).
+    function _prior(Continuity.Member[] memory o, Entry[] memory e)
         private
         pure
-        returns (bool[] memory incumbent)
+        returns (Prior memory p)
     {
-        incumbent = new bool[](e.length);
+        p.incumbent = new bool[](e.length);
+        p.weight = new uint256[](e.length);
+        p.same = new bool[](e.length);
+        uint256[] memory list = new uint256[](e.length);
+        uint256 count = 0;
         uint256 i = 0;
         for (uint256 j = 0; j < e.length; ++j) {
             while (i < o.length && o[i].id < e[j].id) ++i;
-            if (i < o.length && o[i].id == e[j].id) incumbent[j] = true;
+            if (i < o.length && o[i].id == e[j].id) {
+                p.incumbent[j] = true;
+                p.weight[j] = o[i].weight;
+                p.same[j] = o[i].binding == e[j].binding;
+                list[count++] = j;
+            }
+        }
+        p.list = new uint256[](count);
+        for (uint256 k = 0; k < count; ++k) {
+            p.list[k] = list[k];
         }
     }
 

@@ -23,7 +23,8 @@ import {
     RetirementData,
     SessionClosedData,
     DelegationRequest,
-    Delegation
+    Delegation,
+    ElectionParams
 } from "../../src/p85/P85Types.sol";
 import {MockRootRecords} from "./MockRootRecords.sol";
 
@@ -66,6 +67,20 @@ abstract contract P85Base is Test {
         });
     }
 
+    /// @dev DEV-DEFAULT election profile (design v5 section 6).
+    function _electionParams() internal view virtual returns (ElectionParams memory) {
+        return ElectionParams({
+            nMin: 4,
+            nTarget: 10,
+            nMax: 32,
+            maxM: 4,
+            distNum: 1,
+            distDen: 4,
+            cadenceRounds: 100_000,
+            cadenceSeconds: 604_800
+        });
+    }
+
     function _deploy(Policy memory policy) internal {
         GenesisIdentity[] memory ids = new GenesisIdentity[](N_GENESIS);
         for (uint256 i; i < N_GENESIS; ++i) {
@@ -80,7 +95,12 @@ abstract contract P85Base is Test {
                 bond: GENESIS_BOND
             });
         }
+        // the modules are constructed with the address the factory will have: three module creations precede it
+        address f = vm.computeCreateAddress(address(this), vm.getNonce(address(this)) + 3);
         PosFactory.Config memory c = PosFactory.Config({
+            custody: address(new StakeCustody(f)),
+            election: address(new ElectionPolicy(f)),
+            evidence: address(new Evidence(f)),
             network: NETWORK,
             roots: address(roots),
             treasury: treasury,
@@ -95,6 +115,7 @@ abstract contract P85Base is Test {
                 firstRound: 1
             }),
             policy: policy,
+            electionParams: _electionParams(),
             identities: ids
         });
         vm.deal(address(this), N_GENESIS * GENESIS_BOND);
@@ -123,9 +144,9 @@ abstract contract P85Base is Test {
     /// @dev Wire the modules by hand (this test contract acts as the factory), to run with a custom
     /// policy source or resource limits that the factory's FixedPolicy bounds would not allow.
     function _deployManual(address policySource, Limits memory limits) internal {
-        custody = new StakeCustody();
-        election = new ElectionPolicy();
-        evidence = new Evidence();
+        custody = new StakeCustody(address(this));
+        election = new ElectionPolicy(address(this));
+        evidence = new Evidence(address(this));
         GenesisIdentity[] memory ids = _genesisIdentities();
         GenesisAssignment memory g = GenesisAssignment({
             assignmentID: GENESIS_ASSIGNMENT,
@@ -147,6 +168,7 @@ abstract contract P85Base is Test {
             minBond: uint128(100 * UCT),
             limits: limits,
             genesis: g,
+            electionParams: _electionParams(),
             identities: ids
         });
         bytes32 h = keccak256(abi.encode(m));

@@ -10,7 +10,8 @@ import {
     Manifest,
     CustodyConfig,
     GenesisAssignment,
-    GenesisIdentity
+    GenesisIdentity,
+    ElectionParams
 } from "./P85Types.sol";
 import {StakeCustody} from "./StakeCustody.sol";
 import {ElectionPolicy} from "./ElectionPolicy.sol";
@@ -18,13 +19,17 @@ import {Evidence} from "./Evidence.sol";
 import {FixedPolicy} from "./FixedPolicy.sol";
 
 /// @title PosFactory
-/// @notice Deploys the P85 modules and initializes all of them atomically in its constructor, then
-/// has no entry point: every module's initializer is callable only by this factory and only once.
+/// @notice Initializes the pre-deployed P85 modules atomically in its constructor, then has no entry point: every module's initializer is
+/// callable only by this factory and only once. The modules are deployed first, each constructed with this factory's address (the
+/// deployer's next-but-modules CREATE address), because their creation code together would exceed the initcode limit of one factory.
 /// Module addresses are recorded in the manifest, whose hash every module stores and the factory
 /// pins as `MANIFEST_HASH`; genesis tooling compares that hash with the manifest it intends.
 // forge-lint: disable-next-line(locked-ether)
 contract PosFactory {
     struct Config {
+        address custody; // the deployed, uninitialized modules this factory initializes; each was constructed with this factory's address
+        address election;
+        address evidence;
         bytes32 network;
         address roots;
         address treasury;
@@ -32,6 +37,7 @@ contract PosFactory {
         uint128 minBond;
         Limits limits;
         GenesisAssignment genesis;
+        ElectionParams electionParams;
         Policy policy;
         GenesisIdentity[] identities;
     }
@@ -50,9 +56,9 @@ contract PosFactory {
 
     constructor(Config memory c) payable {
         POLICY = new FixedPolicy(c.policy);
-        CUSTODY = new StakeCustody();
-        ELECTION = new ElectionPolicy();
-        EVIDENCE = new Evidence();
+        CUSTODY = StakeCustody(c.custody);
+        ELECTION = ElectionPolicy(c.election);
+        EVIDENCE = Evidence(c.evidence);
         Manifest memory m = Manifest({
             network: c.network,
             chainId: block.chainid,
@@ -66,6 +72,7 @@ contract PosFactory {
             minBond: c.minBond,
             limits: c.limits,
             genesis: c.genesis,
+            electionParams: c.electionParams,
             identities: c.identities
         });
         bytes32 h = keccak256(abi.encode(m));

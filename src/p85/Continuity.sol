@@ -70,8 +70,17 @@ library Continuity {
         pure
         returns (Measured memory r)
     {
-        r.totalOld = _total(o, false);
-        r.totalNew = _total(s, true);
+        return _measure(o, s, _total(o, false), _total(s, true));
+    }
+
+    /// @dev The merge walk of `measure`, with the totals already known.
+    function _measure(Member[] memory o, Member[] memory s, uint256 totalOld, uint256 totalNew)
+        private
+        pure
+        returns (Measured memory r)
+    {
+        r.totalOld = totalOld;
+        r.totalNew = totalNew;
         uint256 onlyOld = 0;
         uint256 onlyNew = 0;
         uint256 i = 0;
@@ -80,11 +89,11 @@ library Continuity {
         while (i < o.length || j < s.length) {
             if (j == s.length || (i < o.length && o[i].id < s[j].id)) {
                 ++onlyOld;
-                r.distanceNumerator += _absDiff(0, uint256(o[i].weight) * r.totalNew);
+                r.distanceNumerator += _absDiff(0, uint256(o[i].weight) * totalNew);
                 ++i;
             } else if (i == o.length || s[j].id < o[i].id) {
                 ++onlyNew;
-                r.distanceNumerator += _absDiff(uint256(s[j].weight) * r.totalOld, 0);
+                r.distanceNumerator += _absDiff(uint256(s[j].weight) * totalOld, 0);
                 ++j;
             } else {
                 if (o[i].binding == s[j].binding) {
@@ -94,7 +103,7 @@ library Continuity {
                     ++r.replaced;
                 }
                 r.distanceNumerator += _absDiff(
-                    uint256(s[j].weight) * r.totalOld, uint256(o[i].weight) * r.totalNew
+                    uint256(s[j].weight) * totalOld, uint256(o[i].weight) * totalNew
                 );
                 ++i;
                 ++j;
@@ -114,8 +123,31 @@ library Continuity {
     {
         if (p.distDen == 0) revert InvalidParams();
         r = measure(o, s);
+        failed = _verdict(r, o.length, s.length, p);
+    }
+
+    /// @notice The total weight of a committee that is valid (non-empty, ascending, positive weights, 64-bit total).
+    function totalWeight(Member[] memory c, bool successor) internal pure returns (uint256) {
+        return _total(c, successor);
+    }
+
+    /// @notice The predicates over already measured quantities, for a caller that derives the measurement incrementally.
+    function judge(Measured memory r, uint256 oldSize, uint256 newSize, Params memory p)
+        internal
+        pure
+        returns (uint8)
+    {
+        return _verdict(r, oldSize, newSize, p);
+    }
+
+    function _verdict(Measured memory r, uint256 oldSize, uint256 newSize, Params memory p)
+        private
+        pure
+        returns (uint8 failed)
+    {
+        if (p.distDen == 0) revert InvalidParams();
         if (r.m > p.maxM) failed |= FAIL_MEMBERSHIP;
-        uint256 minSize = o.length < s.length ? o.length : s.length;
+        uint256 minSize = oldSize < newSize ? oldSize : newSize;
         uint256 widest = r.removed > r.added ? r.removed : r.added;
         if (3 * widest >= minSize) failed |= FAIL_TURNOVER;
         // D <= num/den  <=>  numerator*den <= num*V*W
