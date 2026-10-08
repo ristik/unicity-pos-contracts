@@ -72,10 +72,10 @@ library Continuity {
     {
         r.totalOld = _total(o, false);
         r.totalNew = _total(s, true);
-        uint256 onlyOld;
-        uint256 onlyNew;
-        uint256 i;
-        uint256 j;
+        uint256 onlyOld = 0;
+        uint256 onlyNew = 0;
+        uint256 i = 0;
+        uint256 j = 0;
         // a merge walk over the two ascending lists
         while (i < o.length || j < s.length) {
             if (j == s.length || (i < o.length && o[i].id < s[j].id)) {
