@@ -40,6 +40,7 @@ fs_permissions = [
     { access = "read", path = "./test/bridge" },
     { access = "read", path = "./script/bridge-deploy" },
     { access = "read-write", path = "./test/p85/fixtures" },
+    { access = "read-write", path = "./script/genesis-out" },
 ]
 
 # Custody and registry code must not silently truncate.
