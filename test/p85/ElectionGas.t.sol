@@ -3,8 +3,10 @@ pragma solidity 0.8.37;
 
 import {P85Flow} from "./P85Flow.sol";
 import {ElectionPolicy} from "../../src/p85/ElectionPolicy.sol";
+import {StakeCustody} from "../../src/p85/StakeCustody.sol";
 import {
     ElectionParams,
+    Limits,
     Delegation,
     DelegationRequest,
     ReserveInput,
@@ -21,11 +23,19 @@ contract ElectionGasTest is P85Flow {
     uint256 internal L;
     uint256 internal C;
 
+    /// @dev The deployment is capped at exactly the measured profile (limits.vMax = V, limits.lMax = L, election nMax = C): the figure
+    /// is the worst case of a chain deployed with those caps and of no other. Before a scenario is chosen, the profile ceilings.
+    function _manifestLimits() internal view override returns (Limits memory) {
+        return Limits({
+            vMax: uint32(V == 0 ? 128 : V), lMax: uint32(L == 0 ? 8 : L), rMax: 4, maxBatch: 32
+        });
+    }
+
     function _electionParams() internal view override returns (ElectionParams memory) {
         return ElectionParams({
             nMin: 4,
             nTarget: uint32(C == 0 ? 32 : C),
-            nMax: 32,
+            nMax: uint32(C == 0 ? 32 : C),
             maxM: 4,
             distNum: 1,
             distDen: 4,
@@ -98,6 +108,11 @@ contract ElectionGasTest is P85Flow {
     }
 
     function _measureElection(uint256 v, uint256 l, uint256 c, uint256 ceiling) internal {
+        uint256 used = _elect(v, l, c);
+        assertLt(used, ceiling);
+    }
+
+    function _elect(uint256 v, uint256 l, uint256 c) internal returns (uint256 used) {
         (V, L, C) = (v, l, c);
         _deploy(_defaultPolicy()); // again, now that the profile names the committee size
         _populate();
@@ -110,7 +125,7 @@ contract ElectionGasTest is P85Flow {
         vm.resumeGasMetering();
         uint256 before_ = gasleft();
         ElectionPolicy.Outcome out = election.elect(keccak256("origin"));
-        uint256 used = before_ - gasleft();
+        used = before_ - gasleft();
         emit log_named_uint(
             string.concat(
                 "elect gas V=", vm.toString(v), " L=", vm.toString(l), " C=", vm.toString(c)
@@ -118,7 +133,36 @@ contract ElectionGasTest is P85Flow {
             used
         );
         assertEq(uint8(out), uint8(ElectionPolicy.Outcome.Reserved));
-        assertLt(used, ceiling);
+    }
+
+    /// @dev The genesis tool's measurement of the worst-case election for a chosen (V, L, C): V identities of L lots each, a committed
+    /// committee of C, and every outsider outranking the weakest incumbent so the greedy pass tries all of them. Run through
+    /// `script/measure-elect.sh V L C`, which prints one JSON line; the test refuses parameters outside the profile ceilings.
+    function test_measureFromTheEnvironment() public {
+        uint256 v = vm.envOr("P85_MEASURE_V", uint256(0));
+        uint256 l = vm.envOr("P85_MEASURE_L", uint256(0));
+        uint256 c = vm.envOr("P85_MEASURE_C", uint256(0));
+        if (v == 0) return; // not a measurement run
+        require(
+            v >= 5 && v <= 128 && l >= 1 && l <= 8 && c >= 4 && c <= 32 && c <= v,
+            "parameters outside the profile ceilings"
+        );
+        require(
+            l == 1 || l == 2 || l == 4 || l == 8,
+            "L must divide the 1,000 UCT principal into whole lots"
+        );
+        uint256 used = _elect(v, l, c);
+        emit log_string(string.concat(
+                "ELECT-MEASURE {\"v\":",
+                vm.toString(v),
+                ",\"l\":",
+                vm.toString(l),
+                ",\"c\":",
+                vm.toString(c),
+                ",\"gas\":",
+                vm.toString(used),
+                "}"
+            ));
     }
 
     function test_measureV128L8C32() public {
@@ -135,5 +179,29 @@ contract ElectionGasTest is P85Flow {
 
     function test_measureV16L2C8() public {
         _measureElection(16, 2, 8, 5_100_000);
+    }
+
+    /// @dev The measured worst case is the worst case only because the deployment cannot exceed it: at the devnet/testnet profile caps
+    /// (V16, L2, C8) a seventeenth live identity and a third lot are refused, and the committee is bounded by nMax.
+    function test_theDeployedCapsAreTheMeasuredProfile() public {
+        (V, L, C) = (16, 2, 8);
+        _deploy(_defaultPolicy());
+        assertEq(election.vMax(), 16);
+        _populate();
+        assertEq(election.liveCount(), 16, "the index is full at V");
+
+        uint64 extra = register(ownerPk(16), rootPk(16), vm.addr(wdPk(16)));
+        // joining the live index is what the cap bounds: the seventeenth identity cannot become a candidate
+        vm.expectRevert(ElectionPolicy.IndexFull.selector);
+        this.bondExtra(extra);
+
+        uint64 id = gid(0); // a genesis identity holds one lot
+        bondFor(id, 100 * UCT); // the second of L = 2
+        vm.expectRevert(StakeCustody.LotCapacity.selector);
+        this.bondExtra(id);
+    }
+
+    function bondExtra(uint64 id) external {
+        bondFor(id, 100 * UCT);
     }
 }

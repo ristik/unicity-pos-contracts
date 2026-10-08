@@ -6,3 +6,5 @@ docs/book/
 *.log
 __pycache__/
 *.py[cod]
+script/genesis-out/*
+!script/genesis-out/.gitkeep

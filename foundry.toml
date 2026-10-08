@@ -40,6 +40,7 @@ fs_permissions = [
     { access = "read", path = "./test/bridge" },
     { access = "read", path = "./script/bridge-deploy" },
     { access = "read-write", path = "./test/p85/fixtures" },
+    { access = "read-write", path = "./script/genesis-out" },
 ]
 
 # Custody and registry code must not silently truncate.
@@ -55,7 +56,7 @@ exclude_lints = [
 ]
 # Linting is enforced on contract sources. Tests use low-level calls, cheatcodes and helper casts on
 # purpose, and deny_warnings would otherwise turn those lint findings into build failures.
-ignore = ["test/**/*.sol"]
+ignore = ["test/**/*.sol", "script/P85Genesis.s.sol"]
 
 [fmt]
 line_length = 100
