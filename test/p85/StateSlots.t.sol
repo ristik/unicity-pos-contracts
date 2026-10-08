@@ -9,7 +9,7 @@ import {StakeCustody} from "../../src/p85/StakeCustody.sol";
 /// for each scenario, the exact storage slots the public getters read, recorded by the EVM itself (`vm.accesses`), with their words, and
 /// the facts those words encode. bft-core derives every slot from the declared layout and must land on the recorded one; the
 /// fixture is generated here, never written by hand. The test fails when the committed fixture differs from what custody produces now;
-/// run with P85_WRITE_FIXTURES=1 to regenerate.
+/// run with P85_WRITE_FIXTURES=true to regenerate.
 contract StateSlotsTest is P85Flow {
     string internal constant FIXTURE = "/test/p85/fixtures/state-slots.json";
 
@@ -125,11 +125,21 @@ contract StateSlotsTest is P85Flow {
         );
     }
 
+    /// @dev A lot's live reference count: the eighth word of the `lots` getter's return, decoded as a prefix so the thirteen-value tuple
+    /// is never destructured (that exhausts the stack in the long `string.concat` chains of this generator under via_ir).
+    function _refCount(uint256 lotID) internal view returns (uint32 refCount) {
+        (bool ok, bytes memory ret) =
+            address(custody).staticcall(abi.encodeCall(custody.lots, (lotID)));
+        require(ok && ret.length >= 8 * 32, "lots getter");
+        (,,,,,,, refCount) =
+            abi.decode(ret, (uint64, uint64, uint128, uint128, uint128, uint8, uint16, uint32));
+    }
+
     function _lotRefs(uint64 id, uint64 gen) internal view returns (string memory out) {
         uint256[] memory lots = custody.generationLots(id, gen);
         out = "[";
         for (uint256 i; i < lots.length; ++i) {
-            out = string.concat(out, i == 0 ? "" : ",", _u(lotv(lots[i]).refCount));
+            out = string.concat(out, i == 0 ? "" : ",", _u(_refCount(lots[i])));
         }
         out = string.concat(out, "]");
     }
@@ -169,9 +179,18 @@ contract StateSlotsTest is P85Flow {
         );
     }
 
+    /// @dev The state byte of an assignment, read as the first word of the getter's return so that the sixteen-value tuple is never
+    /// destructured (that exhausts the stack in the long `string.concat` of `_reject` under the repo's via_ir build).
+    function _assignmentState(bytes32 assignmentID) internal view returns (uint8) {
+        (bool ok, bytes memory ret) =
+            address(custody).staticcall(abi.encodeCall(custody.assignments, (assignmentID)));
+        require(ok && ret.length >= 32, "assignments getter");
+        return abi.decode(ret, (uint8));
+    }
+
     function _reject(string memory name, bytes32 resultID) internal returns (string memory) {
         StakeCustody.Session memory s = custody.session(resultID);
-        (uint8 asgState,,,,,,,,,,,,,,,) = custody.assignments(s.assignmentID);
+        uint8 asgState = _assignmentState(s.assignmentID);
         return string.concat(
             '{"name":"',
             name,
@@ -260,7 +279,7 @@ contract StateSlotsTest is P85Flow {
         assertEq(
             vm.readFile(path),
             json,
-            "the committed state-slots fixture is stale; regenerate with P85_WRITE_FIXTURES=1"
+            "the committed state-slots fixture is stale; regenerate with P85_WRITE_FIXTURES=true"
         );
     }
 }

@@ -8,7 +8,7 @@ import {RootRecord, RecordKind} from "../src/p85/P85Types.sol";
 /// @notice The registry storage the root authenticates with Ethereum storage proofs for a Retirement (briefs/p85-pr1c-control-records.md
 /// section 3): the imported record count, the authenticated target count and the retirement key of an (id, generation), as the EVM reads
 /// and writes them. bft-core derives each slot from the registry's fixed-slot rule and must land on the recorded one. Generated here,
-/// compared on every run; regenerate with P85_WRITE_FIXTURES=1.
+/// compared on every run; regenerate with P85_WRITE_FIXTURES=true.
 contract RegistryStateSlotsTest is SealRegistryBase {
     string internal constant FIXTURE = "/test/p85/fixtures/registry-state-slots.json";
     bytes32 internal constant RETIREMENT_PREFIX =
@@ -149,7 +149,7 @@ contract RegistryStateSlotsTest is SealRegistryBase {
         assertEq(
             vm.readFile(path),
             json,
-            "the committed registry-state-slots fixture is stale; regenerate with P85_WRITE_FIXTURES=1"
+            "the committed registry-state-slots fixture is stale; regenerate with P85_WRITE_FIXTURES=true"
         );
     }
 }
