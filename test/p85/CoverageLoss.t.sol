@@ -127,6 +127,27 @@ contract CoverageLossTest is P85Flow {
         evidence.settleEvidence(caseID, lots);
     }
 
+    // --- retirement is not a loss ---------------------------------------------------------------
+
+    function test_aRetirementRequestedAfterPublicationIsNotALoss() public {
+        _publish();
+        requestRetirement(1);
+        assertFalse(
+            election.reconcileCandidate(resultID),
+            "reconcile does not turn a retirement into a loss"
+        );
+        assertFalse(_lost());
+        // the control: the same call does see a real loss, so the answer above is the retirement and nothing else
+        _penalize(3);
+        assertTrue(election.reconcileCandidate(resultID));
+    }
+
+    function test_aRetirementRequestedBeforePublicationIsNotALossEither() public {
+        requestRetirement(1);
+        assertFalse(election.reconcileCandidate(resultID));
+        assertFalse(_lost());
+    }
+
     // --- on demand ------------------------------------------------------------------------------
 
     function test_reconcileMarksTheResultWhenAnyMemberFellShort() public {

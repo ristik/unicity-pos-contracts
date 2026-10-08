@@ -260,20 +260,42 @@ contract EligibilityReader {
         );
     }
 
-    /// @notice Whether a frozen member is still a valid primary: same open generation, no retirement request, not excluded, and the
-    /// unreleased lots of its exposure still carry its committed weight.
+    /// @notice Whether a frozen member is still a valid primary at finalization: same open generation, no retirement request, not
+    /// excluded, and the unreleased lots of its exposure still carry its committed weight.
     function covered(uint64 id, uint64 generation, uint64 weight, bytes32 exposureID)
         external
         view
         returns (bool)
     {
-        (bool read, bytes memory ret) =
-            address(CUSTODY).staticcall(abi.encodeCall(IStakeCustody.positions, (id)));
+        return _covered(id, generation, weight, exposureID, true);
+    }
+
+    /// @notice Whether a member of a reserved result has kept its coverage since the snapshot, the predicate of a coverage LOSS: the same
+    /// as `covered` without the retirement request. A retirement requested after the snapshot is not a loss (the exposure lots stay
+    /// encumbered until their references close, so the committed weight is still backed), and the proven `lost` word must not depend
+    /// on whether a third party called `reconcileCandidate`.
+    function stillCovered(uint64 id, uint64 generation, uint64 weight, bytes32 exposureID)
+        external
+        view
+        returns (bool)
+    {
+        return _covered(id, generation, weight, exposureID, false);
+    }
+
+    function _covered(
+        uint64 id,
+        uint64 generation,
+        uint64 weight,
+        bytes32 exposureID,
+        bool retirementCounts
+    ) private view returns (bool) {
+        (bool read, bytes memory ret) = address(CUSTODY)
+            .staticcall(abi.encodeCall(IStakeCustody.positions, (id)));
         if (!read) revert CustodyRead();
         Position memory pos = abi.decode(ret, (Position));
         if (
-            pos.owner == address(0) || pos.retirementRequested || pos.generation != generation
-                || EVIDENCE.excluded(id)
+            pos.owner == address(0) || (retirementCounts && pos.retirementRequested)
+                || pos.generation != generation || EVIDENCE.excluded(id)
         ) return false;
         uint256[] memory lots = CUSTODY.exposureLots(exposureID);
         uint256 backing = 0;

@@ -897,7 +897,7 @@ contract ElectionPolicy {
         if (pub.lost) return;
         Frozen storage m = _frozen[resultID][index];
         bytes32 eid = custody.assignmentExposures(_results[resultID].assignmentID)[index];
-        if (!reader.covered(m.id, m.generation, m.weight, eid)) {
+        if (!reader.stillCovered(m.id, m.generation, m.weight, eid)) {
             pub.lost = true;
             emit CoverageLostFor(resultID, m.id);
         }
