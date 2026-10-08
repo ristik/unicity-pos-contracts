@@ -7,6 +7,7 @@ import {StakeCustody} from "../../src/p85/StakeCustody.sol";
 import {ElectionPolicy} from "../../src/p85/ElectionPolicy.sol";
 import {Evidence} from "../../src/p85/Evidence.sol";
 import {SelectionEngine} from "../../src/p85/SelectionEngine.sol";
+import {EligibilityReader} from "../../src/p85/EligibilityReader.sol";
 import {FixedPolicy} from "../../src/p85/FixedPolicy.sol";
 import {
     Policy,
@@ -96,13 +97,18 @@ abstract contract P85Base is Test {
                 bond: GENESIS_BOND
             });
         }
-        // the modules are constructed with the address the factory will have: four creations (three modules, the engine) precede it
-        address f = vm.computeCreateAddress(address(this), vm.getNonce(address(this)) + 4);
+        // the modules are constructed with the address the factory will have: five creations (three modules, the engine, the reader)
+        // precede it
+        address f = vm.computeCreateAddress(address(this), vm.getNonce(address(this)) + 5);
+        address cu = address(new StakeCustody(f));
+        address el = address(new ElectionPolicy(f));
+        address ev = address(new Evidence(f));
         PosFactory.Config memory c = PosFactory.Config({
-            custody: address(new StakeCustody(f)),
-            election: address(new ElectionPolicy(f)),
-            evidence: address(new Evidence(f)),
+            custody: cu,
+            election: el,
+            evidence: ev,
             selection: address(new SelectionEngine()),
+            reader: address(new EligibilityReader(cu, ev)),
             network: NETWORK,
             roots: address(roots),
             treasury: treasury,
@@ -164,6 +170,7 @@ abstract contract P85Base is Test {
             election: address(election),
             evidence: address(evidence),
             selection: address(new SelectionEngine()),
+            reader: address(new EligibilityReader(address(custody), address(evidence))),
             policySource: policySource,
             roots: address(roots),
             treasury: treasury,

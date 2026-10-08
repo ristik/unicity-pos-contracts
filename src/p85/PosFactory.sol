@@ -31,6 +31,7 @@ contract PosFactory {
         address election;
         address evidence;
         address selection;
+        address reader;
         bytes32 network;
         address roots;
         address treasury;
@@ -67,6 +68,7 @@ contract PosFactory {
             election: address(ELECTION),
             evidence: address(EVIDENCE),
             selection: c.selection,
+            reader: c.reader,
             policySource: address(POLICY),
             roots: c.roots,
             treasury: c.treasury,
