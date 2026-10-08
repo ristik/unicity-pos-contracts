@@ -70,6 +70,13 @@ abstract contract P85Base is Test {
     }
 
     /// @dev DEV-DEFAULT election profile (design v5 section 6).
+    /// @dev The epochs of the genesis assignment.
+    uint64 internal genesisRootEpoch = 1;
+    uint64 internal genesisEvmEpoch = 1;
+
+    /// @dev B_min of manual deployments (the factory's deployments use the unit).
+    uint128 internal manualMinBond = uint128(100 * UCT);
+
     function _electionParams() internal view virtual returns (ElectionParams memory) {
         return ElectionParams({
             nMin: 4,
@@ -118,8 +125,8 @@ abstract contract P85Base is Test {
             genesis: GenesisAssignment({
                 assignmentID: GENESIS_ASSIGNMENT,
                 lineage: LINEAGE,
-                rootEpoch: 1,
-                evmEpoch: 1,
+                rootEpoch: genesisRootEpoch,
+                evmEpoch: genesisEvmEpoch,
                 firstRound: 1
             }),
             policy: policy,
@@ -159,8 +166,8 @@ abstract contract P85Base is Test {
         GenesisAssignment memory g = GenesisAssignment({
             assignmentID: GENESIS_ASSIGNMENT,
             lineage: LINEAGE,
-            rootEpoch: 1,
-            evmEpoch: 1,
+            rootEpoch: genesisRootEpoch,
+            evmEpoch: genesisEvmEpoch,
             firstRound: 1
         });
         Manifest memory m = Manifest({
@@ -175,7 +182,7 @@ abstract contract P85Base is Test {
             roots: address(roots),
             treasury: treasury,
             bondUnit: uint128(100 * UCT),
-            minBond: uint128(100 * UCT),
+            minBond: manualMinBond,
             limits: limits,
             genesis: g,
             electionParams: _electionParams(),
@@ -192,7 +199,7 @@ abstract contract P85Base is Test {
                 roots: address(roots),
                 treasury: treasury,
                 bondUnit: uint128(100 * UCT),
-                minBond: uint128(100 * UCT),
+                minBond: manualMinBond,
                 limits: limits,
                 genesis: g
             })

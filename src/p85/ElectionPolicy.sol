@@ -46,8 +46,8 @@ contract ElectionPolicy {
     bytes32 internal constant PRIMARY_DOMAIN = keccak256("unicity.p85.primary-commitment");
     bytes32 internal constant K_DOMAIN = keccak256("unicity.p85.recovery-authorization");
     bytes32 internal constant CONTRACTS_DOMAIN = keccak256("unicity.p85.contracts");
-    /// @dev The EIP-4788 system address the mandatory hook calls from.
-    address internal constant SYSTEM_CALLER = 0xffffFFFfFFffffffffffffffFfFFFfffFFFfFFfE;
+    /// @dev The profile's fixed privileged caller (ureth `SYSTEM_CALLER`), the address the mandatory hook calls from.
+    address internal constant SYSTEM_CALLER = address(0xff00000000000000000000000000000000000001);
 
     error NotFactory();
     error AlreadyInitialized();

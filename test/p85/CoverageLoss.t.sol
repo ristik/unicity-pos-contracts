@@ -10,7 +10,7 @@ import {ElectionParams, RecordKind} from "../../src/p85/P85Types.sol";
 /// @notice A primary that was published must not pass Prepare after a member lost its coverage: the election marks the open result lost,
 /// event-driven from Evidence (exclusion, settled penalties) and on demand through `reconcileCandidate`.
 contract CoverageLossTest is P85Flow {
-    address internal constant SYS = 0xffffFFFfFFffffffffffffffFfFFFfffFFFfFFfE;
+    address internal constant SYS = address(0xff00000000000000000000000000000000000001);
     uint256 internal constant CUSTODY_LOTS = 27;
     bytes32 internal resultID;
 
@@ -92,9 +92,9 @@ contract CoverageLossTest is P85Flow {
     }
 
     function test_aChangeToANonMemberOrWithoutAnOpenResultIsIgnored() public {
-        _penalize(1);
+        _penalize(0);
         vm.prank(address(evidence));
-        election.coverageChanged(99); // not a member
+        election.coverageChanged(99); // not a member: the penalized first member is not looked at
         assertFalse(_lost());
         // resolve the result, then the member's loss concerns no open result
         clock(100_050, 604_900);
@@ -102,7 +102,7 @@ contract CoverageLossTest is P85Flow {
         applyAll();
         assertEq(election.openResult(), bytes32(0));
         vm.prank(address(evidence));
-        election.coverageChanged(gid(1));
+        election.coverageChanged(gid(0));
         assertFalse(_lost());
     }
 

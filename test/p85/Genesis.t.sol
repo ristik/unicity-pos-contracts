@@ -172,6 +172,9 @@ contract GenesisTest is P85Base {
         m.reader = address(new EligibilityReader(address(evidence), address(custody))); // swapped
         vm.expectRevert(ElectionPolicy.InvalidParams.selector);
         fresh.initialize(bytes32(0), m);
+        m.reader = address(new EligibilityReader(address(custody), address(roots))); // swapped evidence
+        vm.expectRevert(ElectionPolicy.InvalidParams.selector);
+        fresh.initialize(bytes32(0), m);
         m.reader = address(0xdead); // no code
         vm.expectRevert(ElectionPolicy.InvalidParams.selector);
         fresh.initialize(bytes32(0), m);

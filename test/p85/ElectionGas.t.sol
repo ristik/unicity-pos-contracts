@@ -15,7 +15,7 @@ import {
 /// @notice The election's gas at the profile ceilings: 128 identities of 8 lots each, a committed committee of 32, and 96 outsiders that
 /// outrank the lowest incumbent, so the greedy pass runs a continuity trial for every one of them.
 contract ElectionGasTest is P85Flow {
-    address internal constant SYS = 0xffffFFFfFFffffffffffffffFfFFFfffFFFfFFfE;
+    address internal constant SYS = address(0xff00000000000000000000000000000000000001);
     // the scenario in force: V identities of L lots each, a committed committee of the first C
     uint256 internal V;
     uint256 internal L;
