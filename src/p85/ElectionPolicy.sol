@@ -135,7 +135,8 @@ contract ElectionPolicy {
     struct Frozen {
         uint64 id;
         uint64 generation;
-        uint64 weight;
+        uint64 weight; // the committed (quantized) weight q
+        uint64 raw; // the raw bonded weight x the member's lots must cover
         bytes32 bindingHash;
     }
 
@@ -569,7 +570,13 @@ contract ElectionPolicy {
         for (uint256 i = 0; i < chosen.length; ++i) {
             while (c[k].id != chosen[i].id) ++k;
             in_.members[i] = ReserveMember(
-                c[k].id, c[k].weight, c[k].rootKeyHash, c[k].evmKeyHash, c[k].payee, c[k].lots
+                c[k].id,
+                chosen[i].weight, // q, quantized over the chosen committee
+                c[k].weight, // x
+                c[k].rootKeyHash,
+                c[k].evmKeyHash,
+                c[k].payee,
+                c[k].lots
             );
         }
         try custody.reserveCandidate(in_) returns (bytes32) {}
@@ -595,7 +602,9 @@ contract ElectionPolicy {
         k = 0;
         for (uint256 i = 0; i < chosen.length; ++i) {
             while (c[k].id != chosen[i].id) ++k;
-            f.push(Frozen(c[k].id, c[k].generation, c[k].weight, c[k].bindingHash));
+            f.push(
+                Frozen(c[k].id, c[k].generation, chosen[i].weight, c[k].weight, c[k].bindingHash)
+            );
         }
         _openPublication(resultID, in_.assignmentID, predecessor, digest);
         attemptCursor = attempt;
@@ -839,7 +848,7 @@ contract ElectionPolicy {
         bytes32[] memory eids = custody.assignmentExposures(r.assignmentID);
         bytes32 popSet = POPSET_DOMAIN;
         for (uint256 i = 0; i < f.length; ++i) {
-            if (!reader.covered(f[i].id, f[i].generation, f[i].weight, eids[i])) {
+            if (!reader.covered(f[i].id, f[i].generation, f[i].raw, eids[i])) {
                 revert NotCovered(f[i].id);
             }
             popSet = keccak256(abi.encode(popSet, f[i].id, _popHashes[resultID][f[i].id]));
@@ -897,7 +906,7 @@ contract ElectionPolicy {
         if (pub.lost) return;
         Frozen storage m = _frozen[resultID][index];
         bytes32 eid = custody.assignmentExposures(_results[resultID].assignmentID)[index];
-        if (!reader.stillCovered(m.id, m.generation, m.weight, eid)) {
+        if (!reader.stillCovered(m.id, m.generation, m.raw, eid)) {
             pub.lost = true;
             emit CoverageLostFor(resultID, m.id);
         }

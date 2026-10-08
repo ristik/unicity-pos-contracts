@@ -71,7 +71,7 @@ contract GenesisTest is P85Base {
             assertEq(rootHash, keccak256(compressed(rootPk(i))));
             assertEq(gen, 1);
             assertEq(open, 1);
-            (bytes32 asg,,,,, uint64 weight, address payee,,) =
+            (bytes32 asg,,, uint64 weight,,,, address payee,,) =
                 custody.exposures(genesisExposure(i));
             assertEq(asg, GENESIS_ASSIGNMENT);
             assertEq(weight, 10);
@@ -240,6 +240,44 @@ contract GenesisTest is P85Base {
         vm.deal(address(this), 99 * UCT);
         vm.expectRevert(StakeCustody.InvalidGenesis.selector);
         deployer.factory{value: 99 * UCT}(c);
+    }
+
+    /// The genesis committee's total weight (and each member's) is capped at B = 65,536 units: B itself is accepted, B + 1 is refused by the
+    /// factory, and a single member above B by custody. K is never re-quantized, so the cap has to hold from the first record.
+    function _atWeights(uint256 first, uint256 second)
+        internal
+        returns (GenesisIdentity[] memory ids)
+    {
+        ids = new GenesisIdentity[](2);
+        uint256[2] memory w = [first, second];
+        for (uint256 i; i < 2; ++i) {
+            ids[i] = GenesisIdentity({
+                owner: address(uint160(0xA1 + i)),
+                withdrawal: address(uint160(0xB1 + i)),
+                rootKey: compressed(rootPk(i)),
+                evmKey: compressed(evmPk(i)),
+                rootNodeID: bytes32(uint256(1 + i)),
+                evmNodeID: bytes32(uint256(11 + i)),
+                operatorPayee: address(uint160(0xC1 + i)),
+                bond: w[i] * 100 * UCT
+            });
+        }
+    }
+
+    function test_genesisWeightIsCappedAtB() public {
+        GenesisIdentity[] memory ids = _atWeights(40_000, 25_536); // exactly B
+        vm.deal(address(this), 65_536 * 100 * UCT);
+        deployer.factory{value: 65_536 * 100 * UCT}(_config(ids));
+
+        ids = _atWeights(40_000, 25_537); // B + 1
+        vm.deal(address(this), 65_537 * 100 * UCT);
+        vm.expectRevert(PosFactory.GenesisWeightAboveCap.selector);
+        deployer.factory{value: 65_537 * 100 * UCT}(_config(ids));
+
+        ids = _atWeights(65_537, 1); // one member alone above B
+        vm.deal(address(this), 65_538 * 100 * UCT);
+        vm.expectRevert(StakeCustody.InvalidGenesis.selector);
+        deployer.factory{value: 65_538 * 100 * UCT}(_config(ids));
     }
 
     function test_factoryRejectsRootKeyReusedAsEvmKey() public {

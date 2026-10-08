@@ -42,6 +42,8 @@ contract CustodyDigestsTest is P85Flow {
                 _u(e.generation),
                 ',"weight":',
                 _u(e.weight),
+                ',"rawWeight":',
+                _u(e.rawWeight),
                 ',"operatorPayee":"',
                 vm.toString(e.operatorPayee),
                 '","rootKeyHash":"',

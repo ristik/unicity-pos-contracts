@@ -2,6 +2,7 @@
 pragma solidity 0.8.37;
 
 import {Continuity} from "../../src/p85/Continuity.sol";
+import {Quantize} from "../../src/p85/Quantize.sol";
 
 // Loops are bounded by the immutable V ceiling (at most 128 eligible identities) and the committee ceiling (at most 32 members).
 // forge-lint: disable-start(unsafe-typecast, calls-loop)
@@ -11,7 +12,7 @@ import {Continuity} from "../../src/p85/Continuity.sol";
 /// `Selection` replaced it by an incremental measurement of the same trials; `SelectionFuzz.t.sol` pins the two to each other. The
 /// Go model in bft-core (`continuity/selection_test.go`) is the shared reference of both.
 library NaiveSelection {
-    /// @dev An eligible identity of the snapshot: its current binding hash and assigned weight (positive).
+    /// @dev An eligible identity of the snapshot: its current binding hash and raw bonded weight (positive).
     struct Entry {
         uint64 id;
         bytes32 binding;
@@ -137,9 +138,17 @@ library NaiveSelection {
         returns (Continuity.Member[] memory out)
     {
         out = new Continuity.Member[](count);
+        uint256[] memory raw = new uint256[](count);
         uint256 k = 0;
         for (uint256 i = 0; i < e.length; ++i) {
-            if (inS[i]) out[k++] = Continuity.Member(e[i].id, e[i].binding, e[i].weight);
+            if (inS[i]) {
+                raw[k] = e[i].weight;
+                out[k++] = Continuity.Member(e[i].id, e[i].binding, 0);
+            }
+        }
+        uint256[] memory q = Quantize.quantize(raw);
+        for (k = 0; k < count; ++k) {
+            out[k].weight = uint64(q[k]);
         }
     }
 

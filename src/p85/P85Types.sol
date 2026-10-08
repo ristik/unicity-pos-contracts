@@ -115,7 +115,8 @@ struct CustodyConfig {
 
 struct ReserveMember {
     uint64 id;
-    uint64 weight;
+    uint64 weight; // the committed (quantized) weight q
+    uint64 rawWeight; // the raw bonded weight x >= q the member's lots must cover
     bytes32 rootKeyHash;
     bytes32 evmKeyHash;
     address operatorPayee;
@@ -214,9 +215,10 @@ struct Exposure {
     bytes32 assignmentID;
     uint64 id;
     uint64 generation;
+    uint64 weight; // the committed (quantized) weight q
+    uint64 rawWeight; // x >= q: what the lots must cover; id, generation, weight and rawWeight fill one slot
     bytes32 rootKeyHash;
     bytes32 evmKeyHash;
-    uint64 weight;
     address operatorPayee;
     bool referencesReleased;
     uint32 sessionLocks;

@@ -202,6 +202,7 @@ contract FuzzTest is P85Flow {
         ReserveInput memory in_ = _reserveInput(RES_J, ASG_J, allMembers(), 1);
         uint64 w = maxWeight + uint64(bound(weightDelta, 0, 2));
         in_.members[0].weight = w;
+        in_.members[0].rawWeight = w;
         vm.prank(address(election));
         if (w > maxWeight) {
             vm.expectRevert(StakeCustody.InsufficientCoverage.selector);

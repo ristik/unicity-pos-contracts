@@ -94,6 +94,7 @@ contract ElectionGasTest is P85Flow {
             in_.members[k] = ReserveMember({
                 id: id,
                 weight: uint64(coverage(id) / (100 * UCT)),
+                rawWeight: uint64(coverage(id) / (100 * UCT)),
                 rootKeyHash: rootHash,
                 evmKeyHash: keccak256(evm),
                 operatorPayee: _payeeOf(id),

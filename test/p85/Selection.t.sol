@@ -27,6 +27,7 @@ contract SelectionTest is Test {
 
     struct VCase {
         uint64[] chosen;
+        uint64[] chosenWeights;
         VConfig config;
         VMember[] eligible;
         string name;
@@ -81,6 +82,7 @@ contract SelectionTest is Test {
             assertEq(chosen.length, k.chosen.length, k.name);
             for (uint256 i; i < chosen.length; ++i) {
                 assertEq(chosen[i].id, k.chosen[i], k.name);
+                assertEq(chosen[i].weight, k.chosenWeights[i], k.name);
             }
             if (reason == Selection.Reason.None) ++elected;
         }

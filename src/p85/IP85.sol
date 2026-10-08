@@ -45,9 +45,10 @@ interface IStakeCustody {
             bytes32 assignmentID,
             uint64 id,
             uint64 generation,
+            uint64 weight,
+            uint64 rawWeight,
             bytes32 rootKeyHash,
             bytes32 evmKeyHash,
-            uint64 weight,
             address operatorPayee,
             bool referencesReleased,
             uint32 sessionLocks

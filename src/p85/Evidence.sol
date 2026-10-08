@@ -177,7 +177,7 @@ contract Evidence {
         if (offenceSeen[offenceID]) revert DuplicateOffence();
 
         // forge-lint: disable-start(unused-return)
-        (bytes32 assignmentID, uint64 identity,, bytes32 rootKeyHash, bytes32 evmKeyHash,,,,) =
+        (bytes32 assignmentID, uint64 identity,,,, bytes32 rootKeyHash, bytes32 evmKeyHash,,,) =
             custody.exposures(exposureID);
         // forge-lint: disable-end(unused-return)
         if (assignmentID == bytes32(0)) revert ExposureUnknown();

@@ -157,6 +157,37 @@ contract ElectionTest is P85Flow {
         );
     }
 
+    /// Bonds so large that the raw total exceeds the cap B: the elected committee carries the quantized weights q (summing to at most B,
+    /// each at most its raw weight), the frozen record and the custody exposure keep the raw weight x, and the lots must cover x.
+    function test_heavyBondsAreQuantizedAndTheLotsCoverTheRawWeight() public {
+        uint256 extra = 20_000_000 * UCT;
+        for (uint256 i; i < N_GENESIS; ++i) {
+            bondFor(gid(i), extra);
+        }
+        uint64 raw = uint64((GENESIS_BOND + extra) / (100 * UCT)); // 200,010 each: X = 800,040 > B
+        _due();
+        assertEq(uint8(_elect()), uint8(ElectionPolicy.Outcome.Reserved));
+        bytes32 resultID = _resultID(1, ORIGIN);
+        bytes32 assignmentID = _assignmentOf(resultID);
+
+        uint256 s = (uint256(raw) * N_GENESIS + (65_536 - N_GENESIS) - 1) / (65_536 - N_GENESIS);
+        uint64 q = uint64(raw / s);
+        ElectionPolicy.Frozen[] memory f = election.frozenMembers(resultID);
+        bytes32[] memory eids = custody.assignmentExposures(assignmentID);
+        uint256 total;
+        for (uint256 i; i < f.length; ++i) {
+            assertEq(f[i].raw, raw, "the frozen record keeps x");
+            assertEq(f[i].weight, q, "and the committed q");
+            Expo memory e = expo(eids[i]);
+            assertEq(e.weight, q);
+            assertEq(e.rawWeight, raw);
+            assertGe(coverage(f[i].id), uint256(raw) * 100 * UCT, "the lots cover x");
+            total += f[i].weight;
+        }
+        assertLe(total, 65_536);
+        assertGt(s, 1, "the rule was in force");
+    }
+
     function test_oneUnresolvedResultAtATime() public {
         _due();
         assertEq(uint8(_elect()), uint8(ElectionPolicy.Outcome.Reserved));

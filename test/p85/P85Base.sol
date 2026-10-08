@@ -355,6 +355,7 @@ abstract contract P85Base is Test {
             in_.members[k] = ReserveMember({
                 id: id,
                 weight: uint64(coverage(id) / (100 * UCT)),
+                rawWeight: uint64(coverage(id) / (100 * UCT)),
                 rootKeyHash: rootHash,
                 evmKeyHash: keccak256(evm),
                 operatorPayee: _payeeOf(id),
@@ -439,9 +440,10 @@ abstract contract P85Base is Test {
         bytes32 assignmentID;
         uint64 id;
         uint64 generation;
+        uint64 weight;
+        uint64 rawWeight;
         bytes32 rootKeyHash;
         bytes32 evmKeyHash;
-        uint64 weight;
         address operatorPayee;
         bool released;
         uint32 locks;
@@ -491,9 +493,10 @@ abstract contract P85Base is Test {
             e.assignmentID,
             e.id,
             e.generation,
+            e.weight,
+            e.rawWeight,
             e.rootKeyHash,
             e.evmKeyHash,
-            e.weight,
             e.operatorPayee,
             e.released,
             e.locks
