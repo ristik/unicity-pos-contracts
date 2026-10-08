@@ -25,6 +25,8 @@ contract SelectionFuzzTest is Test {
         )
     {
         uint256 universe = 6 + _rnd(seed, 1, 30);
+        uint256 eligiblePct = 50 + _rnd(seed, 2, 46);
+        uint256 maxOldWeight = 5 + _rnd(seed, 3, 40);
         // the last committee: a random subset of the universe
         uint256 k = 0;
         Continuity.Member[] memory tmpO = new Continuity.Member[](universe);
@@ -33,15 +35,15 @@ contract SelectionFuzzTest is Test {
         uint256 oi = 0;
         for (uint256 id = 1; id <= universe; ++id) {
             bool inOld = _rnd(seed, 100 + id, 100) < 40;
-            uint64 oldWeight = uint64(1 + _rnd(seed, 200 + id, 20));
+            uint64 oldWeight = uint64(1 + _rnd(seed, 200 + id, maxOldWeight));
             if (inOld) {
                 tmpO[oi++] = Continuity.Member(uint64(id), bytes32(uint256(id)), oldWeight);
             }
-            if (_rnd(seed, 300 + id, 100) < 85) {
+            if (_rnd(seed, 300 + id, 100) < eligiblePct) {
                 // eligible: an incumbent keeps or changes its weight and binding; an outsider is new
                 uint64 w = inOld && _rnd(seed, 400 + id, 100) < 60
                     ? oldWeight
-                    : uint64(1 + _rnd(seed, 500 + id, 25));
+                    : uint64(1 + _rnd(seed, 500 + id, maxOldWeight + 5));
                 bytes32 b = inOld && _rnd(seed, 600 + id, 100) < 90
                     ? bytes32(uint256(id))
                     : bytes32(uint256(id) + 1_000);
@@ -74,7 +76,8 @@ contract SelectionFuzzTest is Test {
         ncfg = NaiveSelection.Config(nMin, nTarget, nMax, Continuity.Params(maxM, num, den));
     }
 
-    function testFuzz_incrementalSelectionEqualsTheNaiveForm(uint256 seed) public pure {
+    /// @dev One comparison per external call, so each starts with fresh memory.
+    function compare(uint256 seed) external pure {
         (
             Continuity.Member[] memory o,
             Selection.Entry[] memory e,
@@ -91,6 +94,17 @@ contract SelectionFuzzTest is Test {
             assertEq(c[i].id, nc[i].id);
             assertEq(c[i].binding, nc[i].binding);
             assertEq(c[i].weight, nc[i].weight);
+        }
+    }
+
+    function testFuzz_incrementalSelectionEqualsTheNaiveForm(uint256 seed) public view {
+        this.compare(seed);
+    }
+
+    /// @dev A fixed sweep, so the equivalence does not depend on what the fuzzer happens to draw.
+    function test_incrementalSelectionEqualsTheNaiveFormOverASweep() public view {
+        for (uint256 seed = 1; seed <= 1_500; ++seed) {
+            this.compare(seed);
         }
     }
 
