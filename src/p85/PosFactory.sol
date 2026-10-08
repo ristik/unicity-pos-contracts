@@ -30,6 +30,7 @@ contract PosFactory {
         address custody; // the deployed, uninitialized modules this factory initializes; each was constructed with this factory's address
         address election;
         address evidence;
+        address selection;
         bytes32 network;
         address roots;
         address treasury;
@@ -65,6 +66,7 @@ contract PosFactory {
             custody: address(CUSTODY),
             election: address(ELECTION),
             evidence: address(EVIDENCE),
+            selection: c.selection,
             policySource: address(POLICY),
             roots: c.roots,
             treasury: c.treasury,

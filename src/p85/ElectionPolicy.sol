@@ -19,6 +19,7 @@ import {IRootRecords, IStakeCustody, IPolicySource, IEvidence} from "./IP85.sol"
 import {KeyLib} from "./KeyLib.sol";
 import {Continuity} from "./Continuity.sol";
 import {Selection} from "./Selection.sol";
+import {SelectionEngine} from "./SelectionEngine.sol";
 
 /// @title ElectionPolicy
 /// @notice The bounded live index, the owner-authenticated `admitDelegation` mutator with its staged (binding, operatorPayee) storage and
@@ -147,6 +148,7 @@ contract ElectionPolicy {
     IStakeCustody public custody;
     IRootRecords public roots;
     IEvidence public evidence;
+    SelectionEngine public selection;
     IPolicySource public policySource;
     uint32 public vMax;
     ElectionParams public params;
@@ -190,6 +192,8 @@ contract ElectionPolicy {
         roots = IRootRecords(m.roots);
         vMax = m.limits.vMax;
         evidence = IEvidence(m.evidence);
+        if (m.selection.code.length == 0) revert InvalidParams();
+        selection = SelectionEngine(m.selection);
         policySource = IPolicySource(m.policySource);
         ElectionParams calldata p = m.electionParams;
         if (
@@ -434,7 +438,7 @@ contract ElectionPolicy {
             e[i] = Selection.Entry(c[i].id, c[i].binding, c[i].weight);
         }
         ElectionParams memory q = params;
-        (Selection.Reason reason, Continuity.Member[] memory chosen) = Selection.select(
+        (Selection.Reason reason, Continuity.Member[] memory chosen) = selection.select(
             o,
             e,
             Selection.Config(

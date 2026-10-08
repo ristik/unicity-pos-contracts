@@ -11,8 +11,6 @@
       "DelegationExpired()": "30d3ba07",
       "DelegationNonceMismatch()": "d6f29651",
       "IndexFull()": "816036c3",
-      "InvalidCommittee(bool)": "fb8d4a3d",
-      "InvalidEligible()": "463a67ff",
       "InvalidParams()": "a86b6512",
       "KeyNotOnCurve()": "b9e415db",
       "ManifestMismatch()": "22947ee2",
@@ -51,7 +49,7 @@
       "electNow(bytes32,uint64,uint64,bytes32)": "b6a2210d",
       "evidence()": "a77e0987",
       "frozenMembers(bytes32)": "046b9998",
-      "initialize(bytes32,(bytes32,uint256,address,address,address,address,address,address,uint128,uint128,(uint32,uint32,uint32,uint32),(bytes32,bytes32,uint64,uint64,uint64),(uint32,uint32,uint32,uint64,uint64,uint64,uint64,uint64),(address,address,bytes,bytes,bytes32,bytes32,address,uint256)[]))": "d18d3634",
+      "initialize(bytes32,(bytes32,uint256,address,address,address,address,address,address,address,uint128,uint128,(uint32,uint32,uint32,uint32),(bytes32,bytes32,uint64,uint64,uint64),(uint32,uint32,uint32,uint64,uint64,uint64,uint64,uint64),(address,address,bytes,bytes,bytes32,bytes32,address,uint256)[]))": "de50db9e",
       "initialized()": "158ef93e",
       "isIndexed(uint64)": "0d5b1019",
       "liveCount()": "fc474d62",
@@ -64,6 +62,7 @@
       "result(bytes32)": "39a926c4",
       "resultResolved(bytes32,uint8,uint64,uint64)": "f08cc5a6",
       "roots()": "393fe1cd",
+      "selection()": "15c63984",
       "syncLiveIndex(uint64)": "ec8a5bbf",
       "thresholds()": "cda43b3a",
       "vMax()": "f3a250f9"
@@ -108,7 +107,7 @@
       "caseInfo(bytes32)": "92cc5551",
       "custody()": "dda79b75",
       "excluded(uint64)": "46b67646",
-      "initialize(bytes32,(bytes32,uint256,address,address,address,address,address,address,uint128,uint128,(uint32,uint32,uint32,uint32),(bytes32,bytes32,uint64,uint64,uint64),(uint32,uint32,uint32,uint64,uint64,uint64,uint64,uint64),(address,address,bytes,bytes,bytes32,bytes32,address,uint256)[]))": "d18d3634",
+      "initialize(bytes32,(bytes32,uint256,address,address,address,address,address,address,address,uint128,uint128,(uint32,uint32,uint32,uint32),(bytes32,bytes32,uint64,uint64,uint64),(uint32,uint32,uint32,uint64,uint64,uint64,uint64,uint64),(address,address,bytes,bytes,bytes32,bytes32,address,uint256)[]))": "de50db9e",
       "initialized()": "158ef93e",
       "manifestHash()": "337f3f32",
       "maxBatch()": "67765b87",
@@ -148,6 +147,17 @@
       "EVIDENCE()": "2398a77d",
       "MANIFEST_HASH()": "23884c52",
       "POLICY()": "dadbccee"
+    }
+  },
+  "SelectionEngine": {
+    "errors": {
+      "InvalidCommittee(bool)": "fb8d4a3d",
+      "InvalidEligible()": "463a67ff",
+      "InvalidParams()": "a86b6512"
+    },
+    "events": {},
+    "methodIdentifiers": {
+      "select((uint64,bytes32,uint64)[],(uint64,bytes32,uint64)[],(uint32,uint32,uint32,(uint64,uint64,uint64)))": "cff5a82f"
     }
   },
   "StakeCustody": {
