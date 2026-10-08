@@ -109,6 +109,7 @@
       "kInputs(bytes32,address,address,address,address)": "509881c7",
       "positions(uint64[])": "01ad4442",
       "sessionState(bytes32)": "35150fe7",
+      "stillCovered(uint64,uint64,uint64,bytes32)": "e7aeb071",
       "weights((uint64,uint64,bytes32,bytes32,bytes32)[],bytes32)": "db922710"
     }
   },
