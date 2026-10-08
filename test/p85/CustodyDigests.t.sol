@@ -2,7 +2,7 @@
 pragma solidity 0.8.37;
 
 import {P85Flow} from "./P85Flow.sol";
-import {RecordKind, RecoveryAckData} from "../../src/p85/P85Types.sol";
+import {RecordKind, RecoveryAckData, ReserveInput} from "../../src/p85/P85Types.sol";
 
 /// @notice Custody's own digests over an assignment's exposures, written as the fixture bft-core derives them from the frozen identity
 /// records (evmassign.AssignmentExposureDigest, KeyHistoryDigestFromHashes, ExposureChainStep). Custody is normative for these words
@@ -136,6 +136,25 @@ contract CustodyDigestsTest is P85Flow {
         );
         vm.revertToState(snap);
 
+        // a quantized committee: every member is committed at q = 5 out of its raw weight x = 10, and both enter the exposure digest
+        uint256 snapQ = vm.snapshotState();
+        ReserveInput memory heavy = _reserveInput(RES_J, ASG_J, allExcept(0), 1);
+        for (uint256 k; k < heavy.members.length; ++k) {
+            heavy.members[k].weight = 5;
+        }
+        vm.prank(address(election));
+        custody.reserveCandidate(heavy);
+        string memory quantized = string.concat(
+            '{"name":"quantized","assignments":[',
+            _assignment(GENESIS_ASSIGNMENT, _idx(0, N_GENESIS)),
+            ",",
+            _assignment(ASG_J, _idx(1, N_GENESIS)),
+            '],"chains":',
+            _chains(N_GENESIS),
+            "}"
+        );
+        vm.revertToState(snapQ);
+
         reserve(RES_J, ASG_J, allExcept(0), 1);
         clock(120, 1_000);
         pushRecord(
@@ -154,7 +173,7 @@ contract CustodyDigestsTest is P85Flow {
             _chains(N_GENESIS),
             "}"
         );
-        return string.concat("[", genesisOnly, ",", primary, ",", recovery, "]");
+        return string.concat("[", genesisOnly, ",", primary, ",", quantized, ",", recovery, "]");
     }
 
     function test_custodyDigestsAreTheSharedFixture() public {
