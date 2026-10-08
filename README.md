@@ -13,7 +13,7 @@ from merging it. The native-UCT `BridgeVault` and its composing `TokenVerifier` 
 written for the native bridge protocol v2 on the SDK 3.0.1 profile (leaf value `H(C(b(txHash),t))`, kernel result stride
 `448+128*m`, InputRecord opening and `t <= IR.timestamp` after B1 authentication). They are tested against explicit test
 doubles for the proposed 0x0104 kernel and for the B1 precompiles' answers (recorded from the A' reference oracle), and are
-not usable until the real native calls exist. Vector provenance: `script/bridge-golden/README.md`.
+not usable until the real native calls exist. `script/BridgeDeploy.s.sol` deploys them only after asserting that the vault's `rootGenesis`, `executionGenesis` and `b1ProfileHash` equal the registry genesis' (`script/bridge-deploy/README.md`). Vector provenance: `script/bridge-golden/README.md`.
 
 ## Ownership and process
 
