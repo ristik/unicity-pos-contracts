@@ -3,6 +3,7 @@ pragma solidity 0.8.37;
 
 import {Script} from "forge-std/Script.sol";
 import {stdJson} from "forge-std/StdJson.sol";
+import {SafeCast} from "@openzeppelin/contracts/utils/math/SafeCast.sol";
 import {BridgeVault} from "../src/bridge/BridgeVault.sol";
 import {TokenVerifier} from "../src/bridge/TokenVerifier.sol";
 import {B1Calls} from "../src/bridge/B1Calls.sol";
@@ -55,17 +56,17 @@ contract BridgeDeploy is Script {
         id.rootGenesisId = g.readBytes32(".rootGenesisId");
         id.evmGenesisHash = g.readBytes32(".evmGenesisHash");
         id.profileHash = g.readBytes32(".profileHash");
-        id.chainId = uint64(g.readUint(".executionChainId"));
+        id.chainId = SafeCast.toUint64(g.readUint(".executionChainId"));
         id.registryProfileWord = g.readBytes32(
             string.concat(".registryWords.", vm.toString(BridgeGenesisBinding.profileSlot()))
         );
     }
 
     function readDeployment(string memory dep) public pure returns (Deployment memory d) {
-        d.network = uint16(dep.readUint(".network"));
+        d.network = SafeCast.toUint16(dep.readUint(".network"));
         d.rootGenesis = dep.readBytes32(".rootGenesis");
         d.executionGenesis = dep.readBytes32(".executionGenesis");
-        d.evmPartition = uint32(dep.readUint(".evmPartition"));
+        d.evmPartition = SafeCast.toUint32(dep.readUint(".evmPartition"));
         d.evmShard = dep.readBytes(".evmShard");
         d.semanticProfileHash = dep.readBytes32(".semanticProfileHash");
         d.b1ProfileHash = dep.readBytes32(".b1ProfileHash");
