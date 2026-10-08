@@ -25,6 +25,19 @@ struct Limits {
     uint32 maxBatch; // records, lots or proofs per batch call
 }
 
+/// @notice The election profile (design v5 section 6): committee cardinality, the churn budget of the continuity rule and the election
+/// cadence. DEV-DEFAULT: nMin 4, nTarget 10, nMax 32, maxM 4, D <= 1/4, 100,000 ordinary progress rounds and 604,800 UC seconds.
+struct ElectionParams {
+    uint32 nMin;
+    uint32 nTarget;
+    uint32 nMax;
+    uint64 maxM; // membership budget M = removed + added
+    uint64 distNum; // weight distance D <= distNum / distDen
+    uint64 distDen;
+    uint64 cadenceRounds; // ordinary progress rounds since the last acknowledged ordinary rotation
+    uint64 cadenceSeconds; // and UC seconds since it
+}
+
 struct GenesisIdentity {
     address owner;
     address withdrawal;
@@ -59,6 +72,7 @@ struct Manifest {
     uint128 minBond;
     Limits limits;
     GenesisAssignment genesis;
+    ElectionParams electionParams;
     GenesisIdentity[] identities;
 }
 

@@ -143,4 +143,32 @@ contract SelectionTest is Test {
         assertEq(uint8(reason), uint8(Selection.Reason.None));
         assertEq(chosen.length, 32);
     }
+
+    /// @dev A swap that leaves the committed side of the unchanged-binding overlap at or below two thirds is refused even though the
+    /// successor side passes: the swapped-out incumbent must leave the committed overlap. `heavy` is the weight of a committed member
+    /// that is no longer eligible; the seed (thirteen of fourteen incumbents) passes for heavy < 55 and the swap passes for heavy >= 40.
+    function _overlapOldSide(uint64 heavy) internal pure returns (bool swapped) {
+        Continuity.Member[] memory o = new Continuity.Member[](15);
+        for (uint64 i; i < 14; ++i) {
+            o[i] = Continuity.Member(i + 1, bytes32(uint256(i + 1)), 10);
+        }
+        o[14] = Continuity.Member(15, bytes32(uint256(15)), heavy);
+        Selection.Entry[] memory e = new Selection.Entry[](15);
+        for (uint64 i; i < 14; ++i) {
+            e[i] = Selection.Entry(i + 1, bytes32(uint256(i + 1)), 10);
+        }
+        e[14] = Selection.Entry(20, bytes32(uint256(20)), 11);
+        Selection.Config memory cfg = Selection.Config(1, 13, 32, Continuity.Params(4, 1, 1));
+        (Selection.Reason reason, Continuity.Member[] memory chosen) = Selection.select(o, e, cfg);
+        require(reason == Selection.Reason.None && chosen.length == 13, "seed must pass");
+        for (uint256 k; k < chosen.length; ++k) {
+            if (chosen[k].id == 20) return true;
+        }
+        return false;
+    }
+
+    function test_theCommittedOverlapLosesTheSwappedOutIncumbent() public pure {
+        assertFalse(_overlapOldSide(45), "committed overlap 120/185 is not above two thirds");
+        assertTrue(_overlapOldSide(39), "committed overlap 120/179 is");
+    }
 }

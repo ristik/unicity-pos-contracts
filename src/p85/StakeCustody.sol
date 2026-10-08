@@ -3,7 +3,7 @@ pragma solidity 0.8.37;
 
 // Loops are bounded by the immutable V/L/R/batch ceilings validated by custody at genesis.
 // Fixed deployment modules are trusted; guard failures must revert the entire bounded operation.
-// forge-lint: disable-start(require-revert-in-loop, calls-loop)
+// forge-lint: disable-start(require-revert-in-loop, calls-loop, reentrancy-no-eth)
 
 import {ReentrancyGuard} from "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
 import {
@@ -258,8 +258,11 @@ contract StakeCustody is ReentrancyGuard {
     mapping(bytes32 => uint256) public caseDebited;
     mapping(bytes32 => mapping(uint256 => bool)) public penaltyApplied;
 
-    constructor() {
-        FACTORY = msg.sender;
+    /// @param factory_ the deployment factory that will initialize this module, fixed at construction. The module is deployed first so
+    /// the factory's own creation code stays small; only that factory can initialize it, and it can do so once.
+    // forge-lint: disable-next-line(missing-zero-check)
+    constructor(address factory_) {
+        FACTORY = factory_;
     }
 
     // --- initialization -----------------------------------------------------------------------
@@ -643,18 +646,26 @@ contract StakeCustody is ReentrancyGuard {
     }
 
     function _applyRecord(RootRecord memory r) private {
+        // Session records name their result in the first word; election learns how it ended, at the record's own anchors.
+        uint8 outcome = SESSION_CLOSED;
         if (r.kind == RecordKind.SessionClosed) {
             _closeSession(abi.decode(r.data, (SessionClosedData)));
         } else if (r.kind == RecordKind.Ack) {
             _acknowledge(abi.decode(r.data, (AckData)));
+            outcome = SESSION_ACKED;
         } else if (r.kind == RecordKind.RecoveryAck) {
             _recover(abi.decode(r.data, (RecoveryAckData)));
+            outcome = SESSION_RECOVERED;
         } else if (r.kind == RecordKind.Closure) {
             _closeLiability(abi.decode(r.data, (ClosureData)), r.progress, r.ucTime);
         } else if (r.kind == RecordKind.Retirement) {
             _importRetirement(abi.decode(r.data, (RetirementData)), r.progress, r.ucTime);
         } else {
             revert UnknownRecordKind();
+        }
+        if (r.kind <= RecordKind.RecoveryAck) {
+            IElectionPolicy(election)
+                .resultResolved(abi.decode(r.data, (bytes32)), outcome, r.progress, r.ucTime);
         }
     }
 
@@ -1110,4 +1121,4 @@ contract StakeCustody is ReentrancyGuard {
     }
 }
 
-// forge-lint: disable-end(require-revert-in-loop, calls-loop)
+// forge-lint: disable-end(require-revert-in-loop, calls-loop, reentrancy-no-eth)

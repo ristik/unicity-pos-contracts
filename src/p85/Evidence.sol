@@ -101,8 +101,11 @@ contract Evidence {
     mapping(uint256 => uint32) internal _holds;
     mapping(uint64 => bool) internal _excluded;
 
-    constructor() {
-        FACTORY = msg.sender;
+    /// @param factory_ the deployment factory that will initialize this module, fixed at construction. The module is deployed first so
+    /// the factory's own creation code stays small; only that factory can initialize it, and it can do so once.
+    // forge-lint: disable-next-line(missing-zero-check)
+    constructor(address factory_) {
+        FACTORY = factory_;
     }
 
     function initialize(bytes32 manifestHash_, Manifest calldata m) external {

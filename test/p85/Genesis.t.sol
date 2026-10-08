@@ -21,11 +21,29 @@ import {
 /// @dev Deployments go through an external call so that vm.expectRevert applies to a real call
 /// frame (a bare `new` that does not revert would leave the expectation silently unchecked).
 contract Deployer {
+    uint8 internal nonce = 1; // a contract's CREATE nonce starts at one
+
+    /// @dev Deploys fresh modules constructed with the factory's address, then the factory itself.
     function factory(PosFactory.Config calldata c) external payable returns (address) {
-        return address(new PosFactory{value: msg.value}(c));
+        PosFactory.Config memory m = c;
+        address f = address(
+            uint160(
+                uint256(
+                    keccak256(
+                        abi.encodePacked(bytes1(0xd6), bytes1(0x94), address(this), nonce + 3)
+                    )
+                )
+            )
+        );
+        m.custody = address(new StakeCustody(f));
+        m.election = address(new ElectionPolicy(f));
+        m.evidence = address(new Evidence(f));
+        nonce += 4;
+        return address(new PosFactory{value: msg.value}(m));
     }
 
     function policy(Policy calldata p) external returns (address) {
+        nonce += 1;
         return address(new FixedPolicy(p));
     }
 }
@@ -131,30 +149,30 @@ contract GenesisTest is P85Base {
     }
 
     function test_electionInitializeRejectsForeignManifest() public {
-        ElectionPolicy fresh = new ElectionPolicy();
+        ElectionPolicy fresh = new ElectionPolicy(address(this));
         Manifest memory m; // m.election is not this contract
         vm.expectRevert(ElectionPolicy.ManifestMismatch.selector);
         fresh.initialize(bytes32(0), m);
     }
 
     function test_evidenceInitializeRejectsForeignManifest() public {
-        Evidence fresh = new Evidence();
+        Evidence fresh = new Evidence(address(this));
         Manifest memory m;
         vm.expectRevert(Evidence.ManifestMismatch.selector);
         fresh.initialize(bytes32(0), m);
     }
 
     function test_uninitializedModulesRejectEverything() public {
-        StakeCustody raw = new StakeCustody();
+        StakeCustody raw = new StakeCustody(address(this));
         vm.deal(address(this), 1);
         vm.expectRevert(StakeCustody.NotInitialized.selector);
         raw.bond{value: 1}(1);
         vm.expectRevert(StakeCustody.NotInitialized.selector);
         raw.register("", "", address(1));
-        ElectionPolicy rawElection = new ElectionPolicy();
+        ElectionPolicy rawElection = new ElectionPolicy(address(this));
         vm.expectRevert(ElectionPolicy.NotInitialized.selector);
         rawElection.syncLiveIndex(1);
-        Evidence rawEvidence = new Evidence();
+        Evidence rawEvidence = new Evidence(address(this));
         uint256[] memory none = new uint256[](0);
         vm.expectRevert(Evidence.NotInitialized.selector);
         rawEvidence.settleEvidence(bytes32(0), none);
@@ -334,6 +352,9 @@ contract GenesisTest is P85Base {
         returns (PosFactory.Config memory)
     {
         return PosFactory.Config({
+            custody: address(0), // the Deployer helper installs fresh modules
+            election: address(0),
+            evidence: address(0),
             network: NETWORK,
             roots: address(roots),
             treasury: treasury,
@@ -348,6 +369,7 @@ contract GenesisTest is P85Base {
                 firstRound: 1
             }),
             policy: _defaultPolicy(),
+            electionParams: _electionParams(),
             identities: ids
         });
     }
