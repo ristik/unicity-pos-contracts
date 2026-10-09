@@ -69,8 +69,9 @@ contract ElectionGasTest is P85Flow {
     /// @dev Identities 5..V with L lots each: weight 10 for the first C (incumbents-to-be), 12 for the outsiders.
     function _populate() internal {
         vm.pauseGasMetering();
-        if (F > 1) {
-            // the genesis identities hold one lot of 1,000 UCT: the heavy scenario adds the rest as their second lot
+        if (F > 1 && L > 1) {
+            // the genesis identities hold one lot of 1,000 UCT: the heavy scenario adds the rest as their second lot (at L = 1 they cannot
+            // hold a second, so only the other identities are scaled; bond() puts no bound on one lot's size, so X > B is reachable)
             for (uint256 i; i < N_GENESIS && i < V; ++i) {
                 bondFor(gid(i), 1_000 * (F - 1) * UCT);
             }
@@ -131,7 +132,9 @@ contract ElectionGasTest is P85Flow {
     }
 
     /// @dev The bond scale that puts the raw total of a committee of c well above the cap (twice B).
-    function _heavyScale(uint256 c) internal pure returns (uint256) {
+    /// At L = 1 the four genesis identities keep their 1,000 UCT lot, so the scaled identities alone must carry the raw total over B.
+    function _heavyScale(uint256 c, uint256 l) internal pure returns (uint256) {
+        if (l == 1) return (2 * Quantize.WEIGHT_CAP_B) / 10 + 1;
         return (2 * Quantize.WEIGHT_CAP_B) / (10 * c) + 1;
     }
 
@@ -185,10 +188,10 @@ contract ElectionGasTest is P85Flow {
         uint256 used = _elect(v, l, c);
         uint256 plain = used;
         uint256 heavy;
-        if (l >= 2) {
-            // the worst case is the larger of the two scenarios: raw totals within the cap (incremental trials) and above it (every trial
-            // quantized). One lot per genesis identity leaves no room for the heavy scenario at L = 1; its raw totals stay within B there.
-            heavy = _elect(v, l, c, _heavyScale(c));
+        {
+            // the worst case is the larger of the two scenarios, at every L: raw totals within the cap (incremental trials) and above it
+            // (every trial quantized and judged by a full measurement)
+            heavy = _elect(v, l, c, _heavyScale(c, l));
             if (heavy > used) used = heavy;
         }
         emit log_named_uint("ELECT-MODE plain", plain);
@@ -220,13 +223,28 @@ contract ElectionGasTest is P85Flow {
 
     /// @dev The heavy scenario: the raw total is above B, so every trial is quantized and judged by a full measurement.
     function test_measureV16L2C8Heavy() public {
-        uint256 used = _elect(16, 2, 8, _heavyScale(8));
+        uint256 used = _elect(16, 2, 8, _heavyScale(8, 2));
         assertLt(used, 6_000_000);
     }
 
     function test_measureV128L8C32Heavy() public {
-        uint256 used = _elect(128, 8, 32, _heavyScale(32));
+        uint256 used = _elect(128, 8, 32, _heavyScale(32, 8));
         assertLt(used, 70_000_000);
+    }
+
+    function test_measureV16L1C8Heavy() public {
+        uint256 used = _elect(16, 1, 8, _heavyScale(8, 1));
+        assertLt(used, 5_300_000);
+    }
+
+    function test_measureV32L1C10Heavy() public {
+        uint256 used = _elect(32, 1, 10, _heavyScale(10, 1));
+        assertLt(used, 8_200_000);
+    }
+
+    function test_measureV128L1C32Heavy() public {
+        uint256 used = _elect(128, 1, 32, _heavyScale(32, 1));
+        assertLt(used, 45_000_000);
     }
 
     function test_measureV16L2C8() public {
