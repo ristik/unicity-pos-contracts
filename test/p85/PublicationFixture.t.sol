@@ -3,7 +3,7 @@ pragma solidity 0.8.37;
 
 import {P85Flow} from "./P85Flow.sol";
 import {ElectionPolicy} from "../../src/p85/ElectionPolicy.sol";
-import {ElectionParams} from "../../src/p85/P85Types.sol";
+import {ElectionParams, Delegation, DelegationRequest} from "../../src/p85/P85Types.sol";
 
 /// @notice The proof slots of a reserved and of a published result, and every word the root recomputes from a candidate's identity
 /// records and possession proofs (bft-core evmassign.VerifyPrimary): the fixture bft-core must reproduce. Generated here, never
@@ -254,6 +254,69 @@ contract PublicationFixtureTest is P85Flow {
         out = string.concat(out, "]");
     }
 
+    /// @dev The transactions of bft-core's relayer, as calldata: the possession-proof submission and finalization of the published result, and
+    /// a joiner's onboarding (register, bond, admitDelegation). Signatures are RFC 6979 (vm.sign), so the Go tool's calldata is byte-identical.
+    function _relayerWrites(bytes32 resultID, ElectionPolicy.PoPInput[] memory inputs)
+        internal
+        returns (string memory)
+    {
+        uint256 j = N_GENESIS; // the first identity beyond the genesis committee
+        address owner = vm.addr(ownerPk(j));
+        address withdrawal = vm.addr(wdPk(j));
+        bytes memory rootKey = compressed(rootPk(j));
+        bytes32 rd = registerDigest(owner, withdrawal, rootKey, custody.registerNonce(owner));
+        uint64 id = custody.nextStakingID() + 1;
+        DelegationRequest memory r;
+        r.id = id;
+        r.generation = 1;
+        r.binding = Delegation({
+            rootNodeID: keccak256(bytes("r-joiner")),
+            rootKey: rootKey,
+            evmNodeID: keccak256(bytes("ev-joiner")),
+            evmKey: compressed(evmPk(j)),
+            operatorPayee: vm.addr(payeePk(j))
+        });
+        r.expiry = 1_000_000_000;
+        bytes32 dd = election.delegationDigest(r);
+        return string.concat(
+            '{"submitPops":"',
+            vm.toString(abi.encodeCall(election.submitAssignmentPoPs, (resultID, inputs))),
+            '","finalize":"',
+            vm.toString(abi.encodeCall(election.finalizeCandidate, (resultID))),
+            '","joiner":{"id":',
+            _u(id),
+            ',"ownerKey":"',
+            vm.toString(bytes32(ownerPk(j))),
+            '","rootKey":"',
+            vm.toString(bytes32(rootPk(j))),
+            '","evmKey":"',
+            vm.toString(bytes32(evmPk(j))),
+            '","withdrawal":"',
+            vm.toString(withdrawal),
+            '","payee":"',
+            vm.toString(vm.addr(payeePk(j))),
+            '","rootNodeId":"r-joiner","evmNodeId":"ev-joiner","expiry":',
+            _u(r.expiry),
+            ',"registerDigest":"',
+            vm.toString(rd),
+            '","register":"',
+            vm.toString(
+                abi.encodeCall(custody.register, (rootKey, sign(rootPk(j), rd), withdrawal))
+            ),
+            '","bond":"',
+            vm.toString(abi.encodeCall(custody.bond, (id))),
+            '","delegationDigest":"',
+            vm.toString(dd),
+            '","admit":"',
+            vm.toString(
+                abi.encodeCall(
+                    election.admitDelegation, (r, sign(ownerPk(j), dd), sign(evmPk(j), dd))
+                )
+            ),
+            '"}}'
+        );
+    }
+
     function _sig(uint256 pk, bytes32 d) internal pure returns (bytes memory) {
         (uint8 v, bytes32 r, bytes32 s) = vm.sign(pk, d);
         return abi.encodePacked(r, s, v);
@@ -281,6 +344,7 @@ contract PublicationFixtureTest is P85Flow {
         ElectionPolicy.Publication memory p = election.publication(resultID);
         Asg memory a = asg(r.assignmentID);
         string memory relayerReads = _relayerReads(resultID, r);
+        string memory relayerWrites = _relayerWrites(resultID, inputs);
 
         string memory head = string.concat(
             '{"format":"UNICITY_P85_PUBLICATION/v1","deployment":{"networkWord":"',
@@ -336,6 +400,8 @@ contract PublicationFixtureTest is P85Flow {
             _otherReads(resultID, r.assignmentID),
             ',"relayerReads":',
             relayerReads,
+            ',"relayerWrites":',
+            relayerWrites,
             ',"lost":{',
             _lostSlots(resultID),
             "}}\n"
