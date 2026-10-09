@@ -103,8 +103,8 @@ abstract contract P85Base is Test {
                 withdrawal: vm.addr(wdPk(i)),
                 rootKey: compressed(rootPk(i)),
                 evmKey: compressed(evmPk(i)),
-                rootNodeID: keccak256(abi.encode("root", i)),
-                evmNodeID: keccak256(abi.encode("evm", i)),
+                rootNodeID: nodeWord("root-", i),
+                evmNodeID: nodeWord("evm-", i),
                 operatorPayee: vm.addr(payeePk(i)),
                 bond: GENESIS_BOND
             });
@@ -153,8 +153,8 @@ abstract contract P85Base is Test {
                 withdrawal: vm.addr(wdPk(i)),
                 rootKey: compressed(rootPk(i)),
                 evmKey: compressed(evmPk(i)),
-                rootNodeID: keccak256(abi.encode("root", i)),
-                evmNodeID: keccak256(abi.encode("evm", i)),
+                rootNodeID: nodeWord("root-", i),
+                evmNodeID: nodeWord("evm-", i),
                 operatorPayee: vm.addr(payeePk(i)),
                 bond: GENESIS_BOND
             });
@@ -526,5 +526,12 @@ abstract contract P85Base is Test {
         uint256 accounted = custody.totalFree() + custody.totalEncumbered()
             + custody.totalDraining() + custody.totalCredits();
         assertGe(address(custody).balance, accounted, "balance below accounted principal+credits");
+    }
+
+    /// @dev The node-id word of the test genesis entity i: keccak256 of its peer id "root-a", "evm-b", ... (the names bft-core's
+    /// fixtures give the same entities), so the root can recompute the frozen binding hash from the names it is shown.
+    function nodeWord(string memory prefix, uint256 i) internal pure returns (bytes32) {
+        return
+            keccak256(bytes(string.concat(prefix, string(abi.encodePacked(bytes1(uint8(97 + i)))))));
     }
 }

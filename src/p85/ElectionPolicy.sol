@@ -43,6 +43,7 @@ contract ElectionPolicy {
     bytes32 internal constant SNAPSHOT_DOMAIN = keccak256("unicity.p85.election-snapshot");
     bytes32 internal constant POP_DOMAIN = keccak256("unicity.p85.assignment-pop");
     bytes32 internal constant POPSET_DOMAIN = keccak256("unicity.p85.pop-set");
+    bytes32 internal constant BINDINGS_DOMAIN = keccak256("unicity.p85.frozen-bindings");
     bytes32 internal constant PRIMARY_DOMAIN = keccak256("unicity.p85.primary-commitment");
     bytes32 internal constant K_DOMAIN = keccak256("unicity.p85.recovery-authorization");
     bytes32 internal constant CONTRACTS_DOMAIN = keccak256("unicity.p85.contracts");
@@ -847,11 +848,15 @@ contract ElectionPolicy {
         if (asgState != 1 || reader.sessionState(resultID) != 1) revert SessionNotOpen();
         bytes32[] memory eids = custody.assignmentExposures(r.assignmentID);
         bytes32 popSet = POPSET_DOMAIN;
+        // the frozen delegation records (the root and EVM node ids, keys and payee of each member) are part of the commitment: the root
+        // recomputes each member's binding hash from the identity record it is shown, so a renamed node is a different primary
+        bytes32 bindings = BINDINGS_DOMAIN;
         for (uint256 i = 0; i < f.length; ++i) {
             if (!reader.covered(f[i].id, f[i].generation, f[i].raw, eids[i])) {
                 revert NotCovered(f[i].id);
             }
             popSet = keccak256(abi.encode(popSet, f[i].id, _popHashes[resultID][f[i].id]));
+            bindings = keccak256(abi.encode(bindings, f[i].id, f[i].bindingHash));
         }
         pub.popSetDigest = popSet;
         pub.primaryHash = keccak256(
@@ -868,7 +873,8 @@ contract ElectionPolicy {
                 r.snapshotDigest,
                 exposureDigest,
                 keyDigest,
-                popSet
+                popSet,
+                bindings
             )
         );
         pub.published = true;
