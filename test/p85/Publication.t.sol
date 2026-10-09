@@ -10,7 +10,8 @@ import {
     Policy,
     RecordKind,
     SessionClosedData,
-    ReserveInput
+    ReserveInput,
+    Delegation
 } from "../../src/p85/P85Types.sol";
 
 /// @notice PR3 slice 4: possession proofs, publication and the mandatory K commitment of a reserved result.
@@ -226,6 +227,28 @@ contract PublicationTest is P85Flow {
             fold = keccak256(abi.encode(fold, gid(i), election.popHash(resultID, gid(i))));
         }
         assertEq(p.popSetDigest, fold);
+        // the frozen delegation records (node ids, keys, payee) are committed: folded from the election's own delegation views
+        bytes32 bindings = keccak256("unicity.p85.frozen-bindings");
+        for (uint256 i; i < N_GENESIS; ++i) {
+            (Delegation memory d, bytes32 bh,) = election.delegation(gid(i), 1);
+            assertEq(
+                bh,
+                keccak256(
+                    abi.encode(
+                        keccak256("unicity.p85.delegation-binding"),
+                        gid(i),
+                        uint64(1),
+                        d.rootNodeID,
+                        keccak256(d.rootKey),
+                        d.evmNodeID,
+                        keccak256(d.evmKey),
+                        d.operatorPayee
+                    )
+                ),
+                "a binding hash is recomputable from the record's fields"
+            );
+            bindings = keccak256(abi.encode(bindings, gid(i), bh));
+        }
         assertEq(
             p.primaryHash,
             keccak256(
@@ -242,7 +265,8 @@ contract PublicationTest is P85Flow {
                     r.snapshotDigest,
                     a.exposureDigest,
                     a.keyDigest,
-                    fold
+                    fold,
+                    bindings
                 )
             )
         );
