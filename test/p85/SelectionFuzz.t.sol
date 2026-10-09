@@ -4,6 +4,7 @@ pragma solidity 0.8.37;
 import {Test} from "forge-std/Test.sol";
 import {Continuity} from "../../src/p85/Continuity.sol";
 import {Selection} from "../../src/p85/Selection.sol";
+import {Quantize} from "../../src/p85/Quantize.sol";
 import {NaiveSelection} from "./NaiveSelection.sol";
 
 /// @notice `Selection` measures each replacement trial incrementally; `NaiveSelection` rebuilds and re-checks the whole trial
@@ -27,6 +28,8 @@ contract SelectionFuzzTest is Test {
         uint256 universe = 6 + _rnd(seed, 1, 30);
         uint256 eligiblePct = 50 + _rnd(seed, 2, 46);
         uint256 maxOldWeight = 5 + _rnd(seed, 3, 40);
+        // one seed in four has raw weights far above the cap: the eligible ones are raw, the last committee carries its quantized weights
+        uint256 scale = _rnd(seed, 13, 4) == 0 ? 300 + _rnd(seed, 14, 6000) : 1;
         // the last committee: a random subset of the universe
         uint256 k = 0;
         Continuity.Member[] memory tmpO = new Continuity.Member[](universe);
@@ -44,6 +47,7 @@ contract SelectionFuzzTest is Test {
                 uint64 w = inOld && _rnd(seed, 400 + id, 100) < 60
                     ? oldWeight
                     : uint64(1 + _rnd(seed, 500 + id, maxOldWeight + 5));
+                w = uint64(w * scale);
                 bytes32 b = inOld && _rnd(seed, 600 + id, 100) < 90
                     ? bytes32(uint256(id))
                     : bytes32(uint256(id) + 1_000);
@@ -56,8 +60,14 @@ contract SelectionFuzzTest is Test {
             tmpO[oi++] = Continuity.Member(uint64(universe + 1), bytes32(uint256(universe + 1)), 5);
         }
         o = new Continuity.Member[](oi);
+        uint256[] memory rawOld = new uint256[](oi);
         for (uint256 i = 0; i < oi; ++i) {
             o[i] = tmpO[i];
+            rawOld[i] = uint256(o[i].weight) * scale;
+        }
+        uint256[] memory qOld = Quantize.quantize(rawOld);
+        for (uint256 i = 0; i < oi; ++i) {
+            o[i].weight = uint64(qOld[i]);
         }
         e = new Selection.Entry[](k);
         ne = new NaiveSelection.Entry[](k);

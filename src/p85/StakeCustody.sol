@@ -25,6 +25,7 @@ import {
 } from "./P85Types.sol";
 import {IRootRecords, IPolicySource, IEvidence, IElectionPolicy, CaseView} from "./IP85.sol";
 import {KeyLib} from "./KeyLib.sol";
+import {Quantize} from "./Quantize.sol";
 
 /// @title StakeCustody
 /// @notice Immutable native-UCT self-bond custody for the P85 PoS profile (design v5 sections 2-4).
@@ -65,6 +66,8 @@ contract StakeCustody is ReentrancyGuard {
     bytes32 internal constant POP_REGISTER = keccak256("unicity.p85.pop.register");
     bytes32 internal constant POP_ROOT_KEY = keccak256("unicity.p85.pop.proposeRootKey");
     bytes32 internal constant EXPOSURE_DOMAIN = keccak256("unicity.p85.exposure");
+    /// @dev The profile cap B on a committee's total committed weight.
+    uint256 internal constant WEIGHT_CAP_B = Quantize.WEIGHT_CAP_B;
     bytes32 internal constant EXPOSURE_DIGEST_DOMAIN = keccak256("unicity.p85.exposure-digest");
     bytes32 internal constant KEY_DIGEST_DOMAIN = keccak256("unicity.p85.key-history-digest");
     bytes32 internal constant CHAIN_DOMAIN = keccak256("unicity.p85.exposure-chain");
@@ -320,7 +323,7 @@ contract StakeCustody is ReentrancyGuard {
         uint256 weight = msg.value / bondUnit;
         if (
             owner == address(0) || withdrawal == address(0) || operatorPayee == address(0)
-                || weight == 0 || weight > type(uint64).max || nextStakingID >= limits.vMax
+                || weight == 0 || weight > WEIGHT_CAP_B || nextStakingID >= limits.vMax
         ) revert InvalidGenesis();
         uint64 id = ++nextStakingID;
         bytes32 rootHash = _claimKey(rootKey, id, ROLE_ROOT);
@@ -334,9 +337,11 @@ contract StakeCustody is ReentrancyGuard {
                     genesisAssignmentID,
                     id,
                     1,
-                    // weight <= type(uint64).max is checked in seedGenesis
+                    // weight <= B is checked in seedGenesis, and the factory caps their total at B
                     // forge-lint: disable-next-line(unsafe-typecast)
                     uint64(weight),
+                    // forge-lint: disable-next-line(unsafe-typecast)
+                    uint64(weight), // at genesis q = x
                     rootHash,
                     evmHash,
                     operatorPayee,
@@ -561,6 +566,7 @@ contract StakeCustody is ReentrancyGuard {
                         m.id,
                         positions[m.id].generation,
                         m.weight,
+                        m.rawWeight,
                         m.rootKeyHash,
                         m.evmKeyHash,
                         m.operatorPayee,
@@ -619,7 +625,8 @@ contract StakeCustody is ReentrancyGuard {
             if (l.refCount >= limits.rMax) revert ReferenceCapacity();
             backing += l.remaining;
         }
-        if (backing < uint256(m.weight) * bondUnit) revert InsufficientCoverage();
+        // the lots must cover the RAW weight x the committed q was derived from (q <= x), not q itself
+        if (backing < uint256(m.rawWeight) * bondUnit) revert InsufficientCoverage();
     }
 
     // --- root records -------------------------------------------------------------------------
@@ -748,6 +755,7 @@ contract StakeCustody is ReentrancyGuard {
                         old.id,
                         old.generation,
                         old.weight,
+                        old.rawWeight,
                         old.rootKeyHash,
                         old.evmKeyHash,
                         old.operatorPayee,
@@ -992,6 +1000,7 @@ contract StakeCustody is ReentrancyGuard {
         uint64 id,
         uint64 generation,
         uint64 weight,
+        uint64 rawWeight,
         bytes32 rootKeyHash,
         bytes32 evmKeyHash,
         address operatorPayee,
@@ -1007,6 +1016,7 @@ contract StakeCustody is ReentrancyGuard {
         e.rootKeyHash = rootKeyHash;
         e.evmKeyHash = evmKeyHash;
         e.weight = weight;
+        e.rawWeight = rawWeight;
         e.operatorPayee = operatorPayee;
         for (uint256 i = 0; i < lotIDs.length; ++i) {
             Lot storage l = lots[lotIDs[i]];
@@ -1029,7 +1039,13 @@ contract StakeCustody is ReentrancyGuard {
             Exposure storage e = exposures[ids[i]];
             digest = keccak256(
                 abi.encode(
-                    digest, ids[i], e.id, e.weight, e.operatorPayee, keccak256(abi.encode(e.lotIDs))
+                    digest,
+                    ids[i],
+                    e.id,
+                    e.weight,
+                    e.rawWeight,
+                    e.operatorPayee,
+                    keccak256(abi.encode(e.lotIDs))
                 )
             );
         }

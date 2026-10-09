@@ -2,7 +2,9 @@
 pragma solidity 0.8.37;
 
 import {P85Flow} from "./P85Flow.sol";
+import {MockRootRecords} from "./MockRootRecords.sol";
 import {ElectionPolicy} from "../../src/p85/ElectionPolicy.sol";
+import {Quantize} from "../../src/p85/Quantize.sol";
 import {StakeCustody} from "../../src/p85/StakeCustody.sol";
 import {
     ElectionParams,
@@ -22,6 +24,9 @@ contract ElectionGasTest is P85Flow {
     uint256 internal V;
     uint256 internal L;
     uint256 internal C;
+    /// @dev The bond scale of the heavy scenario: 1 is the plain scenario; above 1 every identity bonds F times as much, so the raw total
+    /// of the committee exceeds the cap B and every trial of the greedy pass is quantized and judged by a full measurement.
+    uint256 internal F = 1;
 
     /// @dev The deployment is capped at exactly the measured profile (limits.vMax = V, limits.lMax = L, election nMax = C): the figure
     /// is the worst case of a chain deployed with those caps and of no other. Before a scenario is chosen, the profile ceilings.
@@ -64,10 +69,17 @@ contract ElectionGasTest is P85Flow {
     /// @dev Identities 5..V with L lots each: weight 10 for the first C (incumbents-to-be), 12 for the outsiders.
     function _populate() internal {
         vm.pauseGasMetering();
+        if (F > 1 && L > 1) {
+            // the genesis identities hold one lot of 1,000 UCT: the heavy scenario adds the rest as their second lot (at L = 1 they cannot
+            // hold a second, so only the other identities are scaled; bond() puts no bound on one lot's size, so X > B is reachable)
+            for (uint256 i; i < N_GENESIS && i < V; ++i) {
+                bondFor(gid(i), 1_000 * (F - 1) * UCT);
+            }
+        }
         for (uint256 i = N_GENESIS; i < V; ++i) {
             uint64 id = register(ownerPk(i), rootPk(i), vm.addr(wdPk(i)));
             assertEq(id, gid(i));
-            uint256 perLot = (i < C ? 1_000 : 1_200) / L;
+            uint256 perLot = (i < C ? 1_000 : 1_200) * F / L;
             for (uint256 k; k < L; ++k) {
                 bondFor(id, perLot * UCT);
             }
@@ -87,13 +99,20 @@ contract ElectionGasTest is P85Flow {
         in_.evmEpoch = 2;
         in_.incumbentAssignmentID = custody.lastAckedAssignment();
         in_.members = new ReserveMember[](C);
+        // K is committed at its own quantized weights (its raw total may exceed the cap in the heavy scenario)
+        uint256[] memory raw = new uint256[](C);
+        for (uint256 k; k < C; ++k) {
+            raw[k] = coverage(gid(k)) / (100 * UCT);
+        }
+        uint256[] memory q = Quantize.quantize(raw);
         for (uint256 k; k < C; ++k) {
             uint64 id = gid(k);
             (,, bytes32 rootHash,,,,,,) = custody.positions(id);
             (bytes memory evm,) = _evmKeyOf(id);
             in_.members[k] = ReserveMember({
                 id: id,
-                weight: uint64(coverage(id) / (100 * UCT)),
+                weight: uint64(q[k]),
+                rawWeight: uint64(raw[k]),
                 rootKeyHash: rootHash,
                 evmKeyHash: keccak256(evm),
                 operatorPayee: _payeeOf(id),
@@ -112,8 +131,23 @@ contract ElectionGasTest is P85Flow {
         assertLt(used, ceiling);
     }
 
+    /// @dev The bond scale that puts the raw total of a committee of c well above the cap (twice B).
+    /// At L = 1 the four genesis identities keep their 1,000 UCT lot, so the scaled identities alone must carry the raw total over B.
+    function _heavyScale(uint256 c, uint256 l) internal pure returns (uint256) {
+        if (l == 1) return (2 * Quantize.WEIGHT_CAP_B) / 10 + 1;
+        return (2 * Quantize.WEIGHT_CAP_B) / (10 * c) + 1;
+    }
+
     function _elect(uint256 v, uint256 l, uint256 c) internal returns (uint256 used) {
-        (V, L, C) = (v, l, c);
+        return _elect(v, l, c, 1);
+    }
+
+    function _elect(uint256 v, uint256 l, uint256 c, uint256 scale)
+        internal
+        returns (uint256 used)
+    {
+        (V, L, C, F) = (v, l, c, scale);
+        roots = new MockRootRecords(); // a scenario starts from a fresh record source (its clock only moves forward)
         _deploy(_defaultPolicy()); // again, now that the profile names the committee size
         _populate();
         _commitFirstC();
@@ -152,6 +186,16 @@ contract ElectionGasTest is P85Flow {
             "L must divide the 1,000 UCT principal into whole lots"
         );
         uint256 used = _elect(v, l, c);
+        uint256 plain = used;
+        uint256 heavy;
+        {
+            // the worst case is the larger of the two scenarios, at every L: raw totals within the cap (incremental trials) and above it
+            // (every trial quantized and judged by a full measurement)
+            heavy = _elect(v, l, c, _heavyScale(c, l));
+            if (heavy > used) used = heavy;
+        }
+        emit log_named_uint("ELECT-MODE plain", plain);
+        emit log_named_uint("ELECT-MODE heavy", heavy);
         emit log_string(string.concat(
                 "ELECT-MEASURE {\"v\":",
                 vm.toString(v),
@@ -175,6 +219,32 @@ contract ElectionGasTest is P85Flow {
 
     function test_measureV32L4C10() public {
         _measureElection(32, 4, 10, 8_900_000);
+    }
+
+    /// @dev The heavy scenario: the raw total is above B, so every trial is quantized and judged by a full measurement.
+    function test_measureV16L2C8Heavy() public {
+        uint256 used = _elect(16, 2, 8, _heavyScale(8, 2));
+        assertLt(used, 6_000_000);
+    }
+
+    function test_measureV128L8C32Heavy() public {
+        uint256 used = _elect(128, 8, 32, _heavyScale(32, 8));
+        assertLt(used, 70_000_000);
+    }
+
+    function test_measureV16L1C8Heavy() public {
+        uint256 used = _elect(16, 1, 8, _heavyScale(8, 1));
+        assertLt(used, 5_300_000);
+    }
+
+    function test_measureV32L1C10Heavy() public {
+        uint256 used = _elect(32, 1, 10, _heavyScale(10, 1));
+        assertLt(used, 8_200_000);
+    }
+
+    function test_measureV128L1C32Heavy() public {
+        uint256 used = _elect(128, 1, 32, _heavyScale(32, 1));
+        assertLt(used, 45_000_000);
     }
 
     function test_measureV16L2C8() public {

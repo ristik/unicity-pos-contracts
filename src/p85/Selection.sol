@@ -2,6 +2,7 @@
 pragma solidity 0.8.37;
 
 import {Continuity} from "./Continuity.sol";
+import {Quantize} from "./Quantize.sol";
 
 // Loops are bounded by the immutable V ceiling (at most 128 eligible identities) and the committee ceiling (at most 32 members).
 // forge-lint: disable-start(unsafe-typecast, calls-loop)
@@ -20,7 +21,8 @@ import {Continuity} from "./Continuity.sol";
 ///
 /// The Go model in bft-core (`continuity/selection_test.go`) is the reference; `test/p85/fixtures/selection-vectors.json` is its output.
 library Selection {
-    /// @dev An eligible identity of the snapshot: its current binding hash and assigned weight (positive).
+    /// @dev An eligible identity of the snapshot: its current binding hash and RAW bonded weight x (positive). The committed weight q of a
+    /// committee is derived from the raw weights of its members (`Quantize`); ranking stays on x.
     struct Entry {
         uint64 id;
         bytes32 binding;
@@ -88,29 +90,17 @@ library Selection {
         (uint8 failed, Continuity.Measured memory r0) = Continuity.check(o, chosen, cfg.churn);
         if (failed != 0) return (_churnReason(failed), new Continuity.Member[](0));
 
-        // Each remaining outsider, once, in rank order. A trial replaces the lowest-ranked retained incumbent by the outsider; its
-        // measurement against the same `o` follows from the running one by constant-size deltas plus one pass over the retained
-        // incumbents (the weight distance depends on the new total), instead of a fresh merge of both committees.
-        Trial memory t = Trial({
-            total: Continuity.totalWeight(o, false),
-            totalNew: 0,
-            replaced: r0.replaced,
-            onlyOld: r0.removed - r0.replaced,
-            onlyNew: r0.added - r0.replaced,
-            unchangedOld: r0.unchangedOld,
-            unchangedNew: r0.unchangedNew,
-            sharedNew: 0,
-            sharedOld: 0
-        });
+        // Each remaining outsider, once, in rank order. A trial replaces the lowest-ranked retained incumbent by the outsider. While the raw
+        // total of the committee and of the trial are both within the cap B, q = x and the trial's measurement against the same `o` follows
+        // from the running one by constant-size deltas plus one pass over the retained incumbents (the weight distance depends on the new
+        // total). When either exceeds B, every weight of the trial committee changes with its total, so the trial is quantized and judged by
+        // a full measurement; a trial that is accepted back within the cap resynchronizes the running measurement.
+        uint256 rawTotal = 0;
         for (uint256 i = 0; i < n; ++i) {
-            if (inS[i]) {
-                t.totalNew += e[i].weight;
-                if (incumbent[i]) {
-                    t.sharedNew += e[i].weight;
-                    t.sharedOld += prior.weight[i];
-                }
-            }
+            if (inS[i]) rawTotal += e[i].weight;
         }
+        Trial memory t;
+        if (rawTotal <= Quantize.WEIGHT_CAP_B) t = _trialOf(o, e, prior, inS, r0);
         bool replacedAny = false;
         // The lowest-ranked retained incumbent only ever moves toward better ranks (a removed incumbent is never re-added), so one
         // downward pointer over the whole pass finds it.
@@ -122,21 +112,69 @@ library Selection {
             if (q == 0) continue; // no retained incumbent left to replace
             uint256 low = rank[q - 1];
             if (!_better(e[x], e[low])) continue;
-            Trial memory next = _step(t, e, prior, low, x);
-            failed = Continuity.judge(
-                _measured(next, _sharedDistance(next, e, prior, inS, low)),
-                o.length,
-                count,
-                cfg.churn
-            );
-            if (failed == 0) {
+            uint256 nextRaw = rawTotal - e[low].weight + e[x].weight;
+            if (rawTotal <= Quantize.WEIGHT_CAP_B && nextRaw <= Quantize.WEIGHT_CAP_B) {
+                Trial memory next = _step(t, e, prior, low, x);
+                failed = Continuity.judge(
+                    _measured(next, _sharedDistance(next, e, prior, inS, low)),
+                    o.length,
+                    count,
+                    cfg.churn
+                );
+                if (failed == 0) {
+                    inS[low] = false;
+                    inS[x] = true;
+                    t = next;
+                    rawTotal = nextRaw;
+                    replacedAny = true;
+                }
+            } else {
                 inS[low] = false;
                 inS[x] = true;
-                t = next;
-                replacedAny = true;
+                Continuity.Measured memory m;
+                (failed, m) = Continuity.check(o, _committee(e, inS, count), cfg.churn);
+                if (failed == 0) {
+                    rawTotal = nextRaw;
+                    replacedAny = true;
+                    if (rawTotal <= Quantize.WEIGHT_CAP_B) t = _trialOf(o, e, prior, inS, m);
+                } else {
+                    inS[low] = true;
+                    inS[x] = false;
+                }
             }
         }
         if (replacedAny) chosen = _committee(e, inS, count);
+    }
+
+    /// @dev The running trial state of the committee `inS`, whose measurement against `o` is `m`. Valid only while the committee's raw total
+    /// is within the cap (then its committed weights are the raw ones).
+    function _trialOf(
+        Continuity.Member[] memory o,
+        Entry[] memory e,
+        Prior memory prior,
+        bool[] memory inS,
+        Continuity.Measured memory m
+    ) private pure returns (Trial memory t) {
+        t = Trial({
+            total: Continuity.totalWeight(o, false),
+            totalNew: 0,
+            replaced: m.replaced,
+            onlyOld: m.removed - m.replaced,
+            onlyNew: m.added - m.replaced,
+            unchangedOld: m.unchangedOld,
+            unchangedNew: m.unchangedNew,
+            sharedNew: 0,
+            sharedOld: 0
+        });
+        for (uint256 i = 0; i < e.length; ++i) {
+            if (inS[i]) {
+                t.totalNew += e[i].weight;
+                if (prior.incumbent[i]) {
+                    t.sharedNew += e[i].weight;
+                    t.sharedOld += prior.weight[i];
+                }
+            }
+        }
     }
 
     /// @dev The running measurement of the current successor against `o`. Every retained incumbent is shared with `o`; every other
@@ -268,9 +306,17 @@ library Selection {
         returns (Continuity.Member[] memory out)
     {
         out = new Continuity.Member[](count);
+        uint256[] memory raw = new uint256[](count);
         uint256 k = 0;
         for (uint256 i = 0; i < e.length; ++i) {
-            if (inS[i]) out[k++] = Continuity.Member(e[i].id, e[i].binding, e[i].weight);
+            if (inS[i]) {
+                raw[k] = e[i].weight;
+                out[k++] = Continuity.Member(e[i].id, e[i].binding, 0);
+            }
+        }
+        uint256[] memory q = Quantize.quantize(raw);
+        for (k = 0; k < count; ++k) {
+            out[k].weight = uint64(q[k]);
         }
     }
 

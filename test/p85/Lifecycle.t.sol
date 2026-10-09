@@ -142,6 +142,7 @@ contract LifecycleTest is P85Flow {
         in_.members[genesisMembers.length] = ReserveMember({
             id: id,
             weight: 15,
+            rawWeight: 15,
             rootKeyHash: rootHash,
             evmKeyHash: keccak256(d.evmKey),
             operatorPayee: d.operatorPayee,

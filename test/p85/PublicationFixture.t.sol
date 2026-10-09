@@ -55,6 +55,8 @@ contract PublicationFixtureTest is P85Flow {
                 _u(e.generation),
                 ',"weight":',
                 _u(e.weight),
+                ',"rawWeight":',
+                _u(e.rawWeight),
                 ',"operatorPayee":"',
                 vm.toString(e.operatorPayee),
                 '","rootKey":"',
@@ -172,6 +174,86 @@ contract PublicationFixtureTest is P85Flow {
         out = string.concat(out, "]");
     }
 
+    /// @dev One recorded read: the target, the calldata and what the module returned.
+    function _call(address target, bytes memory callData) internal view returns (string memory) {
+        (bool ok, bytes memory ret) = target.staticcall(callData);
+        require(ok, "relayer read failed");
+        return string.concat(
+            '{"to":"',
+            vm.toString(target),
+            '","data":"',
+            vm.toString(callData),
+            '","ret":"',
+            vm.toString(ret),
+            '"}'
+        );
+    }
+
+    /// @dev The read surface of bft-core's `posrelayer` builder (election and custody getters), recorded at the published state so a Go test
+    /// can serve the builder from the real modules' answers. The builder may issue any subset; a call outside it fails the test.
+    function _relayerReads(bytes32 resultID, ElectionPolicy.Result memory r)
+        internal
+        view
+        returns (string memory out)
+    {
+        out = string.concat(
+            "[",
+            _call(address(election), abi.encodeCall(election.openResult, ())),
+            ",",
+            _call(address(election), abi.encodeCall(election.result, (resultID))),
+            ",",
+            _call(address(election), abi.encodeCall(election.publication, (resultID))),
+            ",",
+            _call(address(election), abi.encodeCall(election.frozenMembers, (resultID)))
+        );
+        ElectionPolicy.Frozen[] memory f = election.frozenMembers(resultID);
+        for (uint256 i; i < f.length; ++i) {
+            out = string.concat(
+                out,
+                ",",
+                _call(address(election), abi.encodeCall(election.popHash, (resultID, f[i].id))),
+                ",",
+                _call(
+                    address(election),
+                    abi.encodeCall(election.delegation, (f[i].id, f[i].generation))
+                )
+            );
+        }
+        bytes32[2] memory assignmentIDs = [r.assignmentID, r.predecessor];
+        for (uint256 a; a < 2; ++a) {
+            out = string.concat(
+                out,
+                ",",
+                _call(
+                    address(custody),
+                    abi.encodeCall(custody.assignmentExposures, (assignmentIDs[a]))
+                )
+            );
+            bytes32[] memory eids = custody.assignmentExposures(assignmentIDs[a]);
+            for (uint256 i; i < eids.length; ++i) {
+                Expo memory e = expo(eids[i]);
+                out = string.concat(
+                    out,
+                    ",",
+                    _call(address(custody), abi.encodeCall(custody.exposures, (eids[i]))),
+                    ",",
+                    _call(address(custody), abi.encodeCall(custody.exposureLots, (eids[i])))
+                );
+                if (a == 1) {
+                    out = string.concat(
+                        out,
+                        ",",
+                        _call(
+                            address(election),
+                            abi.encodeCall(election.delegation, (e.id, e.generation))
+                        )
+                    );
+                }
+            }
+        }
+        out = string.concat(out, "]");
+    }
+
     function _sig(uint256 pk, bytes32 d) internal pure returns (bytes memory) {
         (uint8 v, bytes32 r, bytes32 s) = vm.sign(pk, d);
         return abi.encodePacked(r, s, v);
@@ -198,6 +280,7 @@ contract PublicationFixtureTest is P85Flow {
         election.finalizeCandidate(resultID);
         ElectionPolicy.Publication memory p = election.publication(resultID);
         Asg memory a = asg(r.assignmentID);
+        string memory relayerReads = _relayerReads(resultID, r);
 
         string memory head = string.concat(
             '{"format":"UNICITY_P85_PUBLICATION/v1","deployment":{"networkWord":"',
@@ -251,6 +334,8 @@ contract PublicationFixtureTest is P85Flow {
             _slots(resultID),
             "},",
             _otherReads(resultID, r.assignmentID),
+            ',"relayerReads":',
+            relayerReads,
             ',"lost":{',
             _lostSlots(resultID),
             "}}\n"

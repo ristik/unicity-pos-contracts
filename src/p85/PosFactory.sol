@@ -17,6 +17,7 @@ import {StakeCustody} from "./StakeCustody.sol";
 import {ElectionPolicy} from "./ElectionPolicy.sol";
 import {Evidence} from "./Evidence.sol";
 import {FixedPolicy} from "./FixedPolicy.sol";
+import {Quantize} from "./Quantize.sol";
 
 /// @title PosFactory
 /// @notice Initializes the pre-deployed P85 modules atomically in its constructor, then has no entry point: every module's initializer is
@@ -45,6 +46,8 @@ contract PosFactory {
     }
 
     error GenesisValueMismatch();
+    /// @dev The genesis committee's total weight (the sum of bond / bondUnit) exceeds the profile cap B.
+    error GenesisWeightAboveCap();
 
     bytes32 public immutable MANIFEST_HASH;
     StakeCustody public immutable CUSTODY;
@@ -97,14 +100,17 @@ contract PosFactory {
             })
         );
         uint256 total = 0;
+        uint256 weight = 0;
         for (uint256 i = 0; i < c.identities.length; ++i) {
             GenesisIdentity memory g = c.identities[i];
             total += g.bond;
+            weight += g.bond / c.bondUnit;
             CUSTODY.seedGenesis{value: g.bond}(
                 g.owner, g.withdrawal, g.rootKey, g.evmKey, g.operatorPayee
             );
         }
         if (total != msg.value) revert GenesisValueMismatch();
+        if (weight > Quantize.WEIGHT_CAP_B) revert GenesisWeightAboveCap();
         CUSTODY.sealGenesis();
         ELECTION.initialize(h, m);
         EVIDENCE.initialize(h, m);

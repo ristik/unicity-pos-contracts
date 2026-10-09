@@ -24,7 +24,7 @@ contract ReservationTest is P85Flow {
             (uint64 owner,,,,,,, uint32 refs,,,,,) = custody.lots(i + 1);
             assertEq(owner, gid(i));
             assertEq(refs, 2, "genesis and J both reference the lot");
-            (bytes32 asg, uint64 id,,,, uint64 weight, address payee,, uint32 locks) =
+            (bytes32 asg, uint64 id,, uint64 weight,,,, address payee,, uint32 locks) =
                 custody.exposures(exposureID(ASG_J, gid(i)));
             assertEq(asg, ASG_J);
             assertEq(id, gid(i));
@@ -33,10 +33,10 @@ contract ReservationTest is P85Flow {
             assertEq(locks, 0);
         }
         // the excluded identity gets no J exposure, but its incumbent exposure is locked (K)
-        (bytes32 none,,,,,,,,) = custody.exposures(exposureID(ASG_J, gid(0)));
+        (bytes32 none,,,,,,,,,) = custody.exposures(exposureID(ASG_J, gid(0)));
         assertEq(none, bytes32(0));
         for (uint256 i; i < N_GENESIS; ++i) {
-            (,,,,,,,, uint32 locks) = custody.exposures(genesisExposure(i));
+            (,,,,,,,,, uint32 locks) = custody.exposures(genesisExposure(i));
             assertEq(locks, 1, "every incumbent exposure is session-locked");
         }
         (uint8 state,,,,,,,,,,,,, bytes32 exposureDigest,,) = custody.assignments(ASG_J);
@@ -123,7 +123,7 @@ contract ReservationTest is P85Flow {
     function test_retirementAfterReservationDoesNotRewriteFrozenMembership() public {
         reserve(RES_J, ASG_J, allMembers(), 1);
         requestRetirement(2);
-        (bytes32 asg,,,,,,,,) = custody.exposures(exposureID(ASG_J, gid(2)));
+        (bytes32 asg,,,,,,,,,) = custody.exposures(exposureID(ASG_J, gid(2)));
         assertEq(asg, ASG_J, "the frozen primary still contains the retiring identity");
         (,,,,,,, uint32 refs,,,,,) = custody.lots(3);
         assertEq(refs, 2);
@@ -137,12 +137,32 @@ contract ReservationTest is P85Flow {
         custody.reserveCandidate(in_);
         in_ = _input(RES_J, ASG_J);
         in_.members[0].weight = 11; // 1,100 UCT of weight against 1,000 UCT backing
+        in_.members[0].rawWeight = 11;
         vm.prank(address(election));
         vm.expectRevert(StakeCustody.InsufficientCoverage.selector);
         custody.reserveCandidate(in_);
         in_ = _input(RES_J, ASG_J);
         in_.members[0].weight = 10; // exactly covered is fine
+        in_.members[0].rawWeight = 10;
         _reserveRaw(in_);
+    }
+
+    /// The lots must cover the RAW weight x the committed q was derived from, not q: a member committed at q = 5 out of x = 11 still
+    /// needs 1,100 UCT behind it, and both numbers are kept in its exposure.
+    function test_coverageIsCheckedAgainstTheRawWeightNotTheCommittedOne() public {
+        ReserveInput memory in_ = _input(RES_J, ASG_J);
+        in_.members[0].weight = 5;
+        in_.members[0].rawWeight = 11; // 1,100 UCT against 1,000 UCT backing
+        vm.prank(address(election));
+        vm.expectRevert(StakeCustody.InsufficientCoverage.selector);
+        custody.reserveCandidate(in_);
+        in_ = _input(RES_J, ASG_J);
+        in_.members[0].weight = 5;
+        in_.members[0].rawWeight = 10; // exactly covered
+        _reserveRaw(in_);
+        Expo memory e = expo(exposureID(ASG_J, in_.members[0].id));
+        assertEq(e.weight, 5, "voting weight q");
+        assertEq(e.rawWeight, 10, "raw weight x");
     }
 
     function test_reserveRequiresTheIdentitysCurrentOrStagedRootKeyAndItsBoundEvmKey() public {
@@ -206,6 +226,7 @@ contract ReservationTest is P85Flow {
         // both lots reserved: accepted, including the dust lot
         in_.members[0].lotIDs = full;
         in_.members[0].weight = 11; // 1,100 UCT backing now
+        in_.members[0].rawWeight = 11;
         _reserveRaw(in_);
         (,,,,,,, uint32 refs,,,,,) = custody.lots(full[1]);
         assertEq(refs, 1);
@@ -269,13 +290,14 @@ contract ReservationTest is P85Flow {
         // slate) still contains its exposure and the session locks it.
         requestRetirement(0);
         reserve(RES_J, ASG_J, allExcept(0), 1);
-        (,,,,,,,, uint32 locks) = custody.exposures(genesisExposure(0));
+        (,,,,,,,,, uint32 locks) = custody.exposures(genesisExposure(0));
         assertEq(locks, 1);
     }
 
     function test_reservationFailureLeavesNoPartialState() public {
         ReserveInput memory in_ = _input(RES_J, ASG_J);
         in_.members[3].weight = 11; // last member fails coverage after three members were processed
+        in_.members[3].rawWeight = 11;
         vm.prank(address(election));
         vm.expectRevert(StakeCustody.InsufficientCoverage.selector);
         custody.reserveCandidate(in_);

@@ -130,9 +130,9 @@ contract EligibilityReader {
             (bool ok, bytes memory ret) =
                 address(CUSTODY).staticcall(abi.encodeCall(IStakeCustody.exposures, (ids[i])));
             if (!ok) revert CustodyRead();
-            // (assignmentID, id, generation, rootKeyHash, evmKeyHash, weight, ...)
-            (, uint64 id,, bytes32 rootKeyHash, bytes32 evmKeyHash, uint64 weight) =
-                abi.decode(ret, (bytes32, uint64, uint64, bytes32, bytes32, uint64));
+            // (assignmentID, id, generation, weight, rawWeight, rootKeyHash, evmKeyHash, ...): the committed weight is q
+            (, uint64 id,, uint64 weight,, bytes32 rootKeyHash, bytes32 evmKeyHash) =
+                abi.decode(ret, (bytes32, uint64, uint64, uint64, uint64, bytes32, bytes32));
             o[i] = Continuity.Member(
                 id, keccak256(abi.encode(SIGNING_DOMAIN, rootKeyHash, evmKeyHash)), weight
             );
@@ -210,7 +210,8 @@ contract EligibilityReader {
         (bool ok, bytes memory ret) =
             address(CUSTODY).staticcall(abi.encodeCall(IStakeCustody.exposures, (exposureID)));
         if (!ok) revert CustodyRead();
-        (,,,, evmKeyHash) = abi.decode(ret, (bytes32, uint64, uint64, bytes32, bytes32));
+        (,,,,,, evmKeyHash) =
+            abi.decode(ret, (bytes32, uint64, uint64, uint64, uint64, bytes32, bytes32));
     }
 
     /// @notice The state of a custody session.

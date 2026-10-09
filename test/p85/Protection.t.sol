@@ -132,8 +132,11 @@ contract ProtectionTest is P85Flow {
     function _foldExposure(bytes32 previous, bytes32 exposureID_) internal view returns (bytes32) {
         Expo memory e = expo(exposureID_);
         bytes32 lotsHash = keccak256(abi.encode(custody.exposureLots(exposureID_)));
-        return
-            keccak256(abi.encode(previous, exposureID_, e.id, e.weight, e.operatorPayee, lotsHash));
+        return keccak256(
+            abi.encode(
+                previous, exposureID_, e.id, e.weight, e.rawWeight, e.operatorPayee, lotsHash
+            )
+        );
     }
 
     function _foldKeys(bytes32 previous, bytes32 exposureID_) internal view returns (bytes32) {

@@ -308,6 +308,7 @@ contract InvariantHandler is P85Flow {
             members[k] = ReserveMember({
                 id: id,
                 weight: uint64(backing / (100 * UCT)),
+                rawWeight: uint64(backing / (100 * UCT)),
                 rootKeyHash: rootHash,
                 evmKeyHash: keccak256(d.evmKey),
                 operatorPayee: d.operatorPayee,
