@@ -190,35 +190,41 @@ contract TokenVerifier {
         if (proof.length > BridgeBounds.MAX_ENVELOPE_BYTES) {
             revert BudgetExceeded();
         }
-        _boundCounts(proof);
         // The one canonical `abi.encode` of the four fields, checked by walking the offsets and the
-        // padding in place (no decode, no copy), so the decoder below sees only canonical input.
-        _checkFraming(proof);
+        // padding in place (no decode, no copy), with every count and length bounded before it is used,
+        // so the decoder below sees only canonical, in-budget input.
+        _checkEnvelope(proof);
         (policyBody, history, anchors, paths) =
             abi.decode(proof, (bytes, bytes, Anchor[], LeafProof[]));
     }
 
-    /// @dev `proof` is exactly `abi.encode(bytes, bytes, Anchor[], LeafProof[])`: every offset is the
+    /// @dev `b` is exactly `abi.encode(bytes, bytes, Anchor[], LeafProof[])`: every offset is the
     ///      position the canonical encoder gives it (no gaps, aliases or reordering), every length fits
     ///      the data, every padding byte is zero and nothing follows the last element. The ABI decoder
-    ///      tolerates all of these deviations; the profile does not.
-    function _checkFraming(bytes calldata b) private pure {
-        uint256 n = b.length;
-        if (n < 128 || n % 32 != 0) revert EnvelopeFraming();
+    ///      tolerates all of these deviations; the profile does not. Declared counts and lengths are
+    ///      checked against their bounds as they are read, before anything is walked or allocated: an
+    ///      over-bound count is `BudgetExceeded`, a layout the walk cannot follow `EnvelopeFraming`.
+    ///      Words above 2^64-1 are framing errors, so every sum below stays far from overflow.
+    function _checkEnvelope(bytes calldata b) private pure {
         if (_word(b, 0) != 128) revert EnvelopeFraming();
-        uint256 pos = _framedBytes(b, 128);
+        uint256 pos = _framedBytes(b, 128, type(uint256).max);
         if (_word(b, 32) != pos) revert EnvelopeFraming();
-        pos = _framedBytes(b, pos);
+        pos = _framedBytes(b, pos, type(uint256).max);
         if (_word(b, 64) != pos) revert EnvelopeFraming();
         pos = _framedAnchors(b, pos);
         if (_word(b, 96) != pos) revert EnvelopeFraming();
         pos = _framedLeaves(b, pos);
-        if (pos != n) revert EnvelopeFraming();
+        if (pos != b.length) revert EnvelopeFraming();
     }
 
-    /// @dev `bytes` at `off`: length word, data, zero padding to a word. Returns the end.
-    function _framedBytes(bytes calldata b, uint256 off) private pure returns (uint256 end) {
+    /// @dev `bytes` at `off`: length word (at most `maxLen`), data, zero padding to a word. Returns the end.
+    function _framedBytes(bytes calldata b, uint256 off, uint256 maxLen)
+        private
+        pure
+        returns (uint256 end)
+    {
         uint256 len = _word(b, off);
+        if (len > maxLen) revert BudgetExceeded();
         uint256 tail = len % 32;
         end = off + 32 + len + (tail == 0 ? 0 : 32 - tail);
         if (end > b.length) revert EnvelopeFraming();
@@ -232,6 +238,8 @@ contract TokenVerifier {
 
     function _framedAnchors(bytes calldata b, uint256 off) private pure returns (uint256 pos) {
         uint256 n = _word(b, off);
+        if (n > b.length) revert EnvelopeFraming();
+        if (n > BridgeBounds.MAX_ANCHORS) revert BudgetExceeded();
         uint256 base = off + 32;
         pos = base + 32 * n;
         if (pos > b.length) revert EnvelopeFraming();
@@ -242,61 +250,33 @@ contract TokenVerifier {
             if (_word(b, t) > type(uint32).max || _word(b, t + 32) != 224) {
                 revert EnvelopeFraming();
             }
-            pos = _framedBytes(b, t + 224);
+            pos = _framedBytes(b, t + 224, type(uint256).max);
             if (_word(b, t + 160) != pos - t) revert EnvelopeFraming();
-            pos = _framedBytes(b, pos);
+            // the certificate and the InputRecord opening are bounded before they are walked
+            pos = _framedBytes(b, pos, BridgeBounds.MAX_ANCHOR_UC_BYTES);
             if (_word(b, t + 192) != pos - t) revert EnvelopeFraming();
-            pos = _framedBytes(b, pos);
+            pos = _framedBytes(b, pos, InputRecord.MAX_BYTES);
         }
     }
 
     function _framedLeaves(bytes calldata b, uint256 off) private pure returns (uint256 pos) {
         uint256 n = _word(b, off);
+        if (n > b.length) revert EnvelopeFraming();
+        if (n > BridgeBounds.MAX_LEAVES) revert BudgetExceeded();
         uint256 base = off + 32;
         pos = base + 32 * n;
         if (pos > b.length) revert EnvelopeFraming();
+        // The cumulative step bound (`MAX_PATH_STEPS`) is implied by the per-leaf bound and the leaf
+        // and anchor bounds; `BridgeBounds` pins that inequality.
         for (uint256 i = 0; i < n; ++i) {
             if (_word(b, base + 32 * i) != pos - base) revert EnvelopeFraming();
             uint256 t = pos;
             // (uint16 anchorIndex, bytes32 bitmap, bytes32[] siblings)
             if (_word(b, t) > type(uint16).max || _word(b, t + 64) != 96) revert EnvelopeFraming();
-            pos = t + 96 + 32 + 32 * _word(b, t + 96);
+            uint256 siblings = _word(b, t + 96);
+            if (siblings > BridgeBounds.MAX_RSMT_SIBLINGS) revert BudgetExceeded();
+            pos = t + 96 + 32 + 32 * siblings;
             if (pos > b.length) revert EnvelopeFraming();
-        }
-    }
-
-    /// @dev Reads the declared counts straight from the head words, so an over-budget count is
-    ///      rejected before any allocation. Walks the leaf proofs in order; a layout it cannot follow
-    ///      is a framing error, an over-budget count a budget error. Words above 2^64-1 are framing
-    ///      errors, so every sum below stays far from overflow.
-    function _boundCounts(bytes calldata b) private pure {
-        uint256 n = b.length;
-        // `_word` refuses any read past the end, which covers a short envelope and an offset beyond
-        // it; alignment and trailing data are covered by the re-encode comparison in `_openEnvelope`.
-        uint256 offAnchors = _word(b, 64);
-        uint256 offLeaves = _word(b, 96);
-        uint256 na = _word(b, offAnchors);
-        if (na > n) revert EnvelopeFraming();
-        if (na > BridgeBounds.MAX_ANCHORS) revert BudgetExceeded();
-        // Every anchor's UC and InputRecord opening are bounded before anything is allocated: their
-        // length words sit at the offsets of the tuple's sixth and seventh head words.
-        for (uint256 i = 0; i < na; ++i) {
-            uint256 t = offAnchors + 32 + _word(b, offAnchors + 32 + 32 * i);
-            if (_word(b, t + _word(b, t + 160)) > BridgeBounds.MAX_ANCHOR_UC_BYTES) {
-                revert BudgetExceeded();
-            }
-            if (_word(b, t + _word(b, t + 192)) > InputRecord.MAX_BYTES) revert BudgetExceeded();
-        }
-        uint256 nl = _word(b, offLeaves);
-        if (nl > n) revert EnvelopeFraming();
-        if (nl > BridgeBounds.MAX_LEAVES) revert BudgetExceeded();
-        // The cumulative step bound (`MAX_PATH_STEPS`) is implied by the per-leaf bound and the leaf
-        // and anchor bounds; `BridgeBounds` pins that inequality.
-        for (uint256 i = 0; i < nl; ++i) {
-            uint256 rel = _word(b, offLeaves + 32 + 32 * i);
-            uint256 t = offLeaves + 32 + rel;
-            uint256 sRel = _word(b, t + 64);
-            if (_word(b, t + sRel) > BridgeBounds.MAX_RSMT_SIBLINGS) revert BudgetExceeded();
         }
     }
 

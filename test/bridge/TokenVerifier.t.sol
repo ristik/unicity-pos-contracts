@@ -601,6 +601,24 @@ contract TokenVerifierTest is BridgeBase {
         _framingRejects(_setWord(_copy(good), 0, 160));
     }
 
+    function test_envelope_aliasedAnchorFieldOffsetsAreFraming() public {
+        Scenario memory s = _returnScenario();
+        s.paths[0].bitmap = bytes32(uint256(3)); // a small word, so an aliased sibling count passes the bounds
+        bytes memory good = _proof(s);
+        uint256 offAnchors = _getWord(good, 64);
+        uint256 t = offAnchors + 32 + _getWord(good, offAnchors + 32);
+        // the certificate and the opening each aliased to the shard's (one-byte) data: in every bound
+        _framingRejects(_setWord(_copy(good), t + 160, _getWord(good, t + 32)));
+        _framingRejects(_setWord(_copy(good), t + 192, _getWord(good, t + 32)));
+        // the shard aliased to the opening
+        _framingRejects(_setWord(_copy(good), t + 32, _getWord(good, t + 192)));
+        // the history aliased to the policy body, and the siblings of the first leaf to its bitmap word
+        _framingRejects(_setWord(_copy(good), 32, _getWord(good, 0)));
+        uint256 offLeaves = _getWord(good, 96);
+        uint256 l = offLeaves + 32 + _getWord(good, offLeaves + 32);
+        _framingRejects(_setWord(_copy(good), l + 64, 64));
+    }
+
     function test_envelope_tooShortRejected() public {
         Scenario memory s = _returnScenario();
         _rejectsRaw(s, new bytes(96), abi.encodeWithSelector(EnvelopeFraming.selector));
@@ -968,9 +986,12 @@ contract TokenVerifierTest is BridgeBase {
         // `80` is not a row of the depth-1 policy; carrying row 0's configuration must not admit it.
         Scenario memory s = _returnScenario();
         bytes32[] memory confs = vm.parseJsonBytes32Array(G, ".policy.confs");
-        s.anchors[0].shard = hex"80";
-        s.anchors[0].shardConfHash = confs[0];
-        _rejects(s, abi.encodeWithSelector(PolicyTupleMismatch.selector));
+        for (uint256 r = 0; r < confs.length; ++r) {
+            s = _returnScenario();
+            s.anchors[0].shard = hex"80";
+            s.anchors[0].shardConfHash = confs[r];
+            _rejects(s, abi.encodeWithSelector(PolicyTupleMismatch.selector));
+        }
     }
 
     function testFuzz_popcountIsTheNumberOfSetBits(uint256 x) public pure {
@@ -1085,6 +1106,13 @@ contract TokenVerifierTest is BridgeBase {
         Anchor[] memory one = new Anchor[](1);
         one[0] = s.anchors[0];
         s.anchors = one;
+    }
+
+    function test_policy_aLeafIndexPastTheLastAnchorIsRefusedEvenWhenAllAreUsed() public {
+        // One anchor, every leaf under it, then a leaf naming index 1 = the table length.
+        Scenario memory s = _oneAnchorReturn();
+        s.paths[2].anchorIndex = 1;
+        _rejects(s, abi.encodeWithSelector(PolicyLeafIndex.selector, 2, 1));
     }
 
     function test_policy_unusedAnchorIsRefused() public {
