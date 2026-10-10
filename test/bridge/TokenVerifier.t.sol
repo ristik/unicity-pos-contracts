@@ -1714,7 +1714,7 @@ contract TokenVerifierTest is BridgeBase {
 
     function _gateParts(Scenario memory s)
         internal
-        view
+        pure
         returns (uint256 intrinsic, uint256 b2, uint256 uc, uint256 rsmt)
     {
         intrinsic = BridgeBounds.intrinsicGas(_proof(s).length);
