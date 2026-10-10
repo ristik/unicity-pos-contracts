@@ -7,6 +7,8 @@
 # Usage: script/p85-genesis.sh <genesis.json from `ubft pos-relayer genesis --out-contracts`> <out-dir>
 # Environment: P85_NETWORK_WORD P85_CHAIN_ID P85_ROOTS (the registry address) P85_TREASURY, and the caps the election price is measured at:
 #   P85_V_MAX P85_L_MAX P85_N_MAX (devnet/testnet 16 2 8), P85_CADENCE_ROUNDS P85_CADENCE_SECONDS.
+# Optional: P85_DIST_NUM / P85_DIST_DEN, the election's weight-distance bound (testnet profile default 1/2; production uses 1/4). The roots' EVM
+# configuration must commit the same bound as `continuity_max_distance`.
 set -euo pipefail
 cd "$(dirname "$0")/.."
 [ "$#" -eq 2 ] || { echo "usage: $0 <genesis.json> <out-dir>" >&2; exit 2; }

@@ -22,7 +22,10 @@ import {
 ///
 /// Inputs (environment): P85_GENESIS_JSON (the genesis plan bft-core's `ubft pos-relayer genesis --out-contracts` writes), P85_NETWORK_WORD,
 /// P85_CHAIN_ID, P85_ROOTS (the registry that serves the root records), P85_TREASURY, P85_V_MAX, P85_L_MAX, P85_N_MAX (the caps the election
-/// price was measured at), P85_CADENCE_ROUNDS, P85_CADENCE_SECONDS, P85_OUT (a directory under ./script/genesis-out).
+/// price was measured at), P85_CADENCE_ROUNDS, P85_CADENCE_SECONDS, P85_OUT (a directory under ./script/genesis-out); optional P85_DIST_NUM / P85_DIST_DEN: the election's weight-distance bound D <= num/den. THIS genesis script is the devnet/testnet
+/// profile, whose small committees (4 -> 5 is D = 2/5, one replacement in four D = 1/2) need 1/2 (default 1/2); the contracts' own policy default and a
+/// production genesis stay at 1/4 (briefs/p85-churn-bound-note.md). The roots' installed EVM configuration must commit the same bound
+/// (`continuity_max_distance`).
 contract P85Genesis is Script {
     function run() external {
         vm.chainId(vm.envUint("P85_CHAIN_ID"));
@@ -64,8 +67,8 @@ contract P85Genesis is Script {
                 nTarget: nMax,
                 nMax: nMax,
                 maxM: 4,
-                distNum: 1,
-                distDen: 4,
+                distNum: uint64(vm.envOr("P85_DIST_NUM", uint256(1))),
+                distDen: uint64(vm.envOr("P85_DIST_DEN", uint256(2))),
                 cadenceRounds: uint64(vm.envUint("P85_CADENCE_ROUNDS")),
                 cadenceSeconds: uint64(vm.envUint("P85_CADENCE_SECONDS"))
             }),

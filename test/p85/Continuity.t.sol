@@ -143,4 +143,38 @@ contract ContinuityTest is Test {
         assertEq(r.m, 2);
         assertEq(failed, 0);
     }
+
+    function _replace(uint64 n, uint64 k) internal pure returns (Continuity.Member[] memory s) {
+        s = _eq(n, 1);
+        for (uint64 i = n - k; i < n; ++i) {
+            s[i] = Continuity.Member(n + 1 + (i - (n - k)), bytes32(uint256(1000 + i)), 1);
+        }
+    }
+
+    /// @dev The small-committee testnet bound D <= 1/2 (arch note briefs/p85-churn-bound-note.md): growth 4 -> 5 and one replacement in four are
+    /// admitted (D = 2/5 and 1/2, equality accepted), two replacements in four are refused (turnover, distance and the >2/3 overlap all fail), and the production 1/4 refuses all three. Each case
+    /// differs from its control in the bound or the composition only; the masks are exact, not "some failure".
+    function test_theTestnetBoundAdmitsGrowthAndOneReplacementButNotTwo() public pure {
+        Continuity.Member[] memory k = _eq(4, 1);
+        Continuity.Params memory testnet = Continuity.Params(4, 1, 2);
+        Continuity.Params memory production = Continuity.Params(4, 1, 4);
+        uint8 failed;
+
+        (failed,) = Continuity.check(k, _eq(5, 1), testnet);
+        assertEq(failed, 0, "4 -> 5 at 1/2");
+        (failed,) = Continuity.check(k, _eq(5, 1), production);
+        assertEq(failed, Continuity.FAIL_DISTANCE, "4 -> 5 at 1/4");
+
+        (failed,) = Continuity.check(k, _replace(4, 1), testnet);
+        assertEq(failed, 0, "one of four replaced at 1/2 (D = 1/2 exactly)");
+        (failed,) = Continuity.check(k, _replace(4, 1), production);
+        assertEq(failed, Continuity.FAIL_DISTANCE, "one of four replaced at 1/4");
+
+        (failed,) = Continuity.check(k, _replace(4, 2), testnet);
+        assertEq(
+            failed,
+            Continuity.FAIL_TURNOVER | Continuity.FAIL_DISTANCE | Continuity.FAIL_OVERLAP,
+            "two of four replaced at 1/2"
+        );
+    }
 }
