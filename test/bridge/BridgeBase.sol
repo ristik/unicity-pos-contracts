@@ -16,58 +16,17 @@ import {
     LeafProof
 } from "../../src/bridge/BridgeTypes.sol";
 
-/// @notice TEST DOUBLE for a native precompile (B1 0x0100/0x0102 and the B2 kernel 0x0104). It is code
-///         etched at the precompile address and answers by exact calldata hash. It is NOT the native
-///         implementation: B1 ships in ureth #50 (inactive), the B2 kernel is bridge PR2 (in progress),
-///         and neither is wired in here. Doubles do not close B4.
-///         An unprogrammed input reverts, so a test that programs only the exact expected bytes proves
-///         the caller built exactly those bytes.
-contract PrecompileDouble {
-    struct Entry {
-        bool set;
-        bool reverts;
-        bytes out;
-    }
-
-    mapping(bytes32 => Entry) internal entries;
-    Entry internal fallbackEntry;
-
-    function program(bytes32 key, bytes calldata out) external {
-        entries[key] = Entry(true, false, out);
-    }
-
-    function programRevert(bytes32 key) external {
-        entries[key] = Entry(true, true, "");
-    }
-
-    function programDefault(bytes calldata out) external {
-        fallbackEntry = Entry(true, false, out);
-    }
-
-    function programDefaultRevert() external {
-        fallbackEntry = Entry(true, true, "");
-    }
-
-    function reset(bytes32 key) external {
-        delete entries[key];
-    }
-
-    function resetDefault() external {
-        delete fallbackEntry;
-    }
-
-    fallback(bytes calldata data) external returns (bytes memory) {
-        Entry memory e = entries[keccak256(data)];
-        if (!e.set) e = fallbackEntry;
-        require(e.set, "double: unprogrammed input");
-        if (e.reverts) revert("double: programmed revert");
-        return e.out;
-    }
-}
-
 /// @notice Shared fixture: the golden vectors of the merged Go oracle, the precompile doubles, and
 ///         builders that are written independently of the library under test.
 abstract contract BridgeBase is Test {
+    // The precompile doubles. B1 0x0100/0x0102 and the B2 kernel 0x0104 are NOT the native
+    // implementation (B1 ships in ureth, inactive here); they are `vm.mockCall` answers keyed by the
+    // exact request bytes, over code that reverts. An unprogrammed input therefore reverts, so a test
+    // that programs only the exact expected bytes proves the caller built exactly those bytes. Mocks
+    // cost no EVM gas: the verifier forwards each native call exactly its computed charge (a single
+    // RSMT member call is about six thousand gas), which a storage-backed double cannot meet.
+    bytes internal constant REVERT_CODE = hex"5f5ffd"; // PUSH0 PUSH0 REVERT
+
     bytes32 internal constant MARKER = bytes32("UNICITY_TOKEN_SEMANTICS");
 
     string internal G;
@@ -81,12 +40,29 @@ abstract contract BridgeBase is Test {
     function _etchDoubles() internal {
         address[3] memory targets = [B1Calls.UC_VERIFIER, B1Calls.RSMT_VERIFIER, B1Calls.KERNEL];
         for (uint256 i = 0; i < targets.length; ++i) {
-            vm.etch(targets[i], type(PrecompileDouble).runtimeCode);
+            vm.etch(targets[i], REVERT_CODE);
         }
     }
 
-    function _double(address a) internal pure returns (PrecompileDouble) {
-        return PrecompileDouble(a);
+    /// @dev The mock selector of a target's default answer: the first four bytes of its requests.
+    function _selectorOf(address target) internal pure returns (bytes4) {
+        return target == B1Calls.KERNEL ? bytes4(0) : bytes4(0x01000001);
+    }
+
+    function _prog(address target, bytes memory req, bytes memory out) internal {
+        vm.mockCall(target, req, out);
+    }
+
+    function _progRevert(address target, bytes memory req) internal {
+        vm.mockCallRevert(target, req, "");
+    }
+
+    function _progDefault(address target, bytes memory out) internal {
+        vm.mockCall(target, _selectorOf(target), out);
+    }
+
+    function _progDefaultRevert(address target) internal {
+        vm.mockCallRevert(target, _selectorOf(target), "");
     }
 
     // ---- golden accessors ---------------------------------------------------------------------
@@ -156,21 +132,35 @@ abstract contract BridgeBase is Test {
         lp = new LeafProof[](n);
         for (uint256 i = 0; i < n; ++i) {
             string memory p = string.concat(".", op, ".envelope.members[", vm.toString(i), "]");
+            lp[i].anchorIndex = uint16(vm.parseJsonUint(G, string.concat(p, ".anchorIndex")));
             lp[i].bitmap = _b32(string.concat(p, ".bitmap"));
             lp[i].siblings = vm.parseJsonBytes32Array(G, string.concat(p, ".siblings"));
         }
     }
 
-    /// @dev The real certified anchor of the golden envelope of `op`, with its native InputRecord.
-    function _goldenAnchor(string memory op) internal view returns (Anchor memory a) {
-        string memory p = string.concat(".", op, ".envelope.anchor");
-        a.partition = uint32(vm.parseJsonUint(G, string.concat(p, ".partition")));
-        a.shard = _b(string.concat(p, ".shard"));
-        a.shardConfHash = _b32(string.concat(p, ".conf"));
-        a.expectedStateRoot = _b32(string.concat(p, ".stateRoot"));
-        a.expectedIRHash = _b32(string.concat(p, ".irHash"));
-        a.uc = _b(string.concat(p, ".uc"));
-        a.inputRecord = _b(string.concat(p, ".inputRecord"));
+    /// @dev The real certified anchors of the golden envelope of `op` (one per distinct UC, first-use
+    ///      leaf order), each with its native InputRecord.
+    function _goldenAnchors(string memory op) internal view returns (Anchor[] memory as_) {
+        uint256 n = 0;
+        while (vm.keyExistsJson(
+                G, string.concat(".", op, ".envelope.anchors[", vm.toString(n), "]")
+            )) ++n;
+        as_ = new Anchor[](n);
+        for (uint256 i = 0; i < n; ++i) {
+            string memory p = string.concat(".", op, ".envelope.anchors[", vm.toString(i), "]");
+            as_[i].partition = uint32(vm.parseJsonUint(G, string.concat(p, ".partition")));
+            as_[i].shard = _b(string.concat(p, ".shard"));
+            as_[i].shardConfHash = _b32(string.concat(p, ".conf"));
+            as_[i].expectedStateRoot = _b32(string.concat(p, ".stateRoot"));
+            as_[i].expectedIRHash = _b32(string.concat(p, ".irHash"));
+            as_[i].uc = _b(string.concat(p, ".uc"));
+            as_[i].inputRecord = _b(string.concat(p, ".inputRecord"));
+        }
+    }
+
+    /// @dev The first anchor of the golden envelope of `op`.
+    function _goldenAnchor(string memory op) internal view returns (Anchor memory) {
+        return _goldenAnchors(op)[0];
     }
 
     // SHA-256 of the labels the oracle's generator uses for the "all-set" opening (golden .inputRecords[0]).
@@ -245,10 +235,6 @@ abstract contract BridgeBase is Test {
 
     function _kernelOut(bool valid, KernelResult memory r) internal pure returns (bytes memory) {
         return abi.encode(MARKER, valid, r);
-    }
-
-    function _k(bytes memory input) internal pure returns (bytes32) {
-        return keccak256(input);
     }
 
     /// @dev UC request for one claim, written byte by byte rather than through the library.

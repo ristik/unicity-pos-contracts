@@ -70,6 +70,8 @@ func anchorOut(a *Anchor) map[string]any {
 }
 
 // composed certifies the leaves of a result, asks the reference B1 for every verdict and returns the JSON.
+// The anchor table is the profile's: one anchor per distinct UC in first-use leaf order (the DN-B depth-1
+// topology puts leaves of different shards under different UCs).
 func composed(t *testing.T, d *Deployment, op uint8, history []byte, res *Result, irTime uint64) map[string]any {
 	extra := []Leaf{{SID: H([]byte("other-1")), Value: H([]byte("v1"))}, {SID: H([]byte("other-2")), Value: H([]byte("v2"))},
 		{SID: H([]byte("other-3")), Value: H([]byte("v3"))}}
@@ -77,8 +79,7 @@ func composed(t *testing.T, d *Deployment, op uint8, history []byte, res *Result
 	if err != nil {
 		t.Fatal(err)
 	}
-	a := cert.Anchor
-	env := &Envelope{PolicyBody: d.F.Policy.Bytes(), History: history, Anchors: []Anchor{a}, LeafProofs: cert.Proofs}
+	env := &Envelope{PolicyBody: d.F.Policy.Bytes(), History: history, Anchors: cert.Anchors, LeafProofs: cert.Proofs}
 	eb, err := env.Encode()
 	if err != nil {
 		t.Fatal(err)
@@ -87,12 +88,21 @@ func composed(t *testing.T, d *Deployment, op uint8, history []byte, res *Result
 	if _, err := Compose(d.F.Cfg, op, eb, b1); err != nil {
 		t.Fatal(err)
 	}
-	if err := b1.AuthenticateAnchor(&a); err != nil {
-		t.Fatal(err)
+	anchors := []map[string]any{}
+	for i := range cert.Anchors {
+		a := &cert.Anchors[i]
+		if err := b1.AuthenticateAnchor(a); err != nil {
+			t.Fatal(err)
+		}
+		m := anchorOut(a)
+		m["ucRequest"] = x(ucRequest(a))
+		m["ucResult"] = x(b1ref.Output(true))
+		anchors = append(anchors, m)
 	}
 	members := []map[string]any{}
 	for i, l := range res.Leaves {
 		p := cert.Proofs[i]
+		a := &cert.Anchors[p.AnchorIndex]
 		req := MemberInput(a.ExpectedStateRoot, l.SID, l.Value, p)
 		v, err := b1ref.Member(req)
 		if err != nil || !v.Valid {
@@ -107,12 +117,17 @@ func composed(t *testing.T, d *Deployment, op uint8, history []byte, res *Result
 		if err != nil || old.Valid {
 			t.Fatalf("leaf %d: txHash as the value must not be a member (%v)", i, err)
 		}
-		members = append(members, map[string]any{"bitmap": x32(p.Bitmap), "siblings": sibs, "request": x(req),
+		members = append(members, map[string]any{"anchorIndex": p.AnchorIndex, "bitmap": x32(p.Bitmap), "siblings": sibs, "request": x(req),
 			"result": x(b1ref.Output(true)), "txHashRequest": x(MemberInput(a.ExpectedStateRoot, l.SID, l.TxHash, p)),
 			"txHashResult": x(b1ref.Output(false))})
 	}
-	return map[string]any{"bytes": x(eb), "anchor": anchorOut(&a), "irTime": irTime, "leaves": len(res.Leaves),
-		"ucRequest": x(ucRequest(&a)), "ucResult": x(b1ref.Output(true)), "members": members}
+	gate, err := GateOf(d.F.Cfg, op, eb, TxGasBudget)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return map[string]any{"bytes": x(eb), "anchors": anchors, "irTime": irTime, "leaves": len(res.Leaves),
+		"members": members, "gate": map[string]any{"intrinsic": gate.Intrinsic, "b2": gate.B2, "uc": gate.UC, "rsmt": gate.RSMT,
+			"reserve": GasReserve, "total": gate.Total(), "budget": TxGasBudget}}
 }
 
 // irCase is one canonical native InputRecord opening produced by the SDK's own encoder.
@@ -154,7 +169,14 @@ func TestGenPR5Golden(t *testing.T) {
 		"bytes": x(cfg.Bytes()), "hash": x32(ch),
 		"identityD": identityD(cfg.Network, cfg.RootGenesis, cfg.ExecutionGenesis, cfg.ChainID),
 	}
-	g["policy"] = map[string]any{"partition": f.Policy.Partition, "conf": x32(f.Policy.ShardConf), "bytes": x(f.Policy.Bytes()), "hash": x32(f.Policy.Hash())}
+	confs := []string{}
+	shards := []string{}
+	for _, r := range f.Policy.Shards {
+		confs = append(confs, x32(r.Conf))
+		shards = append(shards, x(r.ID))
+	}
+	g["policy"] = map[string]any{"partition": f.Policy.Partition, "depth": f.Policy.Depth, "shards": shards, "confs": confs,
+		"bytes": x(f.Policy.Bytes()), "hash": x32(f.Policy.Hash())}
 
 	// Identifiers of other deployments: every D component changes ty and aid; the vault is not one of them.
 	ids := []map[string]any{}

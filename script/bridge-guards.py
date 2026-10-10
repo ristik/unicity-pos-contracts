@@ -29,6 +29,8 @@ T = "src/bridge/TokenVerifier.sol"
 P = "src/bridge/BridgeProfile.sol"
 C = "src/bridge/Cbor.sol"
 B = "src/bridge/B1Calls.sol"
+BB = "src/bridge/BridgeBounds.sol"
+U = "src/bridge/UcScan.sol"
 I = "src/bridge/InputRecord.sol"
 
 VT = "test/bridge/BridgeVault.t.sol"
@@ -36,6 +38,7 @@ VI = "test/bridge/BridgeVaultIntegration.t.sol"
 TT = "test/bridge/TokenVerifier.t.sol"
 BT = "test/bridge/B1Calls.t.sol"
 IT = "test/bridge/InputRecord.t.sol"
+UT = "test/bridge/UcScan.t.sol"
 
 
 def g(id, file, old, new, tests, path, occ=1):
@@ -59,7 +62,7 @@ GUARDS = [
     g("V-ctor-codeHashEmpty", V, "|| codeHash == keccak256(\"\")", "|| false", "test_constructor_verifierWithoutCode", VT),
     g("V-ctor-codeHashPin", V, "|| codeHash != d.tokenVerifierCodeHash", "|| false", "test_constructor_verifierCodeHashPin", VT),
     g("V-ctor-policyPartition", V, "if (p.partition == d.evmPartition) revert PolicyPartitionIsEvm();", "if (false) revert PolicyPartitionIsEvm();", "test_constructor_policyPartitionIsEvmPartition", VT),
-    g("V-ctor-policyDecode", V, "Policy memory p = BridgeProfile.decodePolicy(d.policyBody);", "Policy memory p = Policy({partition: 11, shardConfHash: 0});", "test_constructor_policyMalformed", VT),
+    g("V-ctor-policyDecode", V, "Policy memory p = BridgeProfile.decodePolicy(d.policyBody);", "Policy memory p = Policy({partition: 11, depth: 0, shardConfHashes: new bytes32[](1)});", "test_constructor_policyMalformed", VT),
     g("V-ctor-identity", V, "deriveType(d.network, d.rootGenesis, d.executionGenesis, chainId)", "deriveType(d.network, d.executionGenesis, d.executionGenesis, chainId)", "test_constructor_configuration|test_constructor_identifiersMatchTheOracleFamily", VT),
     g("V-ctor-identityChain", V, "deriveAsset(d.network, d.rootGenesis, d.executionGenesis, chainId)", "deriveAsset(d.network, d.rootGenesis, d.executionGenesis, 1)", "test_constructor_everyIdentityComponentChangesBothIdentifiers|test_constructor_identifiersMatchTheOracleFamily", VT),
     # ---- vault: lock --------------------------------------------------------------------------
@@ -105,37 +108,79 @@ GUARDS = [
     # ---- verifier: configuration and environment ---------------------------------------------
     g("T-cfg-verifier", T, "if (c.tokenVerifier != address(this)) revert WrongVerifier(c.tokenVerifier, address(this));", "", "test_cfg_wrongVerifierAddress", TT),
     g("T-cfg-chainId", T, "if (c.chainId != block.chainid) revert ChainIdMismatch(c.chainId, block.chainid);", "", "test_cfg_chainIdMismatch", TT),
-    g("T-prepare-p0Cap", T, "if (p0.length > MAX_SEMANTIC_BYTES) revert BudgetExceeded();", "", "test_prepare_p0OverCapIsBudget", TT),
-    g("T-history-cap", T, "if (history.length > MAX_SEMANTIC_BYTES) revert BudgetExceeded();", "", "test_envelope_historyOverCapIsBudget", TT),
+    g("T-prepare-p0Cap", T, "if (p0.length > BridgeBounds.MAX_SEMANTIC_BYTES) revert BudgetExceeded();", "", "test_prepare_p0OverCapIsBudget", TT),
+    g("T-history-cap", T, "if (history.length > BridgeBounds.MAX_SEMANTIC_BYTES) revert BudgetExceeded();", "", "test_envelope_historyOverCapIsBudget", TT),
     # ---- verifier: envelope -------------------------------------------------------------------
-    g("T-env-cap", T, "if (proof.length > MAX_ENVELOPE_BYTES) revert BudgetExceeded();", "", "test_envelope_oversizeIsBudget", TT),
-    g("T-env-reencode", T, "if (keccak256(abi.encode(policyBody, history, anchors, paths)) != keccak256(proof)) {", "if (false) {", "test_envelope_trailingWordRejected|test_envelope_noncanonicalOffsetRejected|test_envelope_unalignedLengthRejected", TT),
-    g("T-env-anchorsCount", T, "if (na > n) revert EnvelopeFraming();", "", "test_envelope_countLargerThanTheDataIsFramingNotBudget", TT),
-    g("T-env-anchorsCap", T, "if (na > MAX_ANCHORS) revert BudgetExceeded();", "", "test_envelope_tooManyAnchorsIsBudget", TT),
-    g("T-env-leavesCount", T, "if (nl > n) revert EnvelopeFraming();", "", "test_envelope_countLargerThanTheDataIsFramingNotBudget", TT),
-    g("T-env-leavesCap", T, "if (nl > MAX_LEAVES) revert BudgetExceeded();", "", "test_envelope_tooManyLeafProofsIsBudget", TT),
-    g("T-env-steps", T, "if (ns > MAX_PATH_STEPS - steps) revert BudgetExceeded();", "", "test_envelope_cumulativePathStepsIsBudget|test_envelope_cumulativeAcrossPaths", TT),
-    g("T-env-wordRange", T, "if (off + 32 > b.length) revert EnvelopeFraming();", "", "test_envelope_tooShortRejected|test_envelope_offsetAtTheEndIsFraming", TT),
-    g("T-env-wordU64", T, "if (v > type(uint64).max) revert EnvelopeFraming();", "", "test_envelope_hugeWordIsFraming", TT),
+    g("T-env-cap", T, "if (proof.length > BridgeBounds.MAX_ENVELOPE_BYTES) {", "if (false) {", "test_envelope_oversizeIsBudget", TT),
+    g("T-frame-head", T, "if (_word(b, 0) != 128) revert EnvelopeFraming();", "", "test_envelope_everyTupleOffsetWordMustBeCanonical", TT),
+    g("T-frame-off1", T, "if (_word(b, 32) != pos) revert EnvelopeFraming();", "", "test_envelope_noncanonicalOffsetRejected|test_envelope_aliasedOffsetRejected|test_envelope_everyTupleOffsetWordMustBeCanonical|test_envelope_aliasedAnchorFieldOffsetsAreFraming", TT),
+    g("T-frame-off2", T, "if (_word(b, 64) != pos) revert EnvelopeFraming();", "", "test_envelope_noncanonicalOffsetRejected|test_envelope_aliasedOffsetRejected|test_envelope_everyTupleOffsetWordMustBeCanonical|test_envelope_aliasedAnchorFieldOffsetsAreFraming", TT),
+    g("T-frame-off3", T, "if (_word(b, 96) != pos) revert EnvelopeFraming();", "", "test_envelope_noncanonicalOffsetRejected|test_envelope_aliasedOffsetRejected|test_envelope_everyTupleOffsetWordMustBeCanonical|test_envelope_aliasedAnchorFieldOffsetsAreFraming", TT),
+    g("T-frame-end", T, "if (pos != b.length) revert EnvelopeFraming();", "", "test_envelope_trailingWordRejected", TT),
+    g("T-frame-padding", T, "if (uint256(bytes32(b[end - 32:end])) & ((uint256(1) << (8 * (32 - tail))) - 1) != 0) {", "if (false) {", "test_envelope_dirtyPaddingOfEveryBytesFieldIsFraming", TT),
+    g("T-frame-anchorOffset", T, "if (_word(b, base + 32 * i) != pos - base) revert EnvelopeFraming();", "", "test_envelope_anAnchorOffsetOutOfPlaceIsFraming", TT, 1),
+    g("T-frame-leafOffset", T, "if (_word(b, base + 32 * i) != pos - base) revert EnvelopeFraming();", "", "test_envelope_aLeafProofOffsetOutOfPlaceIsFraming", TT, 2),
+    g("T-frame-shardOffset", T, "|| _word(b, t + 32) != 224) {", ") {", "test_envelope_everyTupleOffsetWordMustBeCanonical|test_envelope_aliasedAnchorFieldOffsetsAreFraming", TT),
+    g("T-frame-ucOffset", T, "if (_word(b, t + 160) != pos - t) revert EnvelopeFraming();", "", "test_envelope_aliasedAnchorFieldOffsetsAreFraming", TT),
+    g("T-frame-irOffset", T, "if (_word(b, t + 192) != pos - t) revert EnvelopeFraming();", "", "test_envelope_aliasedAnchorFieldOffsetsAreFraming", TT),
+    g("T-frame-siblingsOffset", T, "|| _word(b, t + 64) != 96) revert EnvelopeFraming();", ") revert EnvelopeFraming();", "test_envelope_aliasedAnchorFieldOffsetsAreFraming", TT),
+    g("T-env-anchorsCount", T, "if (n > b.length) revert EnvelopeFraming();", "", "test_envelope_countLargerThanTheDataIsFramingNotBudget", TT, 1),
+    g("T-env-anchorsCap", T, "if (n > BridgeBounds.MAX_ANCHORS) revert BudgetExceeded();", "", "test_envelope_tooManyAnchorsIsBudget", TT),
+    g("T-env-leavesCount", T, "if (n > b.length) revert EnvelopeFraming();", "", "test_envelope_countLargerThanTheDataIsFramingNotBudget", TT, 2),
+    g("T-env-leavesCap", T, "if (n > BridgeBounds.MAX_LEAVES) revert BudgetExceeded();", "", "test_envelope_tooManyLeafProofsIsBudget", TT),
+    g("T-env-siblings", T, "if (siblings > BridgeBounds.MAX_RSMT_SIBLINGS) revert BudgetExceeded();", "", "test_envelope_cumulativePathStepsIsBudget|test_envelope_cumulativeAcrossPaths", TT),
+    g("T-env-ucCap", T, "pos = _framedBytes(b, pos, BridgeBounds.MAX_ANCHOR_UC_BYTES);", "pos = _framedBytes(b, pos, type(uint256).max);", "test_b1_ucOverCapIsBudget", TT),
+    g("T-env-wordRange", T, "if (off + 32 > b.length) revert EnvelopeFraming();", "", "test_envelope_tooShortRejected|test_envelope_offsetAtTheEndIsFraming|test_envelope_aReadPastTheEndAfterAValidHeadIsFraming", TT),
+    g("T-env-wordU64", T, "if (v > type(uint64).max) revert EnvelopeFraming();", "", "test_envelope_hugeWordIsFraming|test_envelope_aHugeLengthWordIsFramingNotAnArithmeticPanic", TT),
     # ---- verifier: policy ---------------------------------------------------------------------
     g("T-pol-cap", T, "if (body.length > BridgeProfile.MAX_POLICY_BYTES) revert BudgetExceeded();", "", "test_policy_oversizeBody", TT),
     g("T-pol-hash", T, "if (h != c.aggregatorPolicyHash) revert PolicyHashMismatch(c.aggregatorPolicyHash, h);", "", "test_policy_hashMismatch|test_policy_missingBody", TT),
     g("T-pol-evm", T, "if (p.partition == c.evmPartition) revert PolicyPartitionIsEvm();", "", "test_policy_partitionEqualToEvmPartition", TT),
-    g("T-pol-anchorCount", T, "if (anchors.length != 1) revert PolicyAnchorCount(anchors.length);", "", "test_policy_anchorCountZero|test_policy_anchorCountTwo", TT),
-    g("T-pol-tuplePartition", T, "a.partition != p.partition ||", "false ||", "test_policy_unrelatedRootCertifiedPartition", TT),
-    g("T-pol-tupleShardLen", T, "|| a.shard.length != 1", "|| false", "test_policy_emptyShardBytes|test_policy_longerShard", TT),
-    g("T-pol-tupleShardByte", T, "|| a.shard[0] != BridgeProfile.EMPTY_PREFIX", "|| false", "test_policy_nonemptyPrefixShard", TT),
-    g("T-pol-tupleConf", T, "|| a.shardConfHash != p.shardConfHash", "|| false", "test_policy_changedConfiguration", TT),
-    g("T-pol-leafCount", T, "if (paths.length != r.leaves.length) revert PolicyLeafCount(r.leaves.length, paths.length);", "", "test_policy_leafCountMismatch|test_policy_extraLeafProof|test_policy_mintNeedsExactlyOnePath", TT),
-    g("T-pol-leafIndex", T, "if (paths[i].anchorIndex != 0) revert PolicyLeafIndex(i, paths[i].anchorIndex);", "", "test_policy_leafAnchorIndexNonzero", TT),
+    g("T-pol-anchorCount", T, "if (anchorCount == 0) revert PolicyAnchorCount(anchorCount);", "", "test_policy_anchorCountZero", TT),
+    g("T-pol-tupleFound", T, "row == type(uint256).max || a.partition", "false || a.partition", "test_policy_shardOfAnotherTopologyEvenWithARowsConfiguration", TT),
+    g("T-pol-tuplePartition", T, "|| a.partition != pol.partition", "|| false", "test_policy_unrelatedRootCertifiedPartition", TT),
+    g("T-pol-tupleConf", T, "|| a.shardConfHash != pol.shardConfHashes[row]", "|| false", "test_policy_changedConfiguration|test_policy_changedConfigurationOfTheSecondAnchor", TT),
+    g("T-pol-tupleShardLen", T, "a.shard.length == 1 &&", "true &&", "test_policy_emptyShardBytes|test_policy_longerShard", TT),
+    g("T-pol-tupleShardByte", T, "a.shard[0] == BridgeProfile.shardId(pol.depth, k)", "true", "test_policy_shardOfAnotherTopology|test_policy_shardOfAnotherTopologyEvenWithARowsConfiguration", TT),
+    g("T-pol-leafCount", T, "if (paths.length != nl) revert PolicyLeafCount(nl, paths.length);", "", "test_policy_leafCountMismatch|test_policy_extraLeafProof|test_policy_mintNeedsExactlyOnePath", TT),
+    g("T-pol-moreAnchorsThanLeaves", T, "if (anchors.length > nl) revert PolicyAnchorCount(anchors.length);", "", "test_policy_moreAnchorsThanLeaves", TT),
+    g("T-pol-duplicate", T, "if (ucHash[k] == ucHash[j]) revert PolicyAnchorDuplicate(j);", "", "test_policy_identicalUcBytesAreOneAnchorNeverTwo", TT),
+    g("T-pol-leafRange", T, "idx >= na ||", "false ||", "test_policy_leafIndexOutOfRange|test_policy_aLeafIndexPastTheLastAnchorIsRefusedEvenWhenAllAreUsed", TT),
+    g("T-pol-leafOrder", T, "|| idx > next", "|| false", "test_policy_anchorsNotInFirstUseOrder", TT),
+    g("T-pol-leafShard", T, "|| rowOf[idx] != want", "|| false", "test_policy_leafNamesAnAnchorOfAnotherShard", TT),
+    g("T-pol-leafRowFromSid", T, "uint256(uint8(r.leaves[i].sid[0]) >> 7)", "uint256(0)", "test_verifyReturn_golden_everyLeafOnceInOrder|test_policy_leafNamesAnAnchorOfAnotherShard", TT),
+    g("T-pol-nextUse", T, "if (idx == next) ++next;", "", "test_verifyReturn_golden_everyLeafOnceInOrder", TT),
+    g("T-pol-unused", T, "if (next != na) revert PolicyAnchorUnused(next);", "", "test_policy_unusedAnchorIsRefused", TT),
+    # ---- verifier: gas gate -------------------------------------------------------------------
+    g("T-gate-budget", T, "if (total > BridgeBounds.TX_GAS_BUDGET) revert BudgetExceeded();", "", "test_gate_fourAnchorsOfMaximumSignaturesAreBudgetExceeded", TT),
+    g("T-gate-budgetLoosened", T, "if (total > BridgeBounds.TX_GAS_BUDGET) revert BudgetExceeded();", "if (total > BridgeBounds.TX_GAS_BUDGET + 25_000) revert BudgetExceeded();", "test_gate_boundaryAcceptsTheLastPassingPaddingAndRefusesTheNextBeforeAnyNativeCall", TT),
+    g("T-gate-afterUcCalls", T, "        if (total > BridgeBounds.TX_GAS_BUDGET) revert BudgetExceeded();\n\n        // One UC call per anchor. B1 0x0100 authenticates the claim's expected state root and expected\n        // IR hash together; only then does the opening carry weight: it must hash to the authenticated\n        // IR hash and open to the authenticated state root, and its timestamp bounds the time of every\n        // leaf that anchor serves.\n        uint64[] memory times = new uint64[](anchors.length);\n        for (uint256 j = 0; j < anchors.length; ++j) {\n            Anchor memory a = anchors[j];\n            if (!B1Calls.verdict(B1Calls.UC_VERIFIER, B1Calls.ucRequest(a), plan.ucGas[j])) {\n                revert UCRejected();\n            }\n            times[j] = InputRecord.open(a.inputRecord, a.expectedIRHash, a.expectedStateRoot);\n        }\n", "\n        // One UC call per anchor. B1 0x0100 authenticates the claim's expected state root and expected\n        // IR hash together; only then does the opening carry weight: it must hash to the authenticated\n        // IR hash and open to the authenticated state root, and its timestamp bounds the time of every\n        // leaf that anchor serves.\n        uint64[] memory times = new uint64[](anchors.length);\n        for (uint256 j = 0; j < anchors.length; ++j) {\n            Anchor memory a = anchors[j];\n            if (!B1Calls.verdict(B1Calls.UC_VERIFIER, B1Calls.ucRequest(a), plan.ucGas[j])) {\n                revert UCRejected();\n            }\n            times[j] = InputRecord.open(a.inputRecord, a.expectedIRHash, a.expectedStateRoot);\n        }\n        if (total > BridgeBounds.TX_GAS_BUDGET) revert BudgetExceeded();\n", "test_gate_boundaryAcceptsTheLastPassingPaddingAndRefusesTheNextBeforeAnyNativeCall", TT),
+    g("T-gate-bitmap", T, "if (pop != paths[i].siblings.length) revert PathBitmapMismatch(i);", "", "test_gate_bitmapPopcountMustEqualTheSiblingCount", TT),
+    g("T-gate-ucGas", T, "plan.ucGas[j] = BridgeBounds.ucGas(a.shard.length, a.uc.length, sigs, steps);", "plan.ucGas[j] = 0;", "test_gas_everyNativeCallIsForwardedExactlyItsCharge", TT),
+    g("T-gate-leafGas", T, "plan.leafGas[i] = BridgeBounds.rsmtGas(pop);", "plan.leafGas[i] = 0;", "test_gas_everyNativeCallIsForwardedExactlyItsCharge", TT),
+    g("T-gate-kernelGas", T, "BridgeBounds.KERNEL_MAX_LEAVES\n            )\n        );", "BridgeBounds.MAX_LEAVES\n            )\n        );", "test_gas_everyNativeCallIsForwardedExactlyItsCharge", TT),
+    g("BB-ucBase", BB, "UC_BASE = 1_243_700;", "UC_BASE = 1_243_699;", "test_gate_everyGoldenComponentEqualsTheOracleGate|test_gate_worstAdmittedBundleFitsTheBudget", TT),
+    g("BB-rsmtPerSibling", BB, "+ PER_STEP * (1 + siblings);", "+ PER_STEP * siblings;", "test_gate_everyGoldenComponentEqualsTheOracleGate|test_gate_worstAdmittedBundleFitsTheBudget", TT),
+    g("BB-b2PerLeaf", BB, "B2_PER_LEAF = 14_000;", "B2_PER_LEAF = 13_999;", "test_gate_everyGoldenComponentEqualsTheOracleGate", TT),
+    g("BB-intrinsic", BB, "return INTRINSIC_BASE + PER_BYTE * envelopeBytes;", "return INTRINSIC_BASE + PER_BYTE * envelopeBytes + 1;", "test_gate_everyGoldenComponentEqualsTheOracleGate", TT),
+    # ---- UC scan ------------------------------------------------------------------------------
+    g("U-depth", U, "if (n != depth) revert UCScanRejected();", "", "test_wrongDepthIsRefused", UT),
+    g("U-steps", U, "if (n > BridgeBounds.MAX_UNICITY_STEPS) revert BudgetExceeded();", "", "test_craftedBoundsAreExactlyTheirCaps", UT),
+    g("U-sigs", U, "if (sigs > BridgeBounds.MAX_SIGNATURES) revert BudgetExceeded();", "", "test_signatureCountOverTheCapIsBudget", UT),
+    g("U-tag", U, "if (major != MAJOR_TAG || arg != tag) revert UCScanRejected();", "", "test_gate_ucWithAnotherTagIsRefusedBeforeAnyNativeCall", TT),
+    g("U-arity", U, "if (major != MAJOR_ARRAY || arg != n) revert UCScanRejected();", "", "test_aShorterOrLongerArrayIsRefused", UT),
+    g("U-shardLen", U, "|| len != shard.length", "|| false", "test_claimShardOfAnotherLengthIsRefused", UT),
+    g("U-shardBytes", U, "if (b[p + i] != shard[i]) revert UCScanRejected();", "", "test_certificateOfAnotherShardIsRefused", UT),
+    g("U-nullCount", U, "if (pos < b.length && uint8(b[pos]) == NULL) return (0, pos + 1);", "", "test_nullStepsAndNullSignaturesCountAsZero", UT),
     # ---- verifier: kernel output --------------------------------------------------------------
     g("T-ker-marker", T, "if (_mw(out, 0) != uint256(KERNEL_MARKER)) revert KernelBadOutput();", "", "test_kernel_wrongMarker", TT),
     g("T-ker-validBool", T, "if (valid > 1 ||", "if (false ||", "test_kernel_validWordNotBool", TT),
     g("T-ker-resultOffset", T, "|| _mw(out, 64) != 0x60", "|| false", "test_kernel_resultOffsetNotCanonical", TT),
     g("T-ker-leavesOffset", T, "|| _mw(out, 384) != 0x140", "|| false", "test_kernel_leavesOffsetNotCanonical", TT),
-    g("T-ker-leafCap", T, "if (k > MAX_LEAVES ||", "if (false ||", "test_kernel_hugeLeafCountDoesNotOverflow|test_kernel_leafCountOverCap", TT),
-    g("T-ker-exactLength", T, "|| len != KERNEL_FIXED_BYTES + KERNEL_LEAF_BYTES * k) {", "|| false) {", "test_kernel_leafCountDisagreesWithLength|test_kernel_extraTrailingWord|test_kernel_shortOutput|test_kernel_everyTruncationIsBadOutput|test_kernel_oldStrideOutputIsRefused|test_kernel_aPartialLeafIsRefused", TT),
-    g("T-ker-stride", T, "KERNEL_LEAF_BYTES = 128;", "KERNEL_LEAF_BYTES = 64;", "test_kernel_strideIsFourWordsPerLeaf|test_verifyReturn_golden_everyLeafOnceInOrder|test_kernel_theMaximumOutputIsAccepted", TT),
+    g("T-ker-leafCap", T, "if (k > BridgeBounds.KERNEL_MAX_LEAVES ||", "if (false ||", "test_kernel_hugeLeafCountDoesNotOverflow|test_kernel_leafCountOverCap", TT),
+    g("T-ker-profileLeafCap", T, "if (k > BridgeBounds.MAX_LEAVES) revert BudgetExceeded();", "", "test_kernel_aValidResultOverTheProfileLeafBoundIsBudgetExceeded", TT),
+    g("T-ker-exactLength", T, "|| len != KERNEL_FIXED_BYTES + KERNEL_LEAF_BYTES * k)\n        {", "|| false)\n        {", "test_kernel_leafCountDisagreesWithLength|test_kernel_extraTrailingWord|test_kernel_shortOutput|test_kernel_everyTruncationIsBadOutput|test_kernel_oldStrideOutputIsRefused|test_kernel_aPartialLeafIsRefused", TT),
+    g("T-ker-stride", T, "KERNEL_LEAF_BYTES = 128;", "KERNEL_LEAF_BYTES = 64;", "test_kernel_strideIsFourWordsPerLeaf|test_verifyReturn_golden_everyLeafOnceInOrder|test_kernel_theMaximumProfileOutputIsAccepted", TT),
     g("T-ker-timeHigh", T, "if (t > type(uint64).max) revert KernelBadOutput();", "", "test_kernel_referenceTimeWordNeedsZeroHighBits", TT),
     g("T-ker-timeWord", T, "referenceTime: uint64(t),", "referenceTime: 0,", "test_kernel_referenceTimeIsReadFromTheThirdWordAndValueFromTheFourth|test_ir_timeOneBelowTheLatestLeafIsRejected", TT),
     g("T-ker-valueWord", T, "leafValue: bytes32(_mw(out, o + 96))", "leafValue: bytes32(_mw(out, o + 32))", "test_kernel_referenceTimeIsReadFromTheThirdWordAndValueFromTheFourth|test_verifyReturn_golden_everyLeafOnceInOrder", TT),
@@ -157,17 +202,18 @@ GUARDS = [
     g("T-shape-returnVault", T, "|| r.releaseTo == c.vault", "|| false", "test_shape_returnReleaseToVault", TT),
     g("T-shape-returnNullifier", T, "|| r.nullifier == bytes32(0)\n            ) revert KernelResultShape();", "\n            ) revert KernelResultShape();", "test_shape_returnNullifierZero", TT),
     # ---- verifier: B1 outcomes ----------------------------------------------------------------
-    g("T-b1-ucFalse", T, "if (!B1Calls.verdict(B1Calls.UC_VERIFIER, B1Calls.ucRequest(a))) revert UCRejected();", "B1Calls.verdict(B1Calls.UC_VERIFIER, B1Calls.ucRequest(a));", "test_b1_ucFalse|test_b1_ucFalseDoesNotReachRsmt", TT),
-    g("T-b1-leafFalse", T, "if (!B1Calls.verdict(B1Calls.RSMT_VERIFIER, req)) revert LeafNotIncluded(i);", "B1Calls.verdict(B1Calls.RSMT_VERIFIER, req);", "test_b1_rsmtFalseNamesTheLeaf", TT),
+    g("T-b1-ucFalse", T, "if (!B1Calls.verdict(B1Calls.UC_VERIFIER, B1Calls.ucRequest(a), plan.ucGas[j])) {", "B1Calls.verdict(B1Calls.UC_VERIFIER, B1Calls.ucRequest(a), plan.ucGas[j]);\n            if (false) {", "test_b1_ucFalse|test_b1_ucFalseDoesNotReachRsmt", TT),
+    g("T-b1-leafFalse", T, "if (!B1Calls.verdict(B1Calls.RSMT_VERIFIER, req, plan.leafGas[i])) {", "B1Calls.verdict(B1Calls.RSMT_VERIFIER, req, plan.leafGas[i]);\n            if (false) {", "test_b1_rsmtFalseNamesTheLeaf", TT),
     # ---- verifier: InputRecord opening and the time comparison ---------------------------------
     g("T-ir-time", T, "if (r.leaves[i].referenceTime > anchorTime) {", "if (false) {", "test_ir_timeOneBelowTheLatestLeafIsRejected|test_ir_theFirstViolatingLeafIsNamed|test_ir_aStaleOpeningIsRefusedByTimeNotAcceptedByAge", TT),
     g("T-ir-timeBoundary", T, "r.leaves[i].referenceTime > anchorTime", "r.leaves[i].referenceTime >= anchorTime", "test_ir_timeEqualToTheLatestLeafIsAccepted|test_ir_u64Extremes", TT),
-    g("T-ir-open", T, "uint64 anchorTime = InputRecord.open(a.inputRecord, a.expectedIRHash, a.expectedStateRoot);", "uint64 anchorTime = type(uint64).max;", "test_ir_aTimestampLieWithTheSameHashIsBadOpening|test_ir_aHashThatIsNotTheOpeningsIsBadOpening|test_ir_theOpenedStateMustBeTheExpectedStateRoot|test_ir_missingOpeningIsMalformed", TT),
-    g("T-ir-budget", T, "if (_word(b, t + _word(b, t + 192)) > InputRecord.MAX_BYTES) revert BudgetExceeded();", "", "test_ir_boundIsReadBeforeAnythingIsAllocated", TT),
-    g("T-ir-budgetLoop", T, "for (uint256 i = 0; i < na; ++i) {\n            uint256 t = offAnchors", "for (uint256 i = 0; i < 0; ++i) {\n            uint256 t = offAnchors", "test_ir_boundIsReadBeforeAnythingIsAllocated", TT),
-    g("T-ir-order", T, "if (!B1Calls.verdict(B1Calls.UC_VERIFIER, B1Calls.ucRequest(a))) revert UCRejected();", "InputRecord.open(a.inputRecord, a.expectedIRHash, a.expectedStateRoot);\n        if (!B1Calls.verdict(B1Calls.UC_VERIFIER, B1Calls.ucRequest(a))) revert UCRejected();", "test_ir_isNotTrustedBeforeTheUcVerdict", TT),
+    g("T-ir-open", T, "times[j] = InputRecord.open(a.inputRecord, a.expectedIRHash, a.expectedStateRoot);", "times[j] = type(uint64).max;", "test_ir_aTimestampLieWithTheSameHashIsBadOpening|test_ir_aHashThatIsNotTheOpeningsIsBadOpening|test_ir_theOpenedStateMustBeTheExpectedStateRoot|test_ir_missingOpeningIsMalformed", TT),
+    g("T-ir-ownAnchor", T, "uint64 anchorTime = times[plan.leafAnchor[i]];", "uint64 anchorTime = times[0];", "test_ir_eachLeafIsBoundedByItsOwnAnchorsTime", TT),
+    g("T-leaf-ownRoot", T, "anchors[plan.leafAnchor[i]].expectedStateRoot,", "anchors[0].expectedStateRoot,", "test_verifyReturn_golden_everyLeafOnceInOrder", TT),
+    g("T-ir-budget", T, "pos = _framedBytes(b, pos, InputRecord.MAX_BYTES);", "pos = _framedBytes(b, pos, type(uint256).max);", "test_ir_boundIsReadBeforeAnythingIsAllocated", TT),
+    g("T-ir-order", T, "if (!B1Calls.verdict(B1Calls.UC_VERIFIER, B1Calls.ucRequest(a), plan.ucGas[j])) {", "InputRecord.open(a.inputRecord, a.expectedIRHash, a.expectedStateRoot);\n            if (!B1Calls.verdict(B1Calls.UC_VERIFIER, B1Calls.ucRequest(a), plan.ucGas[j])) {", "test_ir_isNotTrustedBeforeTheUcVerdict", TT),
     g("T-member-value", T, "abi.encodePacked(r.leaves[i].leafValue),", "abi.encodePacked(r.leaves[i].txHash),", "test_member_theValueIsTheRawLeafValueNotTheTxHash|test_verifyReturn_golden_everyLeafOnceInOrder", TT),
-    g("T-max-semantic", T, "MAX_SEMANTIC_BYTES = 128 * 1024;", "MAX_SEMANTIC_BYTES = 64 * 1024;", "test_envelope_historyAtTheSemanticCapReachesTheKernel", TT),
+    g("BB-max-semantic", BB, "MAX_SEMANTIC_BYTES = 16 * 1024;", "MAX_SEMANTIC_BYTES = 8 * 1024;", "test_envelope_historyAtTheSemanticCapReachesTheKernel", TT),
     # ---- InputRecord opening ------------------------------------------------------------------
     g("I-hash", I, "if (sha256(ir) != expectedIRHash) revert IRBadOpening();", "", "test_hashMismatchIsBadOpening|test_hashIsCheckedBeforeShape", IT),
     g("I-state", I, "if (state != expectedStateRoot) revert IRStateMismatch(expectedStateRoot, state);", "", "test_stateMismatchNamesBothRoots|test_noFieldOrderIsInterchangeable", IT),
@@ -187,6 +233,7 @@ GUARDS = [
     g("I-hashMajor", I, "|| uint8(b[pos]) != 0x58", "|| false", "test_hashFieldsAreExactlyThirtyTwoBytesOrNull", IT),
     g("I-hashEnd", I, "if (pos + 34 > b.length ||", "if (false ||", "test_everyTruncationIsRefused", IT),
     # ---- B1 wrappers --------------------------------------------------------------------------
+    g("B-call-gasCap", B, "ok := staticcall(gasCap, target,", "ok := staticcall(gas(), target,", "test_gas_everyNativeCallIsForwardedExactlyItsCharge", TT),
     g("B-call-failed", B, "if (!ok) revert PrecompileFailed(target);", "", "test_b1_ucMalformedHaltIsFailureNotFalse|test_kernel_revertIsPrecompileFailed|test_b1_rsmtHaltIsFailureNotFalse", TT),
     g("B-call-bound", B, "if (size > maxReturn) revert PrecompileBadReturn(target);", "", "test_kernel_oversizeReturndataIsBoundedBeforeCopy", TT),
     g("B-verdict-length", B, "if (out.length != 64) revert PrecompileBadReturn(target);", "", "test_b1_ucBadReturnShapes|test_b1_inactiveUcAddressIsBadReturn|test_b1_rsmtBadReturnShapes", TT),
@@ -209,6 +256,9 @@ GUARDS = [
     g("T-cfg-cap", T, "if (cfgBytes.length > BridgeProfile.MAX_CFG_BYTES) revert BudgetExceeded();", "", "test_cfg_oversizeIsBudget", TT),
     g("P-cfg-reencode", P, "if (keccak256(encodeCfg(c)) != keccak256(b)) revert CfgMalformed();", "", "test_cfg_malformedVariants", TT),
     g("P-pol-reencode", P, "if (keccak256(encodePolicy(p)) != keccak256(b)) revert PolicyMalformed();", "", "test_policy_trailingByteWithMatchingHash|test_policy_nonShortestPartitionWithMatchingHash|test_policy_wrongDomainWithMatchingHash", TT),
+    g("P-pol-partitionZero", P, "if (v == 0) revert PolicyMalformed();", "", "test_policy_partitionZero", TT),
+    g("P-pol-rows", P, "if (major != Cbor.ARRAY || n != rows) revert PolicyMalformed();", "", "test_policy_rowCountDoesNotMatchDepth", TT),
+    g("P-pol-maxDepth", P, "uint8 internal constant MAX_DEPTH = 1;", "uint8 internal constant MAX_DEPTH = 2;", "test_policy_depthTwo", TT),
     # ---- CBOR reader --------------------------------------------------------------------------
     g("C-head-end", C, "if (pos >= b.length) revert CborMalformed();", "", "test_cfg_everyPrefixIsRefusedWithANamedError", TT),
     g("C-head-reserved", C, "if (ai > 27) revert CborMalformed();", "", "test_cfg_reservedAdditionalInformationIsCborMalformed", TT),
@@ -216,7 +266,7 @@ GUARDS = [
     g("C-bytes-major", C, "if (major != BYTES ||", "if (false ||", "test_cfg_wrongMajorTypesAndWidths", TT),
     g("C-bytes-min", C, "|| len < min", "|| false", "test_cfg_wrongMajorTypesAndWidths|test_cfg_decodeRejectsEmptyAndOversizeShard", TT),
     g("C-bytes-max", C, "|| len > max", "|| false", "test_cfg_wrongMajorTypesAndWidths|test_cfg_decodeRejectsEmptyAndOversizeShard", TT),
-    g("C-bytes-end", C, "|| p + len > b.length) revert CborMalformed();", "|| false) revert CborMalformed();", "test_cfg_everyPrefixIsRefusedWithANamedError", TT),
+    g("C-bytes-end", C, "|| p + len > b.length) revert CborMalformed();", "|| false) revert CborMalformed();", "test_readBytes_aDeclaredLengthPastTheInputIsMalformed", "test/bridge/Cbor.t.sol"),
     g("C-uint-major", C, "if (major != UINT ||", "if (false ||", "test_cfg_wrongMajorTypesAndWidths", TT),
     g("C-uint-max", C, "|| v > max) revert CborMalformed();", "|| false) revert CborMalformed();", "test_cfg_wrongMajorTypesAndWidths", TT),
 ]
@@ -228,6 +278,10 @@ def build_template(scratch):
     os.makedirs(t)
     shutil.copytree(os.path.join(ROOT, "src", "bridge"), os.path.join(t, "src", "bridge"))
     shutil.copytree(os.path.join(ROOT, "test", "bridge"), os.path.join(t, "test", "bridge"))
+    os.makedirs(os.path.join(t, "script"))
+    for f in ("BridgeGenesisBinding.sol", "BridgeDeploy.s.sol"):  # imported by test/bridge/GenesisBinding.t.sol
+        shutil.copy(os.path.join(ROOT, "script", f), os.path.join(t, "script", f))
+    shutil.copy(os.path.join(ROOT, "src", "B1Layout.sol"), os.path.join(t, "src", "B1Layout.sol"))  # imported by script/BridgeGenesisBinding.sol
     shutil.copy(os.path.join(ROOT, "foundry.toml"), t)
     os.makedirs(os.path.join(t, "lib"))
     for lib in ("forge-std", "openzeppelin-contracts"):

@@ -136,9 +136,9 @@ abstract contract VaultHarness is Test {
     bytes32 internal constant EXEC_GENESIS = keccak256("exec-genesis");
     uint16 internal constant NETWORK = 3;
     uint32 internal constant EVM_PARTITION = 7;
-    // The merged oracle's fixture policy: partition 11, empty-prefix shard, configuration hash below.
+    // A v3 policy of depth 0: partition 11, the empty-prefix shard `80`, configuration hash below.
     bytes internal constant POLICY =
-        hex"8452554e49434954595f42525f4147475f4f4e450b41805820c20ce7724f24578d66aebec43c08ef934f89bb4841b8756a0deca9af3c2104fc";
+        hex"8556554e49434954595f42525f4147475f53484152444544010b00818241805820c20ce7724f24578d66aebec43c08ef934f89bb4841b8756a0deca9af3c2104fc";
 
     address internal constant ALICE = address(0xA11CE);
     address internal constant BOB = address(0xB0B);

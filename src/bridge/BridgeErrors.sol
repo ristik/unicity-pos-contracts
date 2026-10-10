@@ -23,6 +23,8 @@ error VerifierCodeHashMismatch(bytes32 expected, bytes32 actual);
 // Policy carrier.
 error PolicyHashMismatch(bytes32 expected, bytes32 actual);
 error PolicyAnchorCount(uint256 count);
+error PolicyAnchorDuplicate(uint256 anchor);
+error PolicyAnchorUnused(uint256 anchor);
 error PolicyTupleMismatch();
 error PolicyLeafCount(uint256 expected, uint256 actual);
 error PolicyLeafIndex(uint256 leaf, uint256 anchorIndex);
@@ -33,6 +35,8 @@ error KernelResultShape();
 error PrecompileFailed(address target);
 error PrecompileBadReturn(address target);
 error UCRejected();
+error UCScanRejected();
+error PathBitmapMismatch(uint256 leaf);
 error IRBadOpening();
 error IRMalformed();
 error IRStateMismatch(bytes32 expected, bytes32 actual);
