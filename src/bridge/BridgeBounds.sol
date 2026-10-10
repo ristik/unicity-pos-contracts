@@ -4,13 +4,14 @@ pragma solidity 0.8.37;
 /// @notice The named bounds and the shared gas gate of the profile-v3 composing verifier. This file is
 ///         the one place the contract names them: the oracle (bft-core `bridgeprofile` `limits.go`,
 ///         `gas.go`), the plug-ins and `native-bridge-plugins` `protocol/profile-v3.json` `limits` carry
-///         the same numbers. They are sized so that every admitted bundle fits the 7,000,000 ordinary
-///         transaction capacity through the gate below; a later profile version raises them together
+///         the same numbers. They bound the parsers; the gate below decides each bundle against the
+///         7,000,000 ordinary transaction capacity; a later profile version raises them together
 ///         with the budget. Nothing else in this repository states them as literals.
 library BridgeBounds {
     // ---- profile parameters (profile-v3.json `limits`) ----------------------------------------
-    /// @dev Distinct UC anchors of one redemption (one per distinct complete UC).
-    uint256 internal constant MAX_ANCHORS = 2;
+    /// @dev Distinct UC anchors of one redemption (one per distinct complete UC): a parser ceiling; the
+    ///      gate below admits or refuses each bundle (two anchors at every cap fit, five never can).
+    uint256 internal constant MAX_ANCHORS = 4;
     /// @dev Exported kernel leaves of one redemption (mint plus transfers plus the final burn).
     uint256 internal constant MAX_LEAVES = 16;
     uint256 internal constant MAX_ANCHOR_UC_BYTES = 8 * 1024;

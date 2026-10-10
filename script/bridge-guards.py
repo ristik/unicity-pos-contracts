@@ -152,6 +152,7 @@ GUARDS = [
     g("T-pol-nextUse", T, "if (idx == next) ++next;", "", "test_verifyReturn_golden_everyLeafOnceInOrder", TT),
     g("T-pol-unused", T, "if (next != na) revert PolicyAnchorUnused(next);", "", "test_policy_unusedAnchorIsRefused", TT),
     # ---- verifier: gas gate -------------------------------------------------------------------
+    g("T-gate-budget", T, "if (total > BridgeBounds.TX_GAS_BUDGET) revert BudgetExceeded();", "", "test_gate_fourAnchorsOfMaximumSignaturesAreBudgetExceeded", TT),
     g("T-gate-bitmap", T, "if (pop != paths[i].siblings.length) revert PathBitmapMismatch(i);", "", "test_gate_bitmapPopcountMustEqualTheSiblingCount", TT),
     g("T-gate-ucGas", T, "plan.ucGas[j] = BridgeBounds.ucGas(a.shard.length, a.uc.length, sigs, steps);", "plan.ucGas[j] = 0;", "test_gas_everyNativeCallIsForwardedExactlyItsCharge", TT),
     g("T-gate-leafGas", T, "plan.leafGas[i] = BridgeBounds.rsmtGas(pop);", "plan.leafGas[i] = 0;", "test_gas_everyNativeCallIsForwardedExactlyItsCharge", TT),

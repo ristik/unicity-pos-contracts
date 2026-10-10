@@ -3,6 +3,7 @@ pragma solidity 0.8.37;
 
 import {BridgeBase} from "./BridgeBase.sol";
 import {TokenVerifier} from "../../src/bridge/TokenVerifier.sol";
+import {Cbor} from "../../src/bridge/Cbor.sol";
 import {B1Calls} from "../../src/bridge/B1Calls.sol";
 import {BridgeBounds} from "../../src/bridge/BridgeBounds.sol";
 import {UcScan} from "../../src/bridge/UcScan.sol";
@@ -699,7 +700,7 @@ contract TokenVerifierTest is BridgeBase {
         Scenario memory s = _returnScenario();
         bytes memory p = _copy(_proof(s));
         uint256 offAnchors = _getWord(p, 64);
-        p = _setWord(p, offAnchors, 3);
+        p = _setWord(p, offAnchors, BridgeBounds.MAX_ANCHORS + 1);
         _rejectsRaw(s, p, abi.encodeWithSelector(BudgetExceeded.selector));
     }
 
@@ -952,11 +953,11 @@ contract TokenVerifierTest is BridgeBase {
 
     function test_policy_anchorCountOverTheProfileBound() public {
         Scenario memory s = _returnScenario();
-        Anchor[] memory three = new Anchor[](3);
-        three[0] = s.anchors[0];
-        three[1] = s.anchors[1];
-        three[2] = s.anchors[1];
-        s.anchors = three;
+        Anchor[] memory five = new Anchor[](BridgeBounds.MAX_ANCHORS + 1);
+        for (uint256 j = 0; j < five.length; ++j) {
+            five[j] = s.anchors[j % 2];
+        }
+        s.anchors = five;
         // Refused from the envelope's declared count, before anything is allocated.
         _rejects(s, abi.encodeWithSelector(BudgetExceeded.selector));
     }
@@ -1589,7 +1590,7 @@ contract TokenVerifierTest is BridgeBase {
                     BridgeBounds.MAX_SEMANTIC_BYTES, BridgeBounds.MAX_SEMANTIC_BYTES
                 ),
                 BridgeBounds.MAX_LEAVES
-            ) + BridgeBounds.MAX_ANCHORS
+            ) + 2
             * BridgeBounds.ucGas(
                 1,
                 BridgeBounds.MAX_ANCHOR_UC_BYTES,
@@ -1599,6 +1600,134 @@ contract TokenVerifierTest is BridgeBase {
             + BridgeBounds.GAS_RESERVE;
         assertEq(total, 6_976_692);
         assertLe(total, BridgeBounds.TX_GAS_BUDGET);
+        // the gate, not the parser ceiling, refuses a third maximum-size certificate
+        assertGt(
+            total
+                + BridgeBounds.ucGas(
+                    1,
+                    BridgeBounds.MAX_ANCHOR_UC_BYTES,
+                    BridgeBounds.MAX_SIGNATURES,
+                    1 + BridgeBounds.MAX_UNICITY_STEPS
+                ),
+            BridgeBounds.TX_GAS_BUDGET
+        );
+    }
+
+    /// @dev `n` leaves (mock kernel result), each certified by its own anchor: distinct UCs alternating
+    ///      between the two shards, in first-use order. Real-size certificates are the golden UC padded
+    ///      to about 1.5 KB; heavy ones carry 64 signatures and 32 unicity steps.
+    function _perLeafAnchors(uint256 n, bool heavy) internal view returns (Scenario memory s) {
+        s = _returnScenario();
+        Anchor[] memory as_ = new Anchor[](n);
+        Leaf[] memory ls = new Leaf[](n);
+        LeafProof[] memory ps = new LeafProof[](n);
+        for (uint256 i = 0; i < n; ++i) {
+            Anchor memory base = _goldenAnchors("return")[i % 2];
+            bytes memory uc = heavy
+                ? _craftedUc(base.shard, 32, 64, i)
+                : bytes.concat(base.uc, new bytes(1536 - base.uc.length - 1), bytes1(uint8(i + 1)));
+            as_[i] = Anchor({
+                partition: base.partition,
+                shard: base.shard,
+                shardConfHash: base.shardConfHash,
+                expectedStateRoot: base.expectedStateRoot,
+                expectedIRHash: base.expectedIRHash,
+                uc: uc,
+                inputRecord: base.inputRecord
+            });
+            as_[i].inputRecord = _irFor(as_[i], 1_700_000_064);
+            as_[i].expectedIRHash = sha256(as_[i].inputRecord);
+            ls[i] = Leaf({
+                sid: _sidInRow(keccak256(abi.encode("sid", i)), uint8(base.shard[0]) >> 7),
+                txHash: keccak256(abi.encode("tx", i)),
+                referenceTime: uint64(1_700_000_000 + i),
+                leafValue: keccak256(abi.encode("v", i))
+            });
+            ps[i].anchorIndex = uint16(i);
+        }
+        s.anchors = as_;
+        s.result.leaves = ls;
+        s.paths = ps;
+    }
+
+    /// @dev A structurally valid certificate (the scan reads only its shape): `steps` unicity steps and
+    ///      `sigs` seal entries, one shard sibling, padded so that the declared count fits and each `salt`
+    ///      is a distinct byte string.
+    function _craftedUc(bytes memory shard, uint256 steps, uint256 sigs, uint256 salt)
+        internal
+        pure
+        returns (bytes memory)
+    {
+        bytes memory sib = Cbor.head(4, 1);
+        sib = bytes.concat(sib, hex"00");
+        bytes memory st = Cbor.head(4, steps);
+        for (uint256 i = 0; i < steps; ++i) {
+            st = bytes.concat(st, hex"00");
+        }
+        return bytes.concat(
+            hex"d99859",
+            hex"87",
+            hex"01",
+            hex"00",
+            hex"40",
+            hex"40",
+            hex"d9985b",
+            hex"83",
+            hex"01",
+            Cbor.bstr(shard),
+            sib,
+            hex"d9985c",
+            hex"83",
+            hex"01",
+            hex"0b",
+            st,
+            hex"d9985d",
+            hex"88",
+            hex"01",
+            hex"000000000000",
+            Cbor.head(5, sigs),
+            new bytes(sigs + 1),
+            bytes1(uint8(salt + 1))
+        );
+    }
+
+    function test_gate_threeAndFourRealSizeAnchorsAreAdmittedWhenTheGatePasses() public {
+        for (uint256 n = 3; n <= BridgeBounds.MAX_ANCHORS; ++n) {
+            Scenario memory s = _perLeafAnchors(n, false);
+            KernelResult memory got = _run(s);
+            assertEq(got.leaves.length, n);
+            (uint256 i0, uint256 b2, uint256 uc, uint256 rs) = _gateParts(s);
+            assertLe(i0 + b2 + uc + rs + BridgeBounds.GAS_RESERVE, BridgeBounds.TX_GAS_BUDGET);
+        }
+    }
+
+    function test_gate_fourAnchorsOfMaximumSignaturesAreBudgetExceeded() public {
+        Scenario memory s = _perLeafAnchors(BridgeBounds.MAX_ANCHORS, true);
+        (uint256 i0, uint256 b2, uint256 uc, uint256 rs) = _gateParts(s);
+        assertGt(i0 + b2 + uc + rs + BridgeBounds.GAS_RESERVE, BridgeBounds.TX_GAS_BUDGET);
+        _rejects(s, abi.encodeWithSelector(BudgetExceeded.selector));
+        // ... and the same bundle with two anchors passes the gate.
+        Scenario memory two = _perLeafAnchors(2, true);
+        (i0, b2, uc, rs) = _gateParts(two);
+        assertLe(i0 + b2 + uc + rs + BridgeBounds.GAS_RESERVE, BridgeBounds.TX_GAS_BUDGET);
+    }
+
+    function _gateParts(Scenario memory s)
+        internal
+        view
+        returns (uint256 intrinsic, uint256 b2, uint256 uc, uint256 rsmt)
+    {
+        intrinsic = BridgeBounds.intrinsicGas(_proof(s).length);
+        b2 = BridgeBounds.b2Gas(
+            BridgeBounds.kernelRequestBytes(s.cfgB.length, s.history.length), s.result.leaves.length
+        );
+        for (uint256 j = 0; j < s.anchors.length; ++j) {
+            (uint256 sigs, uint256 steps) = UcScan.scan(s.anchors[j].uc, s.anchors[j].shard, 1);
+            uc += BridgeBounds.ucGas(s.anchors[j].shard.length, s.anchors[j].uc.length, sigs, steps);
+        }
+        for (uint256 i = 0; i < s.paths.length; ++i) {
+            rsmt += BridgeBounds.rsmtGas(s.paths[i].siblings.length);
+        }
     }
 
     function test_gas_everyNativeCallIsForwardedExactlyItsCharge() public {
