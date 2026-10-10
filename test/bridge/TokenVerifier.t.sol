@@ -599,6 +599,10 @@ contract TokenVerifierTest is BridgeBase {
         uint256 l = offLeaves + 32 + _getWord(good, offLeaves + 32);
         _framingRejects(_setWord(_copy(good), l + 64, _getWord(good, l + 64) + 32));
         _framingRejects(_setWord(_copy(good), 0, 160));
+        // the three body offsets of the head, each moved one word
+        for (uint256 w = 32; w <= 96; w += 32) {
+            _framingRejects(_setWord(_copy(good), w, _getWord(good, w) + 32));
+        }
     }
 
     function test_envelope_aliasedAnchorFieldOffsetsAreFraming() public {
@@ -617,6 +621,20 @@ contract TokenVerifierTest is BridgeBase {
         uint256 offLeaves = _getWord(good, 96);
         uint256 l = offLeaves + 32 + _getWord(good, offLeaves + 32);
         _framingRejects(_setWord(_copy(good), l + 64, 64));
+    }
+
+    function test_envelope_aReadPastTheEndAfterAValidHeadIsFraming() public {
+        Scenario memory s = _returnScenario();
+        bytes memory p = _setWord(new bytes(128), 0, 128); // a canonical first word, then no room for the body
+        _rejectsRaw(s, p, abi.encodeWithSelector(EnvelopeFraming.selector));
+    }
+
+    function test_envelope_aHugeLengthWordIsFramingNotAnArithmeticPanic() public {
+        Scenario memory s = _returnScenario();
+        bytes memory p = _setWord(_copy(_proof(s)), 128, type(uint256).max);
+        _rejectsRaw(s, p, abi.encodeWithSelector(EnvelopeFraming.selector));
+        p = _setWord(_copy(_proof(s)), 128, 1 << 64);
+        _rejectsRaw(s, p, abi.encodeWithSelector(EnvelopeFraming.selector));
     }
 
     function test_envelope_tooShortRejected() public {
@@ -987,7 +1005,8 @@ contract TokenVerifierTest is BridgeBase {
         Scenario memory s = _returnScenario();
         bytes32[] memory confs = vm.parseJsonBytes32Array(G, ".policy.confs");
         for (uint256 r = 0; r < confs.length; ++r) {
-            s = _returnScenario();
+            // one anchor, so that no other anchor's row can refuse the table by accident
+            s = _oneAnchorReturn();
             s.anchors[0].shard = hex"80";
             s.anchors[0].shardConfHash = confs[r];
             _rejects(s, abi.encodeWithSelector(PolicyTupleMismatch.selector));
