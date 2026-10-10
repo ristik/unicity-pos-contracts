@@ -33,13 +33,13 @@ contract P85Genesis is Script {
     uint256 public constant TESTNET_DIST_NUM = 1;
     uint256 public constant TESTNET_DIST_DEN = 2;
 
-    /// @dev The election's weight-distance bound D <= num/den: 0 < num <= den (a bound above 1 admits everything, zero admits no change).
+    /// @dev The election's weight-distance bound D <= num/den: 0 < num <= den (a bound above 1 admits everything, zero admits no change).  A zero denominator is refused by num <= den with num != 0.
     function _distanceBound() internal view returns (uint64, uint64) {
         return _checkedBound(vm.envOr("P85_DIST_NUM", TESTNET_DIST_NUM), vm.envOr("P85_DIST_DEN", TESTNET_DIST_DEN));
     }
 
     function _checkedBound(uint256 num, uint256 den) internal pure returns (uint64, uint64) {
-        require(den != 0 && num != 0 && num <= den && den <= type(uint64).max, "P85: distance bound must satisfy 0 < num <= den");
+        require(num != 0 && num <= den && den <= type(uint64).max, "P85: distance bound must satisfy 0 < num <= den");
         return (uint64(num), uint64(den));
     }
 
