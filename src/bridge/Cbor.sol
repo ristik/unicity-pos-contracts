@@ -94,8 +94,8 @@ library Cbor {
         (uint8 major, uint256 len, uint256 p) = readHead(b, pos);
         if (major != BYTES || len < min || len > max || p + len > b.length) revert CborMalformed();
         out = new bytes(len);
-        for (uint256 i = 0; i < len; ++i) {
-            out[i] = b[p + i];
+        assembly ("memory-safe") {
+            mcopy(add(out, 32), add(add(b, 32), p), len)
         }
         next = p + len;
     }

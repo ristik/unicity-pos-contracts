@@ -22,11 +22,14 @@ struct Cfg {
     bytes32 aggregatorPolicyHash;
 }
 
-/// @notice The sole admitted aggregator policy: one partition, the empty-prefix shard `80`, one
-///         configuration hash.
+/// @notice The sole admitted aggregator policy: one partition and a complete uniform shard topology of
+///         depth 0 (shard `80`, one row) or 1 (shards `40` and `c0`, in increasing byte order), each
+///         row with its native configuration hash. A leaf's shard is the top `depth` bits of its raw
+///         32-byte state ID.
 struct Policy {
     uint32 partition;
-    bytes32 shardConfHash;
+    uint8 depth;
+    bytes32[] shardConfHashes;
 }
 
 /// @notice One inclusion obligation exported by the semantics kernel. It is not an assertion that

@@ -17,8 +17,9 @@ contract B1CallsHarness {
     }
 }
 
-/// @notice The request caps that the composing verifier cannot reach (its shard is the fixed `80` and
-///         its RSMT value is always a 32-byte transaction hash) are enforced by the wrappers themselves.
+/// @notice The request caps that the composing verifier cannot reach (its shard is one byte, its UC is
+///         tighter-bounded by the profile, and its RSMT value is always a 32-byte leaf value) are
+///         enforced by the wrappers themselves.
 contract B1CallsTest is Test {
     B1CallsHarness internal h = new B1CallsHarness();
 

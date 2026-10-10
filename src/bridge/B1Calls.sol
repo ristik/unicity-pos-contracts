@@ -15,7 +15,8 @@ import {Anchor, LeafProof} from "./BridgeTypes.sol";
 library B1Calls {
     /// @dev UC_V1: one certified claim.
     address internal constant UC_VERIFIER = address(0x0100);
-    /// @dev SHARED_SEAL_V1 (2..8 shards). Reserved for the disabled B3 extension; never called.
+    /// @dev SHARED_SEAL_V1 (several claims under one seal). The bridge never calls it: every anchor, one
+    ///      per distinct complete UC, is verified by its own UC_V1 call (profile v3).
     address internal constant SHARED_VERIFIER = address(0x0101);
     /// @dev RSMT_MEMBER_V1: stateless membership of (key, value) under a caller-supplied root.
     address internal constant RSMT_VERIFIER = address(0x0102);
@@ -62,22 +63,22 @@ library B1Calls {
         bytes32[] memory siblings
     ) internal pure returns (bytes memory out) {
         if (value.length > MAX_RSMT_VALUE_BYTES) revert BudgetExceeded();
+        // One allocation: `abi.encodePacked` of a `bytes32[]` is the siblings back to back, 32 bytes each.
         out = bytes.concat(
             abi.encodePacked(VERSION, FLAGS, uint16(1), root, key, uint32(value.length)),
             value,
-            abi.encodePacked(bitmap)
+            abi.encodePacked(bitmap),
+            abi.encodePacked(siblings)
         );
-        uint256 n = siblings.length;
-        for (uint256 i = 0; i < n; ++i) {
-            out = bytes.concat(out, siblings[i]);
-        }
     }
 
     // forge-lint: disable-end(unsafe-typecast)
 
-    /// @dev STATICCALL with the returndata size bounded before it is copied. A failed call (exceptional
-    ///      halt, out of gas, host unavailable) reverts; B1 never reports failure as a verdict.
-    function staticCall(address target, bytes memory input, uint256 maxReturn)
+    /// @dev STATICCALL forwarded exactly `gasCap` (the call's computed charge, `BridgeBounds`), with the
+    ///      returndata size bounded before it is copied. A failed call (exceptional halt, out of gas,
+    ///      host unavailable) reverts; B1 never reports failure as a verdict. Capping the forwarded
+    ///      gas means a malformed late call cannot consume the rest of the transaction.
+    function staticCall(address target, bytes memory input, uint256 maxReturn, uint256 gasCap)
         internal
         view
         returns (bytes memory out)
@@ -85,7 +86,7 @@ library B1Calls {
         bool ok;
         uint256 size;
         assembly ("memory-safe") {
-            ok := staticcall(gas(), target, add(input, 32), mload(input), 0, 0)
+            ok := staticcall(gasCap, target, add(input, 32), mload(input), 0, 0)
             size := returndatasize()
         }
         if (!ok) revert PrecompileFailed(target);
@@ -98,8 +99,12 @@ library B1Calls {
 
     /// @dev B1 verdict: exactly `abi.encode(uint256(1), bool)` (64 bytes). `(1,false)` is a verdict;
     ///      any other shape is rejected.
-    function verdict(address target, bytes memory input) internal view returns (bool valid) {
-        bytes memory out = staticCall(target, input, 64);
+    function verdict(address target, bytes memory input, uint256 gasCap)
+        internal
+        view
+        returns (bool valid)
+    {
+        bytes memory out = staticCall(target, input, 64, gasCap);
         if (out.length != 64) revert PrecompileBadReturn(target);
         uint256 version;
         uint256 flag;
