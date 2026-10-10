@@ -1614,8 +1614,9 @@ contract TokenVerifierTest is BridgeBase {
     }
 
     /// @dev `n` leaves (mock kernel result), each certified by its own anchor: distinct UCs alternating
-    ///      between the two shards, in first-use order. Real-size certificates are the golden UC padded
-    ///      to about 1.5 KB; heavy ones carry 64 signatures and 32 unicity steps.
+    ///      between the two shards, in first-use order. Normal certificates have the DN-B committee's four
+    ///      signatures and one shard sibling (811 bytes in the oracle's `compose-anchors-max-dnb`; the scan reads
+    ///      only the shape); heavy ones carry 64 signatures and 32 unicity steps.
     function _perLeafAnchors(uint256 n, bool heavy) internal view returns (Scenario memory s) {
         s = _returnScenario();
         Anchor[] memory as_ = new Anchor[](n);
@@ -1623,9 +1624,8 @@ contract TokenVerifierTest is BridgeBase {
         LeafProof[] memory ps = new LeafProof[](n);
         for (uint256 i = 0; i < n; ++i) {
             Anchor memory base = _goldenAnchors("return")[i % 2];
-            bytes memory uc = heavy
-                ? _craftedUc(base.shard, 32, 64, i)
-                : bytes.concat(base.uc, new bytes(1536 - base.uc.length - 1), bytes1(uint8(i + 1)));
+            bytes memory uc =
+                heavy ? _craftedUc(base.shard, 32, 64, i) : _craftedUc(base.shard, 1, 4, i);
             as_[i] = Anchor({
                 partition: base.partition,
                 shard: base.shard,
@@ -1691,7 +1691,7 @@ contract TokenVerifierTest is BridgeBase {
         );
     }
 
-    function test_gate_threeAndFourRealSizeAnchorsAreAdmittedWhenTheGatePasses() public {
+    function test_gate_threeAndFourDnbShapeAnchorsAreAdmittedWhenTheGatePasses() public {
         for (uint256 n = 3; n <= BridgeBounds.MAX_ANCHORS; ++n) {
             Scenario memory s = _perLeafAnchors(n, false);
             KernelResult memory got = _run(s);
@@ -1699,6 +1699,35 @@ contract TokenVerifierTest is BridgeBase {
             (uint256 i0, uint256 b2, uint256 uc, uint256 rs) = _gateParts(s);
             assertLe(i0 + b2 + uc + rs + BridgeBounds.GAS_RESERVE, BridgeBounds.TX_GAS_BUDGET);
         }
+    }
+
+    /// @dev Four DN-B-shape anchors pass with four leaves and are priced out by sixteen leaves with
+    ///      32-sibling paths and an 8 KiB history (the oracle's `compose-anchors-max-dnb-load-over-budget`).
+    function test_gate_fourDnbShapeAnchorsWithSixteenDeepLeavesAreBudgetExceeded() public {
+        Scenario memory s = _perLeafAnchors(BridgeBounds.MAX_ANCHORS, false);
+        (uint256 i0, uint256 b2, uint256 uc, uint256 rs) = _gateParts(s);
+        assertLe(i0 + b2 + uc + rs + BridgeBounds.GAS_RESERVE, BridgeBounds.TX_GAS_BUDGET);
+        uint256 n = BridgeBounds.MAX_LEAVES;
+        Leaf[] memory ls = new Leaf[](n);
+        LeafProof[] memory ps = new LeafProof[](n);
+        for (uint256 i = 0; i < n; ++i) {
+            uint256 ai = i < 4 ? i : 2 + (i % 2); // later leaves reuse the anchor of their own shard
+            ls[i] = Leaf({
+                sid: _sidInRow(keccak256(abi.encode("sid", i)), uint8(s.anchors[ai].shard[0]) >> 7),
+                txHash: keccak256(abi.encode("tx", i)),
+                referenceTime: uint64(1_700_000_000 + i),
+                leafValue: keccak256(abi.encode("v", i))
+            });
+            ps[i].anchorIndex = uint16(ai);
+            ps[i].bitmap = bytes32((uint256(1) << BridgeBounds.MAX_RSMT_SIBLINGS) - 1);
+            ps[i].siblings = new bytes32[](BridgeBounds.MAX_RSMT_SIBLINGS);
+        }
+        s.result.leaves = ls;
+        s.paths = ps;
+        s.history = new bytes(8 * 1024);
+        (i0, b2, uc, rs) = _gateParts(s);
+        assertGt(i0 + b2 + uc + rs + BridgeBounds.GAS_RESERVE, BridgeBounds.TX_GAS_BUDGET);
+        _rejects(s, abi.encodeWithSelector(BudgetExceeded.selector));
     }
 
     function test_gate_fourAnchorsOfMaximumSignaturesAreBudgetExceeded() public {
