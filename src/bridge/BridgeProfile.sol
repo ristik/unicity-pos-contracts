@@ -8,13 +8,15 @@ import {Cfg, Policy} from "./BridgeTypes.sol";
 
 /// @notice Canonical encodings of the bridge profile: Cfg, the one-shard Policy and the type/asset
 ///         derivations. These are the exact bytes of the merged oracle (bft-core `bridgeprofile`,
-///         SDK 3.0.1 profile, protocol v2); `test/bridge/golden.json` pins them.
+///         SDK 3.0.1 profile, protocol v3); `test/bridge/golden.json` pins them.
 library BridgeProfile {
     string internal constant CFG_DOMAIN = "UNICITY_BR_CFG";
-    string internal constant POLICY_DOMAIN = "UNICITY_BR_AGG_ONE";
+    string internal constant POLICY_DOMAIN = "UNICITY_BR_AGG_SHARDED";
+    uint256 internal constant POLICY_VERSION = 1;
+    uint8 internal constant MAX_DEPTH = 1;
 
     uint256 internal constant MAX_CFG_BYTES = 1024;
-    uint256 internal constant MAX_POLICY_BYTES = 128;
+    uint256 internal constant MAX_POLICY_BYTES = 512;
     uint256 internal constant MAX_SHARD_BYTES = 33;
 
     /// @dev The one-byte native encoding of the empty shard prefix.
@@ -76,31 +78,62 @@ library BridgeProfile {
         (c.aggregatorPolicyHash, pos) = Cbor.readBytes32(b, pos);
         if (keccak256(encodeCfg(c)) != keccak256(b)) revert CfgMalformed();
     }
+
     // forge-lint: disable-end(unsafe-typecast)
 
+    /// @dev The native shard ID of row `row` at `depth`: `80`, or `40`/`c0`.
+    function shardId(uint8 depth, uint256 row) internal pure returns (bytes1) {
+        if (depth == 0) return EMPTY_PREFIX;
+        return row == 0 ? bytes1(0x40) : bytes1(0xc0);
+    }
+
     function encodePolicy(Policy memory p) internal pure returns (bytes memory) {
+        bytes memory rows;
+        for (uint256 i = 0; i < p.shardConfHashes.length; ++i) {
+            rows = bytes.concat(
+                rows,
+                Cbor.arrayHead(2),
+                Cbor.bstr(abi.encodePacked(shardId(p.depth, i))),
+                Cbor.bstr32(p.shardConfHashes[i])
+            );
+        }
         return bytes.concat(
-            Cbor.arrayHead(4),
+            Cbor.arrayHead(5),
             Cbor.domain(POLICY_DOMAIN),
+            Cbor.uint_(POLICY_VERSION),
             Cbor.uint_(p.partition),
-            Cbor.bstr(abi.encodePacked(EMPTY_PREFIX)),
-            Cbor.bstr32(p.shardConfHash)
+            Cbor.uint_(p.depth),
+            Cbor.arrayHead(p.shardConfHashes.length),
+            rows
         );
     }
 
     // forge-lint: disable-start(unsafe-typecast)
-    /// @dev Strict decode of the policy body, by the same method as `decodeCfg`: extract the partition
-    ///      and configuration hash, then require the canonical re-encoding to equal the input. That
-    ///      comparison enforces the array head, the domain, the one-byte `80` shard (never the empty
-    ///      string) and the absence of trailing bytes.
+    /// @dev Strict decode of the policy body, by the same method as `decodeCfg`: extract the
+    ///      partition, the depth and the configuration hashes, then require the canonical re-encoding
+    ///      to equal the input. That comparison enforces the array heads, the domain, the version,
+    ///      the shard IDs of the complete topology of that depth (never the empty string) and the
+    ///      absence of trailing bytes.
     function decodePolicy(bytes memory b) internal pure returns (Policy memory p) {
         (,, uint256 pos) = Cbor.readHead(b, 0);
         (, pos) = Cbor.readBytesN(b, pos, bytes(POLICY_DOMAIN).length);
         uint256 v;
+        (v, pos) = Cbor.readUint(b, pos, POLICY_VERSION);
         (v, pos) = Cbor.readUint(b, pos, type(uint32).max);
+        if (v == 0) revert PolicyMalformed();
         p.partition = uint32(v);
-        (, pos) = Cbor.readBytesN(b, pos, 1);
-        (p.shardConfHash, pos) = Cbor.readBytes32(b, pos);
+        (v, pos) = Cbor.readUint(b, pos, MAX_DEPTH);
+        p.depth = uint8(v);
+        uint256 rows = uint256(1) << p.depth;
+        (uint8 major, uint256 n, uint256 next) = Cbor.readHead(b, pos);
+        if (major != Cbor.ARRAY || n != rows) revert PolicyMalformed();
+        pos = next;
+        p.shardConfHashes = new bytes32[](rows);
+        for (uint256 i = 0; i < rows; ++i) {
+            (,, pos) = Cbor.readHead(b, pos);
+            (, pos) = Cbor.readBytesN(b, pos, 1);
+            (p.shardConfHashes[i], pos) = Cbor.readBytes32(b, pos);
+        }
         if (keccak256(encodePolicy(p)) != keccak256(b)) revert PolicyMalformed();
     }
 
