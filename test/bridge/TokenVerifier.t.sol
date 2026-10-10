@@ -1730,6 +1730,65 @@ contract TokenVerifierTest is BridgeBase {
         _rejects(s, abi.encodeWithSelector(BudgetExceeded.selector));
     }
 
+    /// @dev Four DN-B-shape anchors with 16 maximum-length sibling paths, each UC padded by `add` bytes.
+    function _edgeBase() internal view returns (Scenario memory s) {
+        s = _perLeafAnchors(BridgeBounds.MAX_ANCHORS, false);
+        for (uint256 i = 0; i < s.paths.length; ++i) {
+            s.paths[i].bitmap = bytes32((uint256(1) << BridgeBounds.MAX_RSMT_SIBLINGS) - 1);
+            s.paths[i].siblings = new bytes32[](BridgeBounds.MAX_RSMT_SIBLINGS);
+        }
+    }
+
+    function _pad(Scenario memory s, bytes[4] memory ucs, uint256 add)
+        internal
+        pure
+        returns (uint256 total)
+    {
+        for (uint256 j = 0; j < s.anchors.length; ++j) {
+            Anchor memory a = s.anchors[j];
+            a.uc = bytes.concat(ucs[j], new bytes(add));
+            a.inputRecord = _irFor(a, 1_700_000_064);
+            a.expectedIRHash = sha256(a.inputRecord);
+        }
+        (uint256 i0, uint256 b2, uint256 uc, uint256 rs) = _gateParts(s);
+        total = i0 + b2 + uc + rs + BridgeBounds.GAS_RESERVE;
+    }
+
+    /// @dev The largest padding the gate admits and the next one up: the accepted bundle runs, the refused
+    ///      one is `BudgetExceeded` with zero native UC or RSMT calls, so the check is exactly
+    ///      `total > TX_GAS_BUDGET` and precedes every native call.
+    function test_gate_boundaryAcceptsTheLastPassingPaddingAndRefusesTheNextBeforeAnyNativeCall()
+        public
+    {
+        Scenario memory s = _edgeBase();
+        bytes[4] memory ucs = [s.anchors[0].uc, s.anchors[1].uc, s.anchors[2].uc, s.anchors[3].uc];
+        uint256 total = _pad(s, ucs, 0);
+        assertLe(total, BridgeBounds.TX_GAS_BUDGET, "start inside the gate");
+        // each padding byte costs 16 (the UC request) + 16 (the envelope) per anchor; settle by stepping
+        uint256 add = (BridgeBounds.TX_GAS_BUDGET - total) / 128;
+        while (_pad(s, ucs, add) > BridgeBounds.TX_GAS_BUDGET) --add;
+        while (_pad(s, ucs, add + 1) <= BridgeBounds.TX_GAS_BUDGET) ++add;
+        total = _pad(s, ucs, add);
+        uint256 over = _pad(s, ucs, add + 1);
+        assertLe(total, BridgeBounds.TX_GAS_BUDGET);
+        assertGt(over, BridgeBounds.TX_GAS_BUDGET);
+        assertLt(over - total, 256, "the refused bundle is one UC byte per anchor larger");
+        _pad(s, ucs, add);
+        _arm(s);
+        uint256 before = gasleft();
+        KernelResult memory got = v.verifyReturn(s.cfgB, _proof(s));
+        uint256 used = before - gasleft();
+        assertEq(got.leaves.length, BridgeBounds.MAX_ANCHORS);
+        assertLt(used, 750_000, "verifier overhead at the edge stays inside the reserve");
+        emit log_named_uint("gate total, accepted edge", total);
+        emit log_named_uint("gate total, first refused", over);
+        emit log_named_uint("verifier overhead gas, 4 anchors at the edge", used);
+        _pad(s, ucs, add + 1);
+        vm.expectCall(B1Calls.UC_VERIFIER, bytes(""), 0);
+        vm.expectCall(B1Calls.RSMT_VERIFIER, bytes(""), 0);
+        _rejects(s, abi.encodeWithSelector(BudgetExceeded.selector));
+    }
+
     function test_gate_fourAnchorsOfMaximumSignaturesAreBudgetExceeded() public {
         Scenario memory s = _perLeafAnchors(BridgeBounds.MAX_ANCHORS, true);
         (uint256 i0, uint256 b2, uint256 uc, uint256 rs) = _gateParts(s);
