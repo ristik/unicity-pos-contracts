@@ -341,16 +341,14 @@ contract TokenVerifier {
         bytes32[] memory ucHash = new bytes32[](na);
         for (uint256 j = 0; j < na; ++j) {
             Anchor memory a = anchors[j];
-            uint256 row = 0;
-            bool found;
+            uint256 row = type(uint256).max; // no row named yet
             for (uint256 k = 0; k < pol.shardConfHashes.length; ++k) {
                 if (a.shard.length == 1 && a.shard[0] == BridgeProfile.shardId(pol.depth, k)) {
                     row = k;
-                    found = true;
                 }
             }
             if (
-                !found || a.partition != pol.partition
+                row == type(uint256).max || a.partition != pol.partition
                     || a.shardConfHash != pol.shardConfHashes[row]
             ) {
                 revert PolicyTupleMismatch();

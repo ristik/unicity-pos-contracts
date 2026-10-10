@@ -138,7 +138,7 @@ GUARDS = [
     g("T-pol-hash", T, "if (h != c.aggregatorPolicyHash) revert PolicyHashMismatch(c.aggregatorPolicyHash, h);", "", "test_policy_hashMismatch|test_policy_missingBody", TT),
     g("T-pol-evm", T, "if (p.partition == c.evmPartition) revert PolicyPartitionIsEvm();", "", "test_policy_partitionEqualToEvmPartition", TT),
     g("T-pol-anchorCount", T, "if (anchorCount == 0) revert PolicyAnchorCount(anchorCount);", "", "test_policy_anchorCountZero", TT),
-    g("T-pol-tupleFound", T, "if (!found || a.partition", "if (false || a.partition", "test_policy_shardOfAnotherTopologyEvenWithARowsConfiguration", TT),
+    g("T-pol-tupleFound", T, "row == type(uint256).max || a.partition", "false || a.partition", "test_policy_shardOfAnotherTopologyEvenWithARowsConfiguration", TT),
     g("T-pol-tuplePartition", T, "|| a.partition != pol.partition", "|| false", "test_policy_unrelatedRootCertifiedPartition", TT),
     g("T-pol-tupleConf", T, "|| a.shardConfHash != pol.shardConfHashes[row]", "|| false", "test_policy_changedConfiguration|test_policy_changedConfigurationOfTheSecondAnchor", TT),
     g("T-pol-tupleShardLen", T, "a.shard.length == 1 &&", "true &&", "test_policy_emptyShardBytes|test_policy_longerShard", TT),
