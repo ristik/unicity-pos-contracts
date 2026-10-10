@@ -176,7 +176,7 @@ GUARDS = [
     g("T-ker-leavesOffset", T, "|| _mw(out, 384) != 0x140", "|| false", "test_kernel_leavesOffsetNotCanonical", TT),
     g("T-ker-leafCap", T, "if (k > BridgeBounds.KERNEL_MAX_LEAVES ||", "if (false ||", "test_kernel_hugeLeafCountDoesNotOverflow|test_kernel_leafCountOverCap", TT),
     g("T-ker-profileLeafCap", T, "if (k > BridgeBounds.MAX_LEAVES) revert BudgetExceeded();", "", "test_kernel_aValidResultOverTheProfileLeafBoundIsBudgetExceeded", TT),
-    g("T-ker-exactLength", T, "|| len != KERNEL_FIXED_BYTES + KERNEL_LEAF_BYTES * k) {", "|| false) {", "test_kernel_leafCountDisagreesWithLength|test_kernel_extraTrailingWord|test_kernel_shortOutput|test_kernel_everyTruncationIsBadOutput|test_kernel_oldStrideOutputIsRefused|test_kernel_aPartialLeafIsRefused", TT),
+    g("T-ker-exactLength", T, "|| len != KERNEL_FIXED_BYTES + KERNEL_LEAF_BYTES * k)\n        {", "|| false)\n        {", "test_kernel_leafCountDisagreesWithLength|test_kernel_extraTrailingWord|test_kernel_shortOutput|test_kernel_everyTruncationIsBadOutput|test_kernel_oldStrideOutputIsRefused|test_kernel_aPartialLeafIsRefused", TT),
     g("T-ker-stride", T, "KERNEL_LEAF_BYTES = 128;", "KERNEL_LEAF_BYTES = 64;", "test_kernel_strideIsFourWordsPerLeaf|test_verifyReturn_golden_everyLeafOnceInOrder|test_kernel_theMaximumProfileOutputIsAccepted", TT),
     g("T-ker-timeHigh", T, "if (t > type(uint64).max) revert KernelBadOutput();", "", "test_kernel_referenceTimeWordNeedsZeroHighBits", TT),
     g("T-ker-timeWord", T, "referenceTime: uint64(t),", "referenceTime: 0,", "test_kernel_referenceTimeIsReadFromTheThirdWordAndValueFromTheFourth|test_ir_timeOneBelowTheLatestLeafIsRejected", TT),
