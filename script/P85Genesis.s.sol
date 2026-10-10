@@ -23,10 +23,26 @@ import {
 /// Inputs (environment): P85_GENESIS_JSON (the genesis plan bft-core's `ubft pos-relayer genesis --out-contracts` writes), P85_NETWORK_WORD,
 /// P85_CHAIN_ID, P85_ROOTS (the registry that serves the root records), P85_TREASURY, P85_V_MAX, P85_L_MAX, P85_N_MAX (the caps the election
 /// price was measured at), P85_CADENCE_ROUNDS, P85_CADENCE_SECONDS, P85_OUT (a directory under ./script/genesis-out); optional P85_DIST_NUM / P85_DIST_DEN: the election's weight-distance bound D <= num/den. THIS genesis script is the devnet/testnet
-/// profile, whose small committees (4 -> 5 is D = 2/5, one replacement in four D = 1/2) need 1/2 (default 1/2); the contracts' own policy default and a
-/// production genesis stay at 1/4 (briefs/p85-churn-bound-note.md). The roots' installed EVM configuration must commit the same bound
+/// profile, whose small committees (4 -> 5 is D = 2/5, one replacement in four D = 1/2) need 1/2 (default 1/2, range-checked 0 < num <= den); the contracts have no built-in
+/// bound, so a PRODUCTION genesis must set P85_DIST_NUM/P85_DIST_DEN explicitly (1/4 is the production policy) and never rely on the default (briefs/p85-churn-bound-note.md). The roots' installed EVM configuration must commit the same bound
 /// (`continuity_max_distance`).
 contract P85Genesis is Script {
+    /// @dev The testnet profile's bound when P85_DIST_NUM / P85_DIST_DEN are unset. The contracts have NO built-in bound (ElectionParams carries
+    /// it, and the election takes whatever genesis commits), so a production genesis must name its bound explicitly (1/4 is the production
+    /// policy) and must not rely on this default.
+    uint256 public constant TESTNET_DIST_NUM = 1;
+    uint256 public constant TESTNET_DIST_DEN = 2;
+
+    /// @dev The election's weight-distance bound D <= num/den: 0 < num <= den (a bound above 1 admits everything, zero admits no change).
+    function _distanceBound() internal view returns (uint64, uint64) {
+        return _checkedBound(vm.envOr("P85_DIST_NUM", TESTNET_DIST_NUM), vm.envOr("P85_DIST_DEN", TESTNET_DIST_DEN));
+    }
+
+    function _checkedBound(uint256 num, uint256 den) internal pure returns (uint64, uint64) {
+        require(den != 0 && num != 0 && num <= den && den <= type(uint64).max, "P85: distance bound must satisfy 0 < num <= den");
+        return (uint64(num), uint64(den));
+    }
+
     function run() external {
         vm.chainId(vm.envUint("P85_CHAIN_ID"));
         string memory json = vm.envString("P85_GENESIS_JSON");
@@ -38,6 +54,7 @@ contract P85Genesis is Script {
             total += ids[i].bond;
         }
         uint32 nMax = uint32(vm.envUint("P85_N_MAX"));
+        (uint64 distNum, uint64 distDen) = _distanceBound();
         PosFactory.Config memory c = PosFactory.Config({
             custody: address(0),
             election: address(0),
@@ -67,8 +84,8 @@ contract P85Genesis is Script {
                 nTarget: nMax,
                 nMax: nMax,
                 maxM: 4,
-                distNum: uint64(vm.envOr("P85_DIST_NUM", uint256(1))),
-                distDen: uint64(vm.envOr("P85_DIST_DEN", uint256(2))),
+                distNum: distNum,
+                distDen: distDen,
                 cadenceRounds: uint64(vm.envUint("P85_CADENCE_ROUNDS")),
                 cadenceSeconds: uint64(vm.envUint("P85_CADENCE_SECONDS"))
             }),
