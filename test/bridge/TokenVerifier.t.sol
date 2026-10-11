@@ -1581,9 +1581,11 @@ contract TokenVerifierTest is BridgeBase {
         _gateOf("return", _returnScenario());
     }
 
-    /// @dev The worst bundle every cap admits fits the budget, to the unit the oracle computes
-    ///      (bft-core `TestWorstAdmittedBundleFitsBudget`: 6,976,692 of 7,000,000).
-    function test_gate_worstAdmittedBundleFitsTheBudget() public pure {
+    /// @dev An oracle-parity pin of ONE composition, not a statement about the parser ceiling: the worst bundle
+    ///      of TWO maximum-size anchors at every other cap fits the budget to the unit the oracle computes
+    ///      (bft-core `TestWorstAdmittedBundleFitsBudget`: 6,976,692 of 7,000,000). Beyond two the gate decides,
+    ///      not this test: see the maximum-size assertions below and `test_gate_fiveAnchorsNeverFit...`.
+    function test_gate_twoMaximumAnchorBundleAtEveryCapFitsTheBudgetToTheOracleUnit() public pure {
         uint256 total = BridgeBounds.intrinsicGas(BridgeBounds.MAX_ENVELOPE_BYTES)
             + BridgeBounds.b2Gas(
                 BridgeBounds.kernelRequestBytes(
@@ -1600,7 +1602,7 @@ contract TokenVerifierTest is BridgeBase {
             + BridgeBounds.GAS_RESERVE;
         assertEq(total, 6_976_692);
         assertLe(total, BridgeBounds.TX_GAS_BUDGET);
-        // the gate, not the parser ceiling, refuses a third maximum-size certificate
+        // the gate refuses a third maximum-size certificate (the parser ceiling is four, so the gate is what decides)
         assertGt(
             total
                 + BridgeBounds.ucGas(
@@ -1787,6 +1789,106 @@ contract TokenVerifierTest is BridgeBase {
         vm.expectCall(B1Calls.UC_VERIFIER, bytes(""), 0);
         vm.expectCall(B1Calls.RSMT_VERIFIER, bytes(""), 0);
         _rejects(s, abi.encodeWithSelector(BudgetExceeded.selector));
+    }
+
+    /// @dev Four maximum-size certificates cost 7.07M on their own, and five anchors cannot fit even with the
+    ///      cheapest certificate there is (zero bytes, signatures and steps): the parser ceiling of four is
+    ///      the gate's own consequence for the second, not a separate rule.
+    function test_gate_fourMaximumCertificatesAloneExceedTheBudgetAndFiveNeverFit() public pure {
+        uint256 maxUc = BridgeBounds.ucGas(
+            1,
+            BridgeBounds.MAX_ANCHOR_UC_BYTES,
+            BridgeBounds.MAX_SIGNATURES,
+            1 + BridgeBounds.MAX_UNICITY_STEPS
+        );
+        assertEq(maxUc, 1_768_798);
+        assertGt(4 * maxUc, BridgeBounds.TX_GAS_BUDGET, "four maximum certificates alone");
+        uint256 minUc = BridgeBounds.ucGas(1, 0, 0, 0);
+        assertGt(
+            5 * minUc + BridgeBounds.GAS_RESERVE,
+            BridgeBounds.TX_GAS_BUDGET,
+            "five anchors with the cheapest possible certificate and nothing else"
+        );
+        assertLe(4 * minUc + BridgeBounds.GAS_RESERVE, BridgeBounds.TX_GAS_BUDGET, "four can fit");
+    }
+
+    /// @dev The union of the worst shapes the gate still admits: FOUR anchors, SIXTEEN leaves with as many siblings
+    ///      each as the gate admits (it prices 32 out at four anchors, see
+    ///      `test_gate_fourDnbShapeAnchorsWithSixteenDeepLeavesAreBudgetExceeded`), then the largest history it admits at
+    ///      that load, then the largest certificate padding. The verifier's own work there, with the natives mocked,
+    ///      must stay under the reserve minus the vault's own accounting (about 60k: two new-slot SSTOREs, a fresh
+    ///      `claimable`, the event and `cfgBytes()`).
+    function test_gas_unionWorstAdmittedBundleVerifierOverheadFitsTheReserve() public {
+        Scenario memory s = _perLeafAnchors(BridgeBounds.MAX_ANCHORS, false);
+        uint256 n = BridgeBounds.MAX_LEAVES;
+        Leaf[] memory ls = new Leaf[](n);
+        LeafProof[] memory ps = new LeafProof[](n);
+        for (uint256 i = 0; i < n; ++i) {
+            uint256 ai = i < 4 ? i : 2 + (i % 2); // later leaves reuse the anchor of their own shard
+            ls[i] = Leaf({
+                sid: _sidInRow(keccak256(abi.encode("sid", i)), uint8(s.anchors[ai].shard[0]) >> 7),
+                txHash: keccak256(abi.encode("tx", i)),
+                referenceTime: uint64(1_700_000_000 + i),
+                leafValue: keccak256(abi.encode("v", i))
+            });
+            ps[i].anchorIndex = uint16(ai);
+        }
+        s.result.leaves = ls;
+        s.paths = ps;
+        // the deepest uniform sibling count the gate admits with the smallest history
+        s.history = new bytes(0);
+        uint256 depth = BridgeBounds.MAX_RSMT_SIBLINGS;
+        for (;; --depth) {
+            for (uint256 i = 0; i < n; ++i) {
+                ps[i].bitmap = bytes32((uint256(1) << depth) - 1);
+                ps[i].siblings = new bytes32[](depth);
+                for (uint256 k = 0; k < depth; ++k) {
+                    ps[i].siblings[k] = keccak256(abi.encode(i, k));
+                }
+            }
+            (uint256 a0, uint256 a1, uint256 a2, uint256 a3) = _gateParts(s);
+            if (a0 + a1 + a2 + a3 + BridgeBounds.GAS_RESERVE <= BridgeBounds.TX_GAS_BUDGET) break;
+            assertGt(depth, 0, "some depth is admitted");
+        }
+        (uint256 i0, uint256 b2, uint256 uc, uint256 rs) = _gateParts(s);
+        bytes[4] memory ucs = [s.anchors[0].uc, s.anchors[1].uc, s.anchors[2].uc, s.anchors[3].uc];
+        // the largest history the gate admits at this load (bisection: the gate total is increasing in the history)
+        uint256 lo = 0;
+        uint256 hi = BridgeBounds.MAX_SEMANTIC_BYTES;
+        while (lo < hi) {
+            uint256 mid = (lo + hi + 1) / 2;
+            s.history = new bytes(mid);
+            (i0, b2, uc, rs) = _gateParts(s);
+            if (i0 + b2 + uc + rs + BridgeBounds.GAS_RESERVE <= BridgeBounds.TX_GAS_BUDGET) {
+                lo = mid;
+            } else {
+                hi = mid - 1;
+            }
+        }
+        s.history = new bytes(lo);
+        // then the largest certificate padding it still admits
+        uint256 add = 0;
+        while (_pad(s, ucs, add + 8) <= BridgeBounds.TX_GAS_BUDGET) add += 8;
+        uint256 total = _pad(s, ucs, add);
+        assertLe(total, BridgeBounds.TX_GAS_BUDGET);
+        bytes memory proof = _proof(s);
+        assertLe(proof.length, BridgeBounds.MAX_ENVELOPE_BYTES, "inside the envelope bound");
+        _arm(s);
+        uint256 before = gasleft();
+        KernelResult memory got = v.verifyReturn(s.cfgB, proof);
+        uint256 used = before - gasleft();
+        assertEq(got.leaves.length, n);
+        emit log_named_uint("siblings per leaf admitted at four anchors and sixteen leaves", depth);
+        emit log_named_uint("history bytes admitted at that load", lo);
+        emit log_named_uint("certificate padding bytes per anchor admitted", add);
+        emit log_named_uint("gate total", total);
+        emit log_named_uint("envelope bytes", proof.length);
+        emit log_named_uint("verifier overhead gas, the union shape", used);
+        assertLt(
+            used + 100_000,
+            BridgeBounds.GAS_RESERVE,
+            "verifier overhead plus the vault's own accounting stays inside the reserve"
+        );
     }
 
     function test_gate_fourAnchorsOfMaximumSignaturesAreBudgetExceeded() public {

@@ -10,7 +10,9 @@ pragma solidity 0.8.37;
 library BridgeBounds {
     // ---- profile parameters (profile-v3.json `limits`) ----------------------------------------
     /// @dev Distinct UC anchors of one redemption (one per distinct complete UC): a parser ceiling; the
-    ///      gate below admits or refuses each bundle (two anchors at every cap fit, five never can).
+    ///      gate below admits or refuses each bundle. Two anchors fit at every cap; four fit only with small
+    ///      certificates (each maximum-size UC costs 1,768,798, so four of them cost 7.07M alone); five can
+    ///      never fit, even with the cheapest possible certificates (5 x 1,245,476 plus the reserve is over 7M).
     uint256 internal constant MAX_ANCHORS = 4;
     /// @dev Exported kernel leaves of one redemption (mint plus transfers plus the final burn).
     uint256 internal constant MAX_LEAVES = 16;
