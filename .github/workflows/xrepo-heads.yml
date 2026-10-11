@@ -1,0 +1,27 @@
+name: xrepo-heads
+
+# The cross-repository consistency suite (bft-core xrepo/README.md). `ci` compares the shared fixtures with bft-core at a PINNED commit,
+# and a pin may name a pull-request commit whose counterpart never merged, so the two branch heads could each be green while holding
+# different files. This compares the heads: on every push to main, and daily. It is red between the two merges of a paired change.
+on:
+  push:
+    branches: [main]
+  schedule:
+    - cron: "17 5 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  heads:
+    name: Shared fixtures match bft-core integration/enshrined-evm
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - name: The copies are byte-identical to bft-core's branch head
+        run: |
+          repo=$(python3 -c "import json;print(json.load(open('xrepo/bft-core-pin.json'))['repo'])")
+          git clone --quiet --depth 1 --branch integration/enshrined-evm "$repo" "$RUNNER_TEMP/bft-core-head"
+          python3 "$RUNNER_TEMP/bft-core-head/xrepo/check.py" --bft-core "$RUNNER_TEMP/bft-core-head" --contracts .
