@@ -34,5 +34,18 @@ jobs:
           git clone --quiet https://github.com/ristik/native-bridge-plugins "$RUNNER_TEMP/corpus"
           git -C "$RUNNER_TEMP/corpus" checkout --quiet "$(python3 -c "import json;print(json.load(open('script/bridge-golden/corpus-pin.json'))['corpus']['commit'])")"
           python3 script/bridge-golden/check-corpus.py "$RUNNER_TEMP/corpus"
+      - name: Shared fixtures agree with bft-core at the pinned commit
+        # The cross-repository consistency suite (bft-core xrepo/README.md): every file this repository shares with bft-core, in either
+        # direction, is byte-identical to bft-core's at the commit pinned in xrepo/bft-core-pin.json. The manifest and the check are
+        # bft-core's own, read from that commit. The forge tests below regenerate the files this repository produces and compare
+        # them with the committed ones, so a change here fails there first and then here until bft-core has the new file.
+        run: |
+          repo=$(python3 -c "import json;print(json.load(open('xrepo/bft-core-pin.json'))['repo'])")
+          commit=$(python3 -c "import json;print(json.load(open('xrepo/bft-core-pin.json'))['commit'])")
+          git init --quiet "$RUNNER_TEMP/bft-core"
+          git -C "$RUNNER_TEMP/bft-core" fetch --quiet --depth 1 "$repo" "$commit"
+          git -C "$RUNNER_TEMP/bft-core" checkout --quiet FETCH_HEAD
+          test "$(git -C "$RUNNER_TEMP/bft-core" rev-parse HEAD)" = "$commit"
+          python3 "$RUNNER_TEMP/bft-core/xrepo/check.py" --bft-core "$RUNNER_TEMP/bft-core" --contracts .
       - name: forge test
         run: forge test -vvv
