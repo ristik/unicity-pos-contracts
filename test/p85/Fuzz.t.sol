@@ -4,6 +4,7 @@ pragma solidity 0.8.37;
 import {P85Flow} from "./P85Flow.sol";
 import {Evidence} from "../../src/p85/Evidence.sol";
 import {StakeCustody} from "../../src/p85/StakeCustody.sol";
+import {CustodyStorage} from "../../src/p85/CustodyStorage.sol";
 import {Policy, ReserveInput, RecordKind} from "../../src/p85/P85Types.sol";
 
 /// @notice Property tests with independent reference models: the penalty formula, bounty
@@ -185,10 +186,10 @@ contract FuzzTest is P85Flow {
             custody.mature(one);
             assertEq(lotv(lot).category, 4);
         } else if (p <= roundUntil) {
-            vm.expectRevert(StakeCustody.RoundGateNotMet.selector);
+            vm.expectRevert(CustodyStorage.RoundGateNotMet.selector);
             custody.mature(one);
         } else {
-            vm.expectRevert(StakeCustody.TimeGateNotMet.selector);
+            vm.expectRevert(CustodyStorage.TimeGateNotMet.selector);
             custody.mature(one);
         }
     }
@@ -205,7 +206,7 @@ contract FuzzTest is P85Flow {
         in_.members[0].rawWeight = w;
         vm.prank(address(election));
         if (w > maxWeight) {
-            vm.expectRevert(StakeCustody.InsufficientCoverage.selector);
+            vm.expectRevert(CustodyStorage.InsufficientCoverage.selector);
             custody.reserveCandidate(in_);
         } else {
             custody.reserveCandidate(in_);
@@ -232,22 +233,22 @@ contract FuzzTest is P85Flow {
         amount = bound(amount, 1, 1 ether);
         ReserveInput memory in_;
         vm.startPrank(caller);
-        vm.expectRevert(StakeCustody.NotElection.selector);
+        vm.expectRevert(CustodyStorage.NotElection.selector);
         custody.reserveCandidate(in_);
-        vm.expectRevert(StakeCustody.NotElection.selector);
+        vm.expectRevert(CustodyStorage.NotElection.selector);
         custody.registerEvmKey(gid(0), keccak256("k"));
-        vm.expectRevert(StakeCustody.NotEvidence.selector);
+        vm.expectRevert(CustodyStorage.NotEvidence.selector);
         custody.applyPenalty(keccak256("c"), 1);
-        vm.expectRevert(StakeCustody.NotOwner.selector);
+        vm.expectRevert(CustodyStorage.NotOwner.selector);
         custody.requestRetirement(gid(0));
-        vm.expectRevert(StakeCustody.NotOwner.selector);
+        vm.expectRevert(CustodyStorage.NotOwner.selector);
         custody.proposeRoles(gid(0), caller, caller, 0);
-        vm.expectRevert(StakeCustody.InsufficientCredit.selector);
+        vm.expectRevert(CustodyStorage.InsufficientCredit.selector);
         custody.claim(amount, caller);
         vm.stopPrank();
         vm.deal(caller, amount);
         vm.prank(caller);
-        vm.expectRevert(StakeCustody.NotOwner.selector);
+        vm.expectRevert(CustodyStorage.NotOwner.selector);
         custody.bond{value: amount}(gid(0));
     }
 }
