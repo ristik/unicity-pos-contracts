@@ -3,7 +3,7 @@ pragma solidity 0.8.37;
 
 import {P85Flow} from "./P85Flow.sol";
 import {ElectionPolicy} from "../../src/p85/ElectionPolicy.sol";
-import {StakeCustody} from "../../src/p85/StakeCustody.sol";
+import {CustodyStorage} from "../../src/p85/CustodyStorage.sol";
 import {ElectionParams, RootRecord, RecordKind, ClosureData} from "../../src/p85/P85Types.sol";
 
 /// @notice The cross-repository consistency suite, contracts half (bft-core: package `xrepo`).
@@ -26,7 +26,7 @@ contract XRepoRecordsTest is P85Flow {
     string internal constant VIEW = "/test/p85/fixtures/xrepo-custody-view.json";
     address internal constant SYS = address(0xff00000000000000000000000000000000000001);
     bytes32 internal constant ORIGIN = keccak256("origin/1");
-    /// @dev StakeCustody.pendingAssignment has no getter (the contract is at its size limit); its slot from
+    /// @dev StakeCustody.pendingAssignment has no getter (the contract is at its size limit); its slot (declared in CustodyStorage) from
     /// `forge inspect StakeCustody storageLayout`. The recovery history checks it is zero, then J, then zero again, so a layout change
     /// that moves it fails the test instead of passing silently.
     uint256 internal constant PENDING_ASSIGNMENT_SLOT = 38;
@@ -164,7 +164,7 @@ contract XRepoRecordsTest is P85Flow {
 
     /// @dev Custody's state after `applied` records of a history.
     function _view(Ids memory ids, uint256 applied) internal view returns (string memory out) {
-        StakeCustody.Session memory s = custody.session(ids.result);
+        CustodyStorage.Session memory s = custody.session(ids.result);
         out = string.concat(
             '{"afterRecords":',
             _u(applied),
@@ -399,7 +399,7 @@ contract XRepoRecordsTest is P85Flow {
             _changedClosure(
                 json, 0, 0, 0, keccak256("the genesis assignment id of another configuration")
             ),
-            StakeCustody.AssignmentNotActive.selector
+            CustodyStorage.AssignmentNotActive.selector
         );
         vm.revertToState(snap);
 
@@ -408,7 +408,7 @@ contract XRepoRecordsTest is P85Flow {
         _applyVerbatim(json, 0, 0);
         _refused(
             _changedClosure(json, 0, 1, 0, keccak256("the assignment hash of J")),
-            StakeCustody.AssignmentNotActive.selector
+            CustodyStorage.AssignmentNotActive.selector
         );
         vm.revertToState(snap);
 
@@ -416,7 +416,7 @@ contract XRepoRecordsTest is P85Flow {
         snap = vm.snapshotState();
         _applyVerbatim(json, 0, 0);
         _refused(
-            _changedClosure(json, 0, 1, 1, gExposure), StakeCustody.ClosureDigestMismatch.selector
+            _changedClosure(json, 0, 1, 1, gExposure), CustodyStorage.ClosureDigestMismatch.selector
         );
         vm.revertToState(snap);
 
@@ -426,7 +426,7 @@ contract XRepoRecordsTest is P85Flow {
         _applyVerbatim(json, 0, 1);
         _applyVerbatim(json, 0, 2);
         _refused(
-            _changedClosure(json, 0, 3, 1, gExposure), StakeCustody.ClosureDigestMismatch.selector
+            _changedClosure(json, 0, 3, 1, gExposure), CustodyStorage.ClosureDigestMismatch.selector
         );
         vm.revertToState(snap);
     }
