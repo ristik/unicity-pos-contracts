@@ -202,6 +202,10 @@ contract BridgeVault {
 
     /// @notice Redeems one burn. Anyone may submit; every release field comes from the certified
     ///         burn, never from `msg.sender`. Credits the recipient and pays nothing: payment is `claim`.
+    /// @dev Conservation is enforced globally (`credited + amount <= locked`); the vault stores no per-lock
+    ///      amount. That `amount` is the amount of THIS lock rests on the kernel result's `lockDigest`, which
+    ///      must equal `lockDigest[nonce]`: a kernel bug that inflated one redemption would be bounded by the
+    ///      pool, not by its own lock. The storage layout (slots 0..7) is unchanged on purpose.
     function redeem(bytes calldata proof) external nonReentrant returns (uint256 nonce) {
         KernelResult memory r = VERIFIER.verifyReturn(cfgBytes(), proof);
         if (r.cfg != CFG) revert KernelCfgMismatch(CFG, r.cfg);

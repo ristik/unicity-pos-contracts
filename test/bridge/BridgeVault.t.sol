@@ -677,7 +677,12 @@ contract BridgeVaultTest is VaultHarness {
         vault.redeem("");
     }
 
-    function test_redeem_creditNeverExceedsLockedPerLock() public {
+    /// @dev With ONE lock the per-lock and the global bound coincide, so this test shows the GLOBAL bound only:
+    ///      `redeem` checks `credited + amount <= locked` and stores no per-lock amount. That the amount belongs to
+    ///      its own lock rests on the kernel result's `lockDigest` (checked against `lockDigest[nonce]`), i.e. on the
+    ///      external kernel being correct; see `test_redeem_creditNeverExceedsLockedCumulatively` for what a kernel
+    ///      bug that inflates one lock can and cannot do (owner question Q9, option b: documented, layout unchanged).
+    function test_redeem_creditNeverExceedsLockedGlobally() public {
         _lock(ALICE, 1 ether);
         KernelResult memory r = _returnResult(1, 2 ether, BOB, _eta(1, 0));
         r.lockDigest = vault.lockDigest(1); // digest of the real lock, inflated amount
