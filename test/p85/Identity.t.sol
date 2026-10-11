@@ -3,6 +3,7 @@ pragma solidity 0.8.37;
 
 import {P85Base} from "./P85Base.sol";
 import {StakeCustody} from "../../src/p85/StakeCustody.sol";
+import {CustodyStorage} from "../../src/p85/CustodyStorage.sol";
 import {ElectionPolicy} from "../../src/p85/ElectionPolicy.sol";
 import {KeyLib} from "../../src/p85/KeyLib.sol";
 import {FixedPolicy} from "../../src/p85/FixedPolicy.sol";
@@ -38,7 +39,7 @@ contract IdentityTest is P85Base {
         // possession proof made by a different key
         bytes memory pop = sign(0x9102, registerDigest(owner, vm.addr(0x9201), key, 0));
         vm.prank(owner);
-        vm.expectRevert(StakeCustody.BadPossessionProof.selector);
+        vm.expectRevert(CustodyStorage.BadPossessionProof.selector);
         custody.register(key, pop, vm.addr(0x9201));
     }
 
@@ -46,7 +47,7 @@ contract IdentityTest is P85Base {
         bytes memory key = compressed(0x9101);
         bytes memory pop = sign(0x9101, registerDigest(vm.addr(0x9001), vm.addr(0x9201), key, 0));
         vm.prank(stranger); // not the owner the proof names
-        vm.expectRevert(StakeCustody.BadPossessionProof.selector);
+        vm.expectRevert(CustodyStorage.BadPossessionProof.selector);
         custody.register(key, pop, vm.addr(0x9201));
     }
 
@@ -55,7 +56,7 @@ contract IdentityTest is P85Base {
         bytes memory key = compressed(0x9101);
         bytes memory pop = sign(0x9101, registerDigest(owner, vm.addr(0x9201), key, 0));
         vm.prank(owner);
-        vm.expectRevert(StakeCustody.BadPossessionProof.selector);
+        vm.expectRevert(CustodyStorage.BadPossessionProof.selector);
         custody.register(key, pop, vm.addr(0x9202));
     }
 
@@ -66,7 +67,7 @@ contract IdentityTest is P85Base {
         vm.prank(owner);
         custody.register(key, pop, vm.addr(0x9201));
         vm.prank(owner);
-        vm.expectRevert(StakeCustody.BadPossessionProof.selector); // nonce is now 1
+        vm.expectRevert(CustodyStorage.BadPossessionProof.selector); // nonce is now 1
         custody.register(key, pop, vm.addr(0x9201));
     }
 
@@ -76,7 +77,7 @@ contract IdentityTest is P85Base {
         bytes memory key = compressed(0x9101);
         bytes memory pop = sign(0x9101, registerDigest(owner, vm.addr(0x9201), key, 0));
         vm.prank(owner);
-        vm.expectRevert(StakeCustody.KeyAlreadyUsed.selector);
+        vm.expectRevert(CustodyStorage.KeyAlreadyUsed.selector);
         custody.register(key, pop, vm.addr(0x9201));
     }
 
@@ -86,7 +87,7 @@ contract IdentityTest is P85Base {
         bytes memory key = compressed(evmPk(0));
         bytes memory pop = sign(evmPk(0), registerDigest(owner, vm.addr(0x9201), key, 0));
         vm.prank(owner);
-        vm.expectRevert(StakeCustody.KeyAlreadyUsed.selector);
+        vm.expectRevert(CustodyStorage.KeyAlreadyUsed.selector);
         custody.register(key, pop, vm.addr(0x9201));
     }
 
@@ -108,7 +109,7 @@ contract IdentityTest is P85Base {
 
     function test_registerRejectsZeroWithdrawalAuthority() public {
         vm.prank(vm.addr(0x9001));
-        vm.expectRevert(StakeCustody.ZeroAddress.selector);
+        vm.expectRevert(CustodyStorage.ZeroAddress.selector);
         custody.register(compressed(0x9101), hex"", address(0));
     }
 
@@ -141,7 +142,7 @@ contract IdentityTest is P85Base {
     function test_bondRejectsZeroValue() public {
         uint64 id = register(0x9001, 0x9101, vm.addr(0x9201));
         vm.prank(vm.addr(0x9001));
-        vm.expectRevert(StakeCustody.ZeroValue.selector);
+        vm.expectRevert(CustodyStorage.ZeroValue.selector);
         custody.bond(id);
     }
 
@@ -150,7 +151,7 @@ contract IdentityTest is P85Base {
         uint256 huge = uint256(type(uint128).max) + 1;
         vm.deal(vm.addr(0x9001), huge);
         vm.prank(vm.addr(0x9001));
-        vm.expectRevert(StakeCustody.AmountTooLarge.selector);
+        vm.expectRevert(CustodyStorage.AmountTooLarge.selector);
         custody.bond{value: huge}(id);
     }
 
@@ -158,10 +159,10 @@ contract IdentityTest is P85Base {
         uint64 id = register(0x9001, 0x9101, vm.addr(0x9201));
         vm.deal(stranger, 1 ether);
         vm.prank(stranger);
-        vm.expectRevert(StakeCustody.NotOwner.selector);
+        vm.expectRevert(CustodyStorage.NotOwner.selector);
         custody.bond{value: 1 ether}(id);
         vm.prank(vm.addr(0x9001));
-        vm.expectRevert(StakeCustody.UnknownIdentity.selector);
+        vm.expectRevert(CustodyStorage.UnknownIdentity.selector);
         custody.bond(999);
     }
 
@@ -173,7 +174,7 @@ contract IdentityTest is P85Base {
         (address owner,,,,,,,,) = custody.positions(id);
         vm.deal(owner, 1 ether);
         vm.prank(owner);
-        vm.expectRevert(StakeCustody.LotCapacity.selector);
+        vm.expectRevert(CustodyStorage.LotCapacity.selector);
         custody.bond{value: 1 ether}(id);
     }
 
@@ -233,7 +234,7 @@ contract IdentityTest is P85Base {
         bytes memory key = compressed(0x9301);
         bytes memory pop = sign(0x9302, _rootKeyDigest(gid(0), key));
         vm.prank(vm.addr(ownerPk(0)));
-        vm.expectRevert(StakeCustody.BadPossessionProof.selector);
+        vm.expectRevert(CustodyStorage.BadPossessionProof.selector);
         custody.proposeRootKey(gid(0), key, pop);
     }
 
@@ -241,7 +242,7 @@ contract IdentityTest is P85Base {
         bytes memory key = compressed(0x9301);
         bytes memory pop = sign(0x9301, _rootKeyDigest(gid(0), key));
         vm.prank(stranger);
-        vm.expectRevert(StakeCustody.NotOwner.selector);
+        vm.expectRevert(CustodyStorage.NotOwner.selector);
         custody.proposeRootKey(gid(0), key, pop);
     }
 
@@ -249,7 +250,7 @@ contract IdentityTest is P85Base {
         bytes memory key = compressed(rootPk(1)); // identity 2's root key
         bytes memory pop = sign(rootPk(1), _rootKeyDigest(gid(0), key));
         vm.prank(vm.addr(ownerPk(0)));
-        vm.expectRevert(StakeCustody.KeyAlreadyUsed.selector);
+        vm.expectRevert(CustodyStorage.KeyAlreadyUsed.selector);
         custody.proposeRootKey(gid(0), key, pop);
     }
 
@@ -263,7 +264,7 @@ contract IdentityTest is P85Base {
         vm.prank(newOwner);
         custody.acceptRoles(gid(0), 0, newOwner, vm.addr(wdPk(0)));
         vm.prank(newOwner);
-        vm.expectRevert(StakeCustody.BadPossessionProof.selector);
+        vm.expectRevert(CustodyStorage.BadPossessionProof.selector);
         custody.proposeRootKey(gid(0), key, pop);
     }
 
@@ -305,7 +306,7 @@ contract IdentityTest is P85Base {
         vm.prank(newWd);
         custody.acceptRoles(gid(0), 0, vm.addr(ownerPk(0)), newWd);
         vm.prank(vm.addr(ownerPk(0))); // the owner is not the withdrawal authority
-        vm.expectRevert(StakeCustody.NotNominated.selector);
+        vm.expectRevert(CustodyStorage.NotNominated.selector);
         custody.acceptRoles(gid(0), 0, vm.addr(ownerPk(0)), newWd);
         (, address wd,,,,,,,) = custody.positions(gid(0));
         assertEq(wd, vm.addr(wdPk(0)));
@@ -314,27 +315,27 @@ contract IdentityTest is P85Base {
     function test_rolesRejectStrangersStaleNoncesAndNoOps() public {
         address newOwner = makeAddr("newOwner");
         vm.prank(stranger);
-        vm.expectRevert(StakeCustody.NotOwner.selector);
+        vm.expectRevert(CustodyStorage.NotOwner.selector);
         custody.proposeRoles(gid(0), newOwner, vm.addr(wdPk(0)), 0);
         vm.prank(vm.addr(ownerPk(0)));
-        vm.expectRevert(StakeCustody.RoleNonceMismatch.selector);
+        vm.expectRevert(CustodyStorage.RoleNonceMismatch.selector);
         custody.proposeRoles(gid(0), newOwner, vm.addr(wdPk(0)), 7);
         vm.prank(vm.addr(ownerPk(0)));
-        vm.expectRevert(StakeCustody.NoRoleChange.selector);
+        vm.expectRevert(CustodyStorage.NoRoleChange.selector);
         custody.proposeRoles(gid(0), vm.addr(ownerPk(0)), vm.addr(wdPk(0)), 0);
         vm.prank(vm.addr(ownerPk(0)));
-        vm.expectRevert(StakeCustody.ZeroAddress.selector);
+        vm.expectRevert(CustodyStorage.ZeroAddress.selector);
         custody.proposeRoles(gid(0), address(0), vm.addr(wdPk(0)), 0);
         vm.prank(vm.addr(ownerPk(0)));
         custody.proposeRoles(gid(0), newOwner, vm.addr(wdPk(0)), 0);
         vm.prank(stranger);
-        vm.expectRevert(StakeCustody.NotNominated.selector);
+        vm.expectRevert(CustodyStorage.NotNominated.selector);
         custody.acceptRoles(gid(0), 0, newOwner, vm.addr(wdPk(0)));
         vm.prank(newOwner);
-        vm.expectRevert(StakeCustody.NoPendingRoles.selector);
+        vm.expectRevert(CustodyStorage.NoPendingRoles.selector);
         custody.acceptRoles(gid(0), 5, newOwner, vm.addr(wdPk(0)));
         vm.prank(newOwner);
-        vm.expectRevert(StakeCustody.NoPendingRoles.selector);
+        vm.expectRevert(CustodyStorage.NoPendingRoles.selector);
         custody.acceptRoles(gid(1), 0, newOwner, vm.addr(wdPk(0)));
     }
 
@@ -345,7 +346,7 @@ contract IdentityTest is P85Base {
         vm.prank(newOwner);
         custody.acceptRoles(gid(0), 0, newOwner, vm.addr(wdPk(0)));
         vm.prank(newOwner);
-        vm.expectRevert(StakeCustody.NoPendingRoles.selector);
+        vm.expectRevert(CustodyStorage.NoPendingRoles.selector);
         custody.acceptRoles(gid(0), 0, newOwner, vm.addr(wdPk(0)));
     }
 
@@ -365,7 +366,7 @@ contract IdentityTest is P85Base {
         vm.prank(oldWd);
         (bool ok, bytes memory reason) = address(custody).call(preparedConsent);
         assertFalse(ok, "superseded consent must fail");
-        assertEq(reason, abi.encodeWithSelector(StakeCustody.RoleTupleMismatch.selector));
+        assertEq(reason, abi.encodeWithSelector(CustodyStorage.RoleTupleMismatch.selector));
         (, address wd,,,,,,,) = custody.positions(gid(0));
         assertEq(wd, oldWd);
         vm.prank(oldWd);
@@ -382,7 +383,7 @@ contract IdentityTest is P85Base {
         vm.prank(owner);
         custody.proposeRoles(gid(0), b, wd, 0);
         vm.prank(b);
-        vm.expectRevert(StakeCustody.RoleTupleMismatch.selector);
+        vm.expectRevert(CustodyStorage.RoleTupleMismatch.selector);
         custody.acceptRoles(gid(0), 0, c, wd); // only the expected owner differs
     }
 
@@ -432,16 +433,16 @@ contract IdentityTest is P85Base {
     function test_requestRetirementOncePerGenerationOnlyByOwnerWithLots() public {
         uint64 id = register(0x9001, 0x9101, vm.addr(0x9201));
         vm.prank(vm.addr(0x9001));
-        vm.expectRevert(StakeCustody.NoOpenLots.selector);
+        vm.expectRevert(CustodyStorage.NoOpenLots.selector);
         custody.requestRetirement(id);
         bondFor(id, 100 * UCT);
         vm.prank(stranger);
-        vm.expectRevert(StakeCustody.NotOwner.selector);
+        vm.expectRevert(CustodyStorage.NotOwner.selector);
         custody.requestRetirement(id);
         vm.prank(vm.addr(0x9001));
         custody.requestRetirement(id);
         vm.prank(vm.addr(0x9001));
-        vm.expectRevert(StakeCustody.RetirementAlreadyRequested.selector);
+        vm.expectRevert(CustodyStorage.RetirementAlreadyRequested.selector);
         custody.requestRetirement(id);
     }
 
@@ -452,12 +453,12 @@ contract IdentityTest is P85Base {
         custody.requestRetirement(id);
         vm.deal(vm.addr(0x9001), 1 ether);
         vm.prank(vm.addr(0x9001));
-        vm.expectRevert(StakeCustody.GenerationClosing.selector);
+        vm.expectRevert(CustodyStorage.GenerationClosing.selector);
         custody.bond{value: 1 ether}(id);
     }
 
     function test_registerEvmKeyOnlyByElection() public {
-        vm.expectRevert(StakeCustody.NotElection.selector);
+        vm.expectRevert(CustodyStorage.NotElection.selector);
         custody.registerEvmKey(gid(0), keccak256("k"));
     }
 }

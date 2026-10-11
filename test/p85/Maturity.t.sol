@@ -4,6 +4,7 @@ pragma solidity 0.8.37;
 import {P85Flow} from "./P85Flow.sol";
 import {UncheckedPolicy} from "./UncheckedPolicy.sol";
 import {StakeCustody} from "../../src/p85/StakeCustody.sol";
+import {CustodyStorage} from "../../src/p85/CustodyStorage.sol";
 import {Policy, Limits, RecordKind, SessionClosedData} from "../../src/p85/P85Types.sol";
 
 /// @notice Exact maturity: closed references, imported retirement, the strict round gates, the
@@ -17,7 +18,7 @@ contract MaturityTest is P85Flow {
         reachMaturable(0);
         uint256 lot = lotOf(gid(0));
         clock(2_160, 90_000); // time is far past its floor, progress equals the round deadline
-        vm.expectRevert(StakeCustody.RoundGateNotMet.selector);
+        vm.expectRevert(CustodyStorage.RoundGateNotMet.selector);
         matureOne(lot);
         clock(2_161, 90_000);
         matureOne(lot);
@@ -28,7 +29,7 @@ contract MaturityTest is P85Flow {
         reachMaturable(0);
         uint256 lot = lotOf(gid(0));
         clock(9_000, 4_809); // rounds far past the deadline, one UC second short
-        vm.expectRevert(StakeCustody.TimeGateNotMet.selector);
+        vm.expectRevert(CustodyStorage.TimeGateNotMet.selector);
         matureOne(lot);
         clock(9_000, 4_810); // equality passes
         matureOne(lot);
@@ -42,7 +43,7 @@ contract MaturityTest is P85Flow {
         uint256 freeBefore = custody.totalDraining();
         assertEq(freeBefore, GENESIS_BOND, "retired lot is draining");
         vm.expectEmit(true, true, false, true, address(custody));
-        emit StakeCustody.LotMatured(lot, vm.addr(wdPk(0)), GENESIS_BOND);
+        emit CustodyStorage.LotMatured(lot, vm.addr(wdPk(0)), GENESIS_BOND);
         matureOne(lot);
         LotV memory l = lotv(lot);
         assertEq(l.remaining, 0);
@@ -90,20 +91,20 @@ contract MaturityTest is P85Flow {
         uint256 lot = lotOf(gid(0));
         clock(3_000, 5_000);
         matureOne(lot);
-        vm.expectRevert(StakeCustody.LotAlreadyReleased.selector);
+        vm.expectRevert(CustodyStorage.LotAlreadyReleased.selector);
         matureOne(lot);
     }
 
     function test_unknownLotAndEmptyAndOversizedBatchesAreRejected() public {
         reachMaturable(0);
         clock(3_000, 5_000);
-        vm.expectRevert(StakeCustody.LotUnknown.selector);
+        vm.expectRevert(CustodyStorage.LotUnknown.selector);
         matureOne(9_999);
         uint256[] memory none = new uint256[](0);
-        vm.expectRevert(StakeCustody.EmptyBatch.selector);
+        vm.expectRevert(CustodyStorage.EmptyBatch.selector);
         custody.mature(none);
         uint256[] memory many = new uint256[](33);
-        vm.expectRevert(StakeCustody.BatchTooLarge.selector);
+        vm.expectRevert(CustodyStorage.BatchTooLarge.selector);
         custody.mature(many);
     }
 
@@ -111,7 +112,7 @@ contract MaturityTest is P85Flow {
         reachMaturable(0);
         clock(3_000, 5_000);
         uint256 lot = lotOf(gid(1)); // identity 2 is still in J
-        vm.expectRevert(StakeCustody.LotStillReferenced.selector);
+        vm.expectRevert(CustodyStorage.LotStillReferenced.selector);
         matureOne(lot);
     }
 
@@ -121,7 +122,7 @@ contract MaturityTest is P85Flow {
         closeGenesisAt(150, 1_200); // closed, but no retirement record yet
         clock(9_000, 90_000);
         uint256 lot = lotOf(gid(0));
-        vm.expectRevert(StakeCustody.RetirementNotImported.selector);
+        vm.expectRevert(CustodyStorage.RetirementNotImported.selector);
         matureOne(lot);
     }
 
@@ -130,7 +131,7 @@ contract MaturityTest is P85Flow {
         clock(9_000, 90_000);
         uint64 id = register(0x9001, 0x9101, vm.addr(0x9201));
         uint256 lot = bondFor(id, 100 * UCT);
-        vm.expectRevert(StakeCustody.RetirementNotImported.selector);
+        vm.expectRevert(CustodyStorage.RetirementNotImported.selector);
         matureOne(lot);
     }
 
@@ -140,7 +141,7 @@ contract MaturityTest is P85Flow {
         // an authenticated but unapplied record blocks maturity of everything
         reserveForClosedRecord();
         uint256 lot = lotOf(gid(0));
-        vm.expectRevert(StakeCustody.RecordsPending.selector);
+        vm.expectRevert(CustodyStorage.RecordsPending.selector);
         matureOne(lot);
         applyAll();
         matureOne(lot);
@@ -221,10 +222,10 @@ contract MaturityTest is P85Flow {
         reachMaturable(0);
         uint256 lot = lotOf(gid(0));
         clock(2_160, 4_809);
-        vm.expectRevert(StakeCustody.RoundGateNotMet.selector);
+        vm.expectRevert(CustodyStorage.RoundGateNotMet.selector);
         matureOne(lot);
         clock(2_161, 4_809);
-        vm.expectRevert(StakeCustody.TimeGateNotMet.selector);
+        vm.expectRevert(CustodyStorage.TimeGateNotMet.selector);
         matureOne(lot);
         clock(2_161, 4_810);
         matureOne(lot);
@@ -245,7 +246,7 @@ contract MaturityTest is P85Flow {
         uint256 lot = lotOf(gid(0));
         // hold gate: max(160 + 400, 150 + 400) = 560; evidence gate: 150 + 5,000 = 5,150
         clock(5_150, 99_999);
-        vm.expectRevert(StakeCustody.EvidenceGateNotMet.selector);
+        vm.expectRevert(CustodyStorage.EvidenceGateNotMet.selector);
         matureOne(lot);
         clock(5_151, 99_999);
         matureOne(lot);

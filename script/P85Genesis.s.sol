@@ -5,6 +5,7 @@ import {Script} from "forge-std/Script.sol";
 import {MockRootRecords} from "../test/p85/MockRootRecords.sol";
 import {PosFactory} from "../src/p85/PosFactory.sol";
 import {StakeCustody} from "../src/p85/StakeCustody.sol";
+import {CustodyGenesis} from "../src/p85/CustodyGenesis.sol";
 import {ElectionPolicy} from "../src/p85/ElectionPolicy.sol";
 import {Evidence} from "../src/p85/Evidence.sol";
 import {SelectionEngine} from "../src/p85/SelectionEngine.sol";
@@ -118,7 +119,14 @@ contract P85Genesis is Script {
         vm.deal(deployer, total);
         vm.startPrank(deployer);
         address f = vm.computeCreateAddress(deployer, vm.getNonce(deployer) + 5);
-        c.custody = address(new StakeCustody(f));
+        // The genesis implementation is created by its own fixed account, so it does not move the nonce the module and factory addresses are
+        // predicted from; it is part of the alloc (the custody's immutable names it, and it must keep reverting once genesis is sealed).
+        address implDeployer = address(uint160(uint256(keccak256("p85-genesis-impl-deployer"))));
+        vm.stopPrank();
+        vm.prank(implDeployer);
+        address genesisImpl = address(new CustodyGenesis(f));
+        vm.startPrank(deployer);
+        c.custody = address(new StakeCustody(f, genesisImpl));
         c.election = address(new ElectionPolicy(f));
         c.evidence = address(new Evidence(f));
         c.selection = address(new SelectionEngine());
@@ -130,6 +138,7 @@ contract P85Genesis is Script {
         string memory d = "deployment";
         vm.serializeAddress(d, "factory", address(factory));
         vm.serializeAddress(d, "custody", address(factory.CUSTODY()));
+        vm.serializeAddress(d, "genesisImpl", genesisImpl);
         vm.serializeAddress(d, "election", address(factory.ELECTION()));
         vm.serializeAddress(d, "evidence", address(factory.EVIDENCE()));
         vm.serializeAddress(d, "selection", address(factory.ELECTION().selection()));

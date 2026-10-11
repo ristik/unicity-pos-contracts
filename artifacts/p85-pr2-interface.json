@@ -308,6 +308,7 @@
     },
     "methodIdentifiers": {
       "FACTORY()": "2dd31000",
+      "GENESIS_IMPL()": "8934de5d",
       "acceptRoles(uint64,uint64,address,address)": "2eac4b90",
       "applyPenalty(bytes32,uint256)": "b06d3f5a",
       "applyRootRecords(uint32)": "1d2a0037",
