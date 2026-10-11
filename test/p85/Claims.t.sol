@@ -4,6 +4,7 @@ pragma solidity 0.8.37;
 import {P85Flow} from "./P85Flow.sol";
 import {Evidence} from "../../src/p85/Evidence.sol";
 import {StakeCustody} from "../../src/p85/StakeCustody.sol";
+import {CustodyStorage} from "../../src/p85/CustodyStorage.sol";
 
 /// @notice Claims are the only outflow. Credits are debited before the guarded transfer, a failing
 /// recipient only reverts its own claim, and unsolicited value is surplus with no entitlement.
@@ -32,7 +33,7 @@ contract ClaimsTest is P85Flow {
         uint256 credits = custody.totalCredits();
         uint256 balance = address(custody).balance;
         vm.expectEmit(true, true, false, true, address(custody));
-        emit StakeCustody.CreditClaimed(reporter, payee, 4e17);
+        emit CustodyStorage.CreditClaimed(reporter, payee, 4e17);
         vm.prank(reporter);
         custody.claim(4e17, payee);
         assertEq(payee.balance, 4e17);
@@ -45,11 +46,11 @@ contract ClaimsTest is P85Flow {
     function test_claimRejectsZeroAmountZeroRecipientAndOverdraw() public {
         _credit(reporter);
         vm.startPrank(reporter);
-        vm.expectRevert(StakeCustody.ZeroValue.selector);
+        vm.expectRevert(CustodyStorage.ZeroValue.selector);
         custody.claim(0, reporter);
-        vm.expectRevert(StakeCustody.ZeroAddress.selector);
+        vm.expectRevert(CustodyStorage.ZeroAddress.selector);
         custody.claim(1, address(0));
-        vm.expectRevert(StakeCustody.InsufficientCredit.selector);
+        vm.expectRevert(CustodyStorage.InsufficientCredit.selector);
         custody.claim(1 * UCT + 1, reporter);
         vm.stopPrank();
     }
@@ -58,11 +59,11 @@ contract ClaimsTest is P85Flow {
         _credit(reporter);
         address thief = makeAddr("thief");
         vm.prank(thief);
-        vm.expectRevert(StakeCustody.InsufficientCredit.selector);
+        vm.expectRevert(CustodyStorage.InsufficientCredit.selector);
         custody.claim(1, thief);
         // the treasury's credit is likewise only the treasury's
         vm.prank(reporter);
-        vm.expectRevert(StakeCustody.InsufficientCredit.selector);
+        vm.expectRevert(CustodyStorage.InsufficientCredit.selector);
         custody.claim(9 * UCT, reporter);
     }
 
@@ -71,7 +72,7 @@ contract ClaimsTest is P85Flow {
         RejectEther rejecter = new RejectEther();
         uint256 before_ = custody.credit(reporter);
         vm.prank(reporter);
-        vm.expectRevert(StakeCustody.TransferFailed.selector);
+        vm.expectRevert(CustodyStorage.TransferFailed.selector);
         custody.claim(1 * UCT, address(rejecter));
         assertEq(custody.credit(reporter), before_, "a failed claim rolls back its debit");
         // another creditor is not trapped by the failure
@@ -107,7 +108,7 @@ contract ClaimsTest is P85Flow {
         assertEq(custody.totalCredits(), 0);
         // nobody holds a credit for it
         vm.prank(reporter);
-        vm.expectRevert(StakeCustody.InsufficientCredit.selector);
+        vm.expectRevert(CustodyStorage.InsufficientCredit.selector);
         custody.claim(1, reporter);
         assertConserved();
     }

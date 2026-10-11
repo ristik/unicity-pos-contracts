@@ -3,6 +3,7 @@ pragma solidity 0.8.37;
 
 import {P85Flow} from "./P85Flow.sol";
 import {StakeCustody} from "../../src/p85/StakeCustody.sol";
+import {CustodyStorage} from "../../src/p85/CustodyStorage.sol";
 import {ReserveInput, ReserveMember, RecordKind, RecoveryAckData} from "../../src/p85/P85Types.sol";
 
 /// @notice reserveCandidate: exact primary lots, primary coverage and eligibility, and the session
@@ -50,7 +51,7 @@ contract ReservationTest is P85Flow {
 
     function test_reserveOnlyByElection() public {
         ReserveInput memory in_ = _input(RES_J, ASG_J);
-        vm.expectRevert(StakeCustody.NotElection.selector);
+        vm.expectRevert(CustodyStorage.NotElection.selector);
         custody.reserveCandidate(in_);
     }
 
@@ -58,15 +59,15 @@ contract ReservationTest is P85Flow {
         reserve(RES_J, ASG_J, allMembers(), 1);
         ReserveInput memory in_ = _input(RES_J, ASG_J2); // same result, new assignment
         vm.prank(address(election));
-        vm.expectRevert(StakeCustody.SessionExists.selector);
+        vm.expectRevert(CustodyStorage.SessionExists.selector);
         custody.reserveCandidate(in_);
         in_ = _input(RES_J2, ASG_J); // new result, same assignment
         vm.prank(address(election));
-        vm.expectRevert(StakeCustody.AssignmentExists.selector);
+        vm.expectRevert(CustodyStorage.AssignmentExists.selector);
         custody.reserveCandidate(in_);
         in_ = _input(RES_J2, bytes32(0));
         vm.prank(address(election));
-        vm.expectRevert(StakeCustody.AssignmentExists.selector);
+        vm.expectRevert(CustodyStorage.AssignmentExists.selector);
         custody.reserveCandidate(in_);
     }
 
@@ -74,7 +75,7 @@ contract ReservationTest is P85Flow {
         ReserveInput memory in_ = _input(RES_J, ASG_J);
         in_.incumbentAssignmentID = keccak256("stale");
         vm.prank(address(election));
-        vm.expectRevert(StakeCustody.IncumbentMismatch.selector);
+        vm.expectRevert(CustodyStorage.IncumbentMismatch.selector);
         custody.reserveCandidate(in_);
     }
 
@@ -82,7 +83,7 @@ contract ReservationTest is P85Flow {
         ReserveInput memory in_ = _input(RES_J, ASG_J);
         in_.lineage = keccak256("foreign lineage");
         vm.prank(address(election));
-        vm.expectRevert(StakeCustody.LineageMismatch.selector);
+        vm.expectRevert(CustodyStorage.LineageMismatch.selector);
         custody.reserveCandidate(in_);
     }
 
@@ -90,17 +91,17 @@ contract ReservationTest is P85Flow {
         ReserveInput memory in_ = _input(RES_J, ASG_J);
         in_.members = new ReserveMember[](0);
         vm.prank(address(election));
-        vm.expectRevert(StakeCustody.InvalidMemberCount.selector);
+        vm.expectRevert(CustodyStorage.InvalidMemberCount.selector);
         custody.reserveCandidate(in_);
         in_ = _input(RES_J, ASG_J);
         (in_.members[0], in_.members[1]) = (in_.members[1], in_.members[0]);
         vm.prank(address(election));
-        vm.expectRevert(StakeCustody.MembersUnsorted.selector);
+        vm.expectRevert(CustodyStorage.MembersUnsorted.selector);
         custody.reserveCandidate(in_);
         in_ = _input(RES_J, ASG_J);
         in_.members[1] = in_.members[0]; // duplicate identity
         vm.prank(address(election));
-        vm.expectRevert(StakeCustody.MembersUnsorted.selector);
+        vm.expectRevert(CustodyStorage.MembersUnsorted.selector);
         custody.reserveCandidate(in_);
     }
 
@@ -108,7 +109,7 @@ contract ReservationTest is P85Flow {
         ReserveInput memory in_ = _input(RES_J, ASG_J);
         in_.members[3].id = 99;
         vm.prank(address(election));
-        vm.expectRevert(StakeCustody.UnknownIdentity.selector);
+        vm.expectRevert(CustodyStorage.UnknownIdentity.selector);
         custody.reserveCandidate(in_);
     }
 
@@ -116,7 +117,7 @@ contract ReservationTest is P85Flow {
         requestRetirement(2);
         ReserveInput memory in_ = _input(RES_J, ASG_J);
         vm.prank(address(election));
-        vm.expectRevert(StakeCustody.PrimaryRetiring.selector);
+        vm.expectRevert(CustodyStorage.PrimaryRetiring.selector);
         custody.reserveCandidate(in_);
     }
 
@@ -133,13 +134,13 @@ contract ReservationTest is P85Flow {
         ReserveInput memory in_ = _input(RES_J, ASG_J);
         in_.members[0].weight = 0;
         vm.prank(address(election));
-        vm.expectRevert(StakeCustody.ZeroWeight.selector);
+        vm.expectRevert(CustodyStorage.ZeroWeight.selector);
         custody.reserveCandidate(in_);
         in_ = _input(RES_J, ASG_J);
         in_.members[0].weight = 11; // 1,100 UCT of weight against 1,000 UCT backing
         in_.members[0].rawWeight = 11;
         vm.prank(address(election));
-        vm.expectRevert(StakeCustody.InsufficientCoverage.selector);
+        vm.expectRevert(CustodyStorage.InsufficientCoverage.selector);
         custody.reserveCandidate(in_);
         in_ = _input(RES_J, ASG_J);
         in_.members[0].weight = 10; // exactly covered is fine
@@ -154,7 +155,7 @@ contract ReservationTest is P85Flow {
         in_.members[0].weight = 5;
         in_.members[0].rawWeight = 11; // 1,100 UCT against 1,000 UCT backing
         vm.prank(address(election));
-        vm.expectRevert(StakeCustody.InsufficientCoverage.selector);
+        vm.expectRevert(CustodyStorage.InsufficientCoverage.selector);
         custody.reserveCandidate(in_);
         in_ = _input(RES_J, ASG_J);
         in_.members[0].weight = 5;
@@ -169,17 +170,17 @@ contract ReservationTest is P85Flow {
         ReserveInput memory in_ = _input(RES_J, ASG_J);
         in_.members[0].rootKeyHash = keccak256("not a key of this identity");
         vm.prank(address(election));
-        vm.expectRevert(StakeCustody.WrongKey.selector);
+        vm.expectRevert(CustodyStorage.WrongKey.selector);
         custody.reserveCandidate(in_);
         in_ = _input(RES_J, ASG_J);
         in_.members[0].evmKeyHash = in_.members[1].evmKeyHash; // another identity's EVM key
         vm.prank(address(election));
-        vm.expectRevert(StakeCustody.WrongKey.selector);
+        vm.expectRevert(CustodyStorage.WrongKey.selector);
         custody.reserveCandidate(in_);
         in_ = _input(RES_J, ASG_J);
         in_.members[0].evmKeyHash = keccak256("unregistered evm key");
         vm.prank(address(election));
-        vm.expectRevert(StakeCustody.WrongKey.selector);
+        vm.expectRevert(CustodyStorage.WrongKey.selector);
         custody.reserveCandidate(in_);
     }
 
@@ -187,7 +188,7 @@ contract ReservationTest is P85Flow {
         ReserveInput memory in_ = _input(RES_J, ASG_J);
         in_.members[0].operatorPayee = address(0);
         vm.prank(address(election));
-        vm.expectRevert(StakeCustody.ZeroAddress.selector);
+        vm.expectRevert(CustodyStorage.ZeroAddress.selector);
         custody.reserveCandidate(in_);
     }
 
@@ -202,7 +203,7 @@ contract ReservationTest is P85Flow {
         missing[0] = full[0];
         in_.members[0].lotIDs = missing;
         vm.prank(address(election));
-        vm.expectRevert(StakeCustody.LotSetMismatch.selector);
+        vm.expectRevert(CustodyStorage.LotSetMismatch.selector);
         custody.reserveCandidate(in_);
 
         // right count but duplicated entry
@@ -211,7 +212,7 @@ contract ReservationTest is P85Flow {
         dup[1] = full[0];
         in_.members[0].lotIDs = dup;
         vm.prank(address(election));
-        vm.expectRevert(StakeCustody.LotSetMismatch.selector);
+        vm.expectRevert(CustodyStorage.LotSetMismatch.selector);
         custody.reserveCandidate(in_);
 
         // right count but descending
@@ -220,7 +221,7 @@ contract ReservationTest is P85Flow {
         desc[1] = full[0];
         in_.members[0].lotIDs = desc;
         vm.prank(address(election));
-        vm.expectRevert(StakeCustody.LotSetMismatch.selector);
+        vm.expectRevert(CustodyStorage.LotSetMismatch.selector);
         custody.reserveCandidate(in_);
 
         // both lots reserved: accepted, including the dust lot
@@ -236,12 +237,12 @@ contract ReservationTest is P85Flow {
         ReserveInput memory in_ = _input(RES_J, ASG_J);
         in_.members[0].lotIDs[0] = lotOf(gid(1)); // identity 2's lot listed for identity 1
         vm.prank(address(election));
-        vm.expectRevert(StakeCustody.LotNotEligible.selector);
+        vm.expectRevert(CustodyStorage.LotNotEligible.selector);
         custody.reserveCandidate(in_);
         in_ = _input(RES_J, ASG_J);
         in_.members[0].lotIDs[0] = 9_999; // unknown lot
         vm.prank(address(election));
-        vm.expectRevert(StakeCustody.LotNotEligible.selector);
+        vm.expectRevert(CustodyStorage.LotNotEligible.selector);
         custody.reserveCandidate(in_);
     }
 
@@ -253,7 +254,7 @@ contract ReservationTest is P85Flow {
         assertEq(lotv(1).refCount, 3);
         ReserveInput memory in_ = _input(keccak256("res3"), keccak256("asg3"));
         vm.prank(address(election));
-        vm.expectRevert(StakeCustody.ReferenceCapacity.selector);
+        vm.expectRevert(CustodyStorage.ReferenceCapacity.selector);
         custody.reserveCandidate(in_);
     }
 
@@ -266,7 +267,7 @@ contract ReservationTest is P85Flow {
         ReserveInput memory in_ =
             _reserveInput(keccak256("res3"), keccak256("asg3"), allExcept(0), 3);
         vm.prank(address(election));
-        vm.expectRevert(StakeCustody.ReferenceCapacity.selector);
+        vm.expectRevert(CustodyStorage.ReferenceCapacity.selector);
         custody.reserveCandidate(in_);
     }
 
@@ -299,7 +300,7 @@ contract ReservationTest is P85Flow {
         in_.members[3].weight = 11; // last member fails coverage after three members were processed
         in_.members[3].rawWeight = 11;
         vm.prank(address(election));
-        vm.expectRevert(StakeCustody.InsufficientCoverage.selector);
+        vm.expectRevert(CustodyStorage.InsufficientCoverage.selector);
         custody.reserveCandidate(in_);
         (uint8 state,,,,,,,,,,,,,,,) = custody.assignments(ASG_J);
         assertEq(state, 0);
