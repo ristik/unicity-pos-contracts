@@ -261,6 +261,7 @@
       "NotNominated()": "9ceae3db",
       "NotOwner()": "30cd7471",
       "PenaltyAlreadyApplied()": "a5b39a2d",
+      "PendingClosureUnresolved()": "9d7354a9",
       "PrimaryRetiring()": "8238dee0",
       "RecordOutOfOrder()": "7b817be6",
       "RecordsPending()": "cb95d57d",
@@ -305,7 +306,6 @@
       "RootRecordsApplied(uint64,uint64,bytes32)": "0xd6a9be4f5981a0de27043f2e791b7cf89e39622ad5d32ff3ddeb48a8e7b6cdd3"
     },
     "methodIdentifiers": {
-      "BPS()": "249d39e9",
       "FACTORY()": "2dd31000",
       "acceptRoles(uint64,uint64,address,address)": "2eac4b90",
       "applyPenalty(bytes32,uint256)": "b06d3f5a",
@@ -323,8 +323,6 @@
       "exposureLots(bytes32)": "c03e0a67",
       "exposures(bytes32)": "ef1c0688",
       "generationLots(uint64,uint64)": "57ac7373",
-      "genesisAssignmentID()": "c4a9425e",
-      "genesisStarted()": "dd55a712",
       "initialize(bytes32,(bytes32,address,address,address,address,address,uint128,uint128,(uint32,uint32,uint32,uint32),(bytes32,bytes32,uint64,uint64,uint64)))": "c1e34a6b",
       "initialized()": "158ef93e",
       "keyOwner(bytes32)": "353ae2b4",
@@ -340,7 +338,6 @@
       "network()": "6739afca",
       "nextLotID()": "32c7c67b",
       "nextStakingID()": "d7e1a31d",
-      "penaltyApplied(bytes32,uint256)": "54d5342d",
       "policySource()": "b5e5f633",
       "policyTerms(bytes32)": "b1393267",
       "positions(uint64)": "60f3ce04",

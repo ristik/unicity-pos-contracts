@@ -475,8 +475,9 @@ contract RecordsTest is P85Flow {
         custody.applyRootRecords(1);
     }
 
-    function test_closureOfAnAssignmentThatIsNotActiveIsRejected() public {
-        reserve(RES_J, ASG_J, allMembers(), 1); // Reserved, not committed
+    function test_closureOfAnAssignmentThatIsNeitherActiveNorTheReservedJIsRejected() public {
+        // an assignment custody never reserved: the root cannot close it (the Reserved J of the open session is staged instead, see
+        // PendingClosureSpec)
         pushRecord(RecordKind.Closure, closureData(ASG_J, H_ROUND, "j"));
         vm.expectRevert(StakeCustody.AssignmentNotActive.selector);
         custody.applyRootRecords(1);

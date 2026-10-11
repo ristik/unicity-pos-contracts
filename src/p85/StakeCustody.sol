@@ -39,7 +39,7 @@ import {Quantize} from "./Quantize.sol";
 ///     balance = F + E + D + C + U,  F + E + D = sum(remaining),  C = sum(credits),  U >= 0.
 /// No proxy, delegatecall, arbitrary call, sweep, administrator withdrawal or module setter exists.
 contract StakeCustody is ReentrancyGuard {
-    uint256 public constant BPS = 10_000;
+    uint256 internal constant BPS = 10_000;
 
     // Lot categories: free bonded F, encumbered E, draining D; Released once matured into credit.
     uint8 internal constant CAT_FREE = 1;
@@ -122,6 +122,7 @@ contract StakeCustody is ReentrancyGuard {
     error UnknownSession();
     error AssignmentNotReserved();
     error AssignmentNotActive();
+    error PendingClosureUnresolved();
     error ClosureDigestMismatch();
     error ConflictingClosure();
     error HRoundMismatch();
@@ -217,9 +218,9 @@ contract StakeCustody is ReentrancyGuard {
     }
 
     address public immutable FACTORY;
-    bool public genesisStarted;
+    bool internal genesisStarted;
     bool public initialized;
-    bytes32 public genesisAssignmentID;
+    bytes32 internal genesisAssignmentID;
     bytes32 public manifestHash;
     bytes32 public network;
     address public election;
@@ -259,7 +260,11 @@ contract StakeCustody is ReentrancyGuard {
     mapping(bytes32 => mapping(uint256 => bool)) internal _exposureHasLot;
     mapping(bytes32 => Session) internal _sessions;
     mapping(bytes32 => uint256) public caseDebited;
-    mapping(bytes32 => mapping(uint256 => bool)) public penaltyApplied;
+    mapping(bytes32 => mapping(uint256 => bool)) internal penaltyApplied;
+    /// @dev The Reserved J whose closure the root ordered before the session's resolving record, zero when none. Its closure identity and anchors
+    /// wait in J's own Assignment (closureKey, hRound, pClose, tClose), unused until J activates; the RecoveryAck applies them. Appended last: no
+    /// existing slot moves.
+    bytes32 internal pendingAssignment;
 
     /// @param factory_ the deployment factory that will initialize this module, fixed at construction. The module is deployed first so
     /// the factory's own creation code stays small; only that factory can initialize it, and it can do so once.
@@ -677,12 +682,33 @@ contract StakeCustody is ReentrancyGuard {
     }
 
     /// @dev Exact pre-H abort or ordered rejection: closes only this attempt.
-    function _closeSession(SessionClosedData memory d) private {
-        Session storage s = _sessions[d.resultID];
+    /// @dev The open session of a result and its Reserved assignment: the resolving records' common precondition.
+    function _openSession(bytes32 resultID, bool recovers)
+        private
+        view
+        returns (Session storage s, Assignment storage j)
+    {
+        s = _sessions[resultID];
         if (s.state == 0) revert UnknownSession();
         if (s.state != SESSION_OPEN) revert SessionNotOpen();
-        Assignment storage j = assignments[s.assignmentID];
+        j = assignments[s.assignmentID];
         if (j.state != ASSIGN_RESERVED) revert AssignmentNotReserved();
+        // A saved J closure is resolved only by the RecoveryAck of J's own session: an ordinary Ack or a SessionClosed of J is an impossible
+        // root history, and a RecoveryAck of another session would leave the closure pending and derive a second K.
+        if (pendingAssignment != bytes32(0) && (pendingAssignment == s.assignmentID) != recovers) {
+            revert PendingClosureUnresolved();
+        }
+    }
+
+    function _activate(Assignment storage j, uint64 offset, uint64 firstRound) private {
+        j.state = ASSIGN_ACTIVE;
+        j.offset = offset;
+        j.firstRound = firstRound;
+        j.offsetSet = true;
+    }
+
+    function _closeSession(SessionClosedData memory d) private {
+        (Session storage s, Assignment storage j) = _openSession(d.resultID, false);
         j.state = ASSIGN_ABORTED;
         s.state = SESSION_CLOSED;
         for (uint256 i = 0; i < j.exposureIDs.length; ++i) {
@@ -692,16 +718,9 @@ contract StakeCustody is ReentrancyGuard {
     }
 
     function _acknowledge(AckData memory d) private {
-        Session storage s = _sessions[d.resultID];
-        if (s.state == 0) revert UnknownSession();
-        if (s.state != SESSION_OPEN) revert SessionNotOpen();
-        Assignment storage j = assignments[s.assignmentID];
-        if (j.state != ASSIGN_RESERVED) revert AssignmentNotReserved();
+        (Session storage s, Assignment storage j) = _openSession(d.resultID, false);
         if (s.incumbentAssignmentID != lastAckedAssignment) revert IncumbentMismatch();
-        j.state = ASSIGN_ACTIVE;
-        j.offset = d.offset;
-        j.firstRound = d.firstRound;
-        j.offsetSet = true;
+        _activate(j, d.offset, d.firstRound);
         _setH(assignments[s.incumbentAssignmentID], d.replacedHRound);
         // Root-key rotation activates only with committed membership.
         for (uint256 i = 0; i < j.exposureIDs.length; ++i) {
@@ -718,21 +737,17 @@ contract StakeCustody is ReentrancyGuard {
     /// @dev J committed H and never acknowledged; the exact incumbent slate K was committed and
     /// acknowledged instead. Derive K's exposures from the incumbent's locked records first.
     function _recover(RecoveryAckData memory d) private {
-        Session storage s = _sessions[d.resultID];
-        if (s.state == 0) revert UnknownSession();
-        if (s.state != SESSION_OPEN) revert SessionNotOpen();
-        Assignment storage j = assignments[s.assignmentID];
-        if (j.state != ASSIGN_RESERVED) revert AssignmentNotReserved();
+        (Session storage s, Assignment storage j) = _openSession(d.resultID, true);
         if (s.incumbentAssignmentID != lastAckedAssignment) revert IncumbentMismatch();
         Assignment storage incumbent = assignments[s.incumbentAssignmentID];
         if (d.recoveryAssignmentID == bytes32(0) || assignments[d.recoveryAssignmentID].state != 0)
         {
             revert AssignmentExists();
         }
-        j.state = ASSIGN_ACTIVE;
-        j.offset = d.jOffset;
-        j.firstRound = d.jFirstRound;
-        j.offsetSet = true;
+        if (pendingAssignment == s.assignmentID) {
+            if (j.hRound != d.jHRound) revert HRoundMismatch();
+        }
+        _activate(j, d.jOffset, d.jFirstRound);
         _setH(j, d.jHRound);
 
         Assignment storage k = assignments[d.recoveryAssignmentID];
@@ -767,6 +782,10 @@ contract StakeCustody is ReentrancyGuard {
         k.keyDigest = _digestKeys(k.exposureIDs);
         lastAckedAssignment = d.recoveryAssignmentID;
         s.state = SESSION_RECOVERED;
+        if (pendingAssignment == s.assignmentID) {
+            pendingAssignment = bytes32(0);
+            _closeActive(s.assignmentID, j.closureKey, j.hRound, j.pClose, j.tClose, j);
+        }
         _unlockIncumbent(s.incumbentAssignmentID);
     }
 
@@ -783,7 +802,9 @@ contract StakeCustody is ReentrancyGuard {
     /// @dev CloseLiability: the first closure fixes p_close and its UC time; repeats are no-ops.
     function _closeLiability(ClosureData memory d, uint64 pClose, uint64 tClose) private {
         Assignment storage a = assignments[d.assignmentID];
-        if (a.state != ASSIGN_ACTIVE) revert AssignmentNotActive();
+        // The Reserved J of the open session can be closed by the root before custody learns how the session ends: the closure is saved with
+        // its own anchors and applied by the RecoveryAck that materializes J. Unknown and aborted assignments stay rejected.
+        if (a.state != ASSIGN_ACTIVE && a.state != ASSIGN_RESERVED) revert AssignmentNotActive();
         if (d.exposureDigest != a.exposureDigest || d.keyHistoryDigest != a.keyDigest) {
             revert ClosureDigestMismatch();
         }
@@ -792,18 +813,39 @@ contract StakeCustody is ReentrancyGuard {
         bytes32 key = keccak256(
             abi.encode(CLOSURE_DOMAIN, a.rootEpoch, d.hRecordID, d.hRound, d.terminalRoot)
         );
+        if (a.state == ASSIGN_ACTIVE) {
+            _closeActive(d.assignmentID, key, d.hRound, pClose, tClose, a);
+        } else if (pendingAssignment == bytes32(0)) {
+            pendingAssignment = d.assignmentID;
+            a.closureKey = key;
+            a.hRound = d.hRound;
+            a.pClose = pClose;
+            a.tClose = tClose;
+        } else if (pendingAssignment != d.assignmentID || a.closureKey != key) {
+            revert ConflictingClosure(); // an identical repeat keeps the first anchors; another assignment never shares the one slot
+        }
+    }
+
+    function _closeActive(
+        bytes32 assignmentID,
+        bytes32 key,
+        uint64 hRound,
+        uint64 pClose,
+        uint64 tClose,
+        Assignment storage a
+    ) private {
         if (a.closed) {
             if (a.closureKey != key) revert ConflictingClosure();
             return;
         }
-        _setH(a, d.hRound);
+        _setH(a, hRound);
         a.closed = true;
         a.closureKey = key;
         a.pClose = pClose;
         a.tClose = tClose;
         uint64 endProgress = a.offset + (a.hRound - a.firstRound);
         uint64 anchor = endProgress > pClose ? endProgress : pClose;
-        Policy memory terms = IPolicySource(policySource).policyAt(a.policyID);
+        Policy memory terms = policyTerms(assignmentID);
         uint64 hold = terms.holdNormal > terms.holdSuffix ? terms.holdNormal : terms.holdSuffix;
         uint64 window = terms.evidenceWindow > terms.suffixEvidenceWindow
             ? terms.evidenceWindow
@@ -822,7 +864,7 @@ contract StakeCustody is ReentrancyGuard {
             }
             _releaseIfClear(e);
         }
-        emit LiabilityClosed(d.assignmentID, pClose, tClose, anchor);
+        emit LiabilityClosed(assignmentID, pClose, tClose, anchor);
     }
 
     function _importRetirement(RetirementData memory d, uint64 pRet, uint64 tRet) private {
@@ -858,8 +900,7 @@ contract StakeCustody is ReentrancyGuard {
         if (!_exposureHasLot[exposureID][lotID]) revert LotNotInExposure();
         penaltyApplied[caseID][lotID] = true;
         Lot storage l = lots[lotID];
-        Policy memory terms = IPolicySource(policySource)
-            .policyAt(assignments[exposures[exposureID].assignmentID].policyID);
+        Policy memory terms = policyTerms(exposures[exposureID].assignmentID);
         uint256 budgetLeft = c.budget - caseDebited[caseID];
         uint256 capRoom = (uint256(l.initial) * l.capBps) / BPS - l.penalized;
         // capRoom <= remaining always holds (cap <= 100% of initial and remaining = initial - penalized
@@ -901,7 +942,9 @@ contract StakeCustody is ReentrancyGuard {
     function mature(uint256[] calldata lotIDs) external nonReentrant whenInitialized {
         if (lotIDs.length == 0) revert EmptyBatch();
         if (lotIDs.length > limits.maxBatch) revert BatchTooLarge();
-        if (recordCursor != IRootRecords(roots).recordCount()) revert RecordsPending();
+        if (recordCursor != IRootRecords(roots).recordCount() || pendingAssignment != bytes32(0)) {
+            revert RecordsPending();
+        }
         uint64 p = IRootRecords(roots).progress();
         uint64 t = IRootRecords(roots).ucTime();
         for (uint256 i = 0; i < lotIDs.length; ++i) {
