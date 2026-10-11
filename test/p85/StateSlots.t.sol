@@ -4,6 +4,7 @@ pragma solidity 0.8.37;
 import {P85Flow} from "./P85Flow.sol";
 import {RecordKind} from "../../src/p85/P85Types.sol";
 import {StakeCustody} from "../../src/p85/StakeCustody.sol";
+import {CustodyStorage} from "../../src/p85/CustodyStorage.sol";
 
 /// @notice The custody storage the root authenticates with Ethereum storage proofs (briefs/p85-pr1c-control-records.md sections 3 and 4):
 /// for each scenario, the exact storage slots the public getters read, recorded by the EVM itself (`vm.accesses`), with their words, and
@@ -189,7 +190,7 @@ contract StateSlotsTest is P85Flow {
     }
 
     function _reject(string memory name, bytes32 resultID) internal returns (string memory) {
-        StakeCustody.Session memory s = custody.session(resultID);
+        CustodyStorage.Session memory s = custody.session(resultID);
         uint8 asgState = _assignmentState(s.assignmentID);
         return string.concat(
             '{"name":"',

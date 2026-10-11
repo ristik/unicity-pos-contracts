@@ -3,6 +3,7 @@ pragma solidity 0.8.37;
 
 import {P85Flow} from "./P85Flow.sol";
 import {StakeCustody} from "../../src/p85/StakeCustody.sol";
+import {CustodyStorage} from "../../src/p85/CustodyStorage.sol";
 import {ElectionPolicy} from "../../src/p85/ElectionPolicy.sol";
 import {Evidence} from "../../src/p85/Evidence.sol";
 import {UncheckedPolicy} from "./UncheckedPolicy.sol";
@@ -328,7 +329,7 @@ contract PendingClosureSpecTest is P85Flow {
         ClosureData memory d = _mutatedClosure(ASG_J, J_H, "j");
         d.hRecordID = keccak256("another H record");
         pushRecord(RecordKind.Closure, abi.encode(d));
-        vm.expectRevert(StakeCustody.ConflictingClosure.selector);
+        vm.expectRevert(CustodyStorage.ConflictingClosure.selector);
         custody.applyRootRecords(1);
     }
 
@@ -337,7 +338,7 @@ contract PendingClosureSpecTest is P85Flow {
         ClosureData memory d = _mutatedClosure(ASG_J, J_H, "j");
         d.terminalRoot = keccak256("another terminal root");
         pushRecord(RecordKind.Closure, abi.encode(d));
-        vm.expectRevert(StakeCustody.ConflictingClosure.selector);
+        vm.expectRevert(CustodyStorage.ConflictingClosure.selector);
         custody.applyRootRecords(1);
     }
 
@@ -346,7 +347,7 @@ contract PendingClosureSpecTest is P85Flow {
         ClosureData memory d = _mutatedClosure(ASG_J, J_H, "j");
         d.hRound = J_H + 1;
         pushRecord(RecordKind.Closure, abi.encode(d));
-        vm.expectRevert(StakeCustody.ConflictingClosure.selector);
+        vm.expectRevert(CustodyStorage.ConflictingClosure.selector);
         custody.applyRootRecords(1);
     }
 
@@ -356,7 +357,7 @@ contract PendingClosureSpecTest is P85Flow {
         ClosureData memory d = _mutatedClosure(ASG_J, J_H, "j");
         d.hRecordID = keccak256("another H record");
         pushRecord(RecordKind.Closure, abi.encode(d));
-        vm.expectRevert(StakeCustody.ConflictingClosure.selector);
+        vm.expectRevert(CustodyStorage.ConflictingClosure.selector);
         custody.applyRootRecords(1);
     }
 
@@ -370,7 +371,7 @@ contract PendingClosureSpecTest is P85Flow {
         pushRecord(RecordKind.Closure, closureData(ASG_J, J_H, "j"));
         custody.applyRootRecords(1);
         pushRecord(RecordKind.Closure, closureData(ASG_J2, J_H, "j"));
-        vm.expectRevert(StakeCustody.ConflictingClosure.selector);
+        vm.expectRevert(CustodyStorage.ConflictingClosure.selector);
         custody.applyRootRecords(1);
         assertEq(custody.recordCursor(), 1, "the second closure is not consumed");
     }
@@ -382,7 +383,7 @@ contract PendingClosureSpecTest is P85Flow {
         d.exposureDigest = g.exposureDigest;
         d.keyHistoryDigest = g.keyHistoryDigest;
         pushRecord(RecordKind.Closure, abi.encode(d));
-        vm.expectRevert(StakeCustody.ClosureDigestMismatch.selector);
+        vm.expectRevert(CustodyStorage.ClosureDigestMismatch.selector);
         custody.applyRootRecords(1);
     }
 
@@ -391,7 +392,7 @@ contract PendingClosureSpecTest is P85Flow {
         ClosureData memory d = _mutatedClosure(ASG_J, J_H, "j");
         d.exposureDigest = keccak256("tampered");
         pushRecord(RecordKind.Closure, abi.encode(d));
-        vm.expectRevert(StakeCustody.ClosureDigestMismatch.selector);
+        vm.expectRevert(CustodyStorage.ClosureDigestMismatch.selector);
         custody.applyRootRecords(1);
     }
 
@@ -400,7 +401,7 @@ contract PendingClosureSpecTest is P85Flow {
         ClosureData memory d = _mutatedClosure(ASG_J, J_H, "j");
         d.keyHistoryDigest = keccak256("tampered");
         pushRecord(RecordKind.Closure, abi.encode(d));
-        vm.expectRevert(StakeCustody.ClosureDigestMismatch.selector);
+        vm.expectRevert(CustodyStorage.ClosureDigestMismatch.selector);
         custody.applyRootRecords(1);
     }
 
@@ -409,13 +410,13 @@ contract PendingClosureSpecTest is P85Flow {
     {
         // an assignment custody has never seen: no pending state is created for it
         pushRecord(RecordKind.Closure, closureData(ASG_J, J_H, "j"));
-        vm.expectRevert(StakeCustody.AssignmentNotActive.selector);
+        vm.expectRevert(CustodyStorage.AssignmentNotActive.selector);
         custody.applyRootRecords(1);
         // K exists only once the RecoveryAck derives it: its closure cannot precede that record
         setUp();
         _stageG_J();
         pushRecord(RecordKind.Closure, closureData(ASG_K, K_H, "k"));
-        vm.expectRevert(StakeCustody.AssignmentNotActive.selector);
+        vm.expectRevert(CustodyStorage.AssignmentNotActive.selector);
         custody.applyRootRecords(1);
     }
 
@@ -424,7 +425,7 @@ contract PendingClosureSpecTest is P85Flow {
         pushRecord(RecordKind.SessionClosed, abi.encode(SessionClosedData(RES_J)));
         applyAll();
         pushRecord(RecordKind.Closure, closureData(ASG_J, J_H, "j"));
-        vm.expectRevert(StakeCustody.AssignmentNotActive.selector);
+        vm.expectRevert(CustodyStorage.AssignmentNotActive.selector);
         custody.applyRootRecords(1);
     }
 
@@ -438,7 +439,7 @@ contract PendingClosureSpecTest is P85Flow {
         bytes32 staged = _fingerprint();
         clock(150, 1_200);
         pushRecord(RecordKind.RecoveryAck, _recoveryAck(RES_J, ASG_K));
-        vm.expectRevert(StakeCustody.HRoundMismatch.selector);
+        vm.expectRevert(CustodyStorage.HRoundMismatch.selector);
         custody.applyRootRecords(1);
         assertEq(_fingerprint(), staged, "atomic: the failed recovery changed nothing");
         assertEq(custody.recordCursor(), 1);
@@ -484,7 +485,7 @@ contract PendingClosureSpecTest is P85Flow {
         applyAll();
         bytes32 after_ = _fingerprint();
         pushRecord(RecordKind.RecoveryAck, _recoveryAck(RES_J, keccak256("assignment/K2")));
-        vm.expectRevert(StakeCustody.SessionNotOpen.selector);
+        vm.expectRevert(CustodyStorage.SessionNotOpen.selector);
         custody.applyRootRecords(1);
         assertEq(_fingerprint(), after_);
     }
@@ -506,7 +507,7 @@ contract PendingClosureSpecTest is P85Flow {
                 RecoveryAckData(RES_J2, keccak256("assignment/K2"), 100, 101, J_H, 130, 131, 3, 3)
             )
         );
-        vm.expectRevert(StakeCustody.IncumbentMismatch.selector);
+        vm.expectRevert(CustodyStorage.IncumbentMismatch.selector);
         custody.applyRootRecords(1);
     }
 
@@ -534,7 +535,7 @@ contract PendingClosureSpecTest is P85Flow {
             "the registry is fully consumed: cursor equality holds"
         );
         clock(3_000, 9_000);
-        vm.expectRevert(StakeCustody.RecordsPending.selector);
+        vm.expectRevert(CustodyStorage.RecordsPending.selector);
         matureOne(lot);
         // the RecoveryAck resolves the pending state; the same lot, the same clock, now matures
         pushRecord(RecordKind.RecoveryAck, _recoveryAck(RES_J, ASG_K));
@@ -607,7 +608,7 @@ contract PendingClosureSpecTest is P85Flow {
             RecordKind.Retirement,
             abi.encode(RetirementData(gid(0), 1, custody.exposureChain(gid(0), 1)))
         );
-        vm.expectRevert(StakeCustody.RefsStillLive.selector);
+        vm.expectRevert(CustodyStorage.RefsStillLive.selector);
         custody.applyRootRecords(1);
     }
 
@@ -625,7 +626,7 @@ contract PendingClosureSpecTest is P85Flow {
             RecordKind.Retirement,
             abi.encode(RetirementData(gid(0), 1, custody.exposureChain(gid(0), 1)))
         );
-        vm.expectRevert(StakeCustody.RefsStillLive.selector);
+        vm.expectRevert(CustodyStorage.RefsStillLive.selector);
         custody.applyRootRecords(1);
     }
 
@@ -643,10 +644,10 @@ contract PendingClosureSpecTest is P85Flow {
         uint256 lot = lotOf(gid(0));
         // round gate: p > max(210 + 2000, 200 + 2000); UC gate: t >= max(1600, 1500) + 3600
         clock(2_210, 5_199);
-        vm.expectRevert(StakeCustody.RoundGateNotMet.selector);
+        vm.expectRevert(CustodyStorage.RoundGateNotMet.selector);
         matureOne(lot);
         clock(2_211, 5_199);
-        vm.expectRevert(StakeCustody.TimeGateNotMet.selector);
+        vm.expectRevert(CustodyStorage.TimeGateNotMet.selector);
         matureOne(lot);
         clock(2_211, 5_200);
         matureOne(lot);
@@ -784,7 +785,7 @@ contract PendingClosureSpecTest is P85Flow {
         _pushGJClosures();
         pushRecord(RecordKind.Closure, closureData(ASG_K, K_H, "k")); // K is unknown: reverts
         bytes32 before_ = _fingerprint();
-        vm.expectRevert(StakeCustody.AssignmentNotActive.selector);
+        vm.expectRevert(CustodyStorage.AssignmentNotActive.selector);
         custody.applyRootRecords(3);
         assertEq(_fingerprint(), before_, "no cursor or state advance, nothing swallowed");
         assertEq(custody.recordCursor(), 0);
@@ -807,7 +808,7 @@ contract PendingClosureSpecTest is P85Flow {
             )
         );
         bytes32 before_ = _fingerprint();
-        vm.expectRevert(StakeCustody.RecordOutOfOrder.selector);
+        vm.expectRevert(CustodyStorage.RecordOutOfOrder.selector);
         custody.applyRootRecords(3);
         assertEq(_fingerprint(), before_);
         assertEq(custody.recordCursor(), 0);
@@ -829,7 +830,7 @@ contract PendingClosureSpecTest is P85Flow {
                 _recoveryAck(RES_J, ASG_K)
             )
         );
-        vm.expectRevert(StakeCustody.RecordOutOfOrder.selector);
+        vm.expectRevert(CustodyStorage.RecordOutOfOrder.selector);
         custody.applyRootRecords(1);
         assertEq(_fingerprint(), staged);
     }

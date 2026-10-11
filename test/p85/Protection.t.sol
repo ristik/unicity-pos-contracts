@@ -5,6 +5,7 @@ import {P85Flow} from "./P85Flow.sol";
 import {MockRootRecords} from "./MockRootRecords.sol";
 import {UncheckedPolicy} from "./UncheckedPolicy.sol";
 import {StakeCustody} from "../../src/p85/StakeCustody.sol";
+import {CustodyStorage} from "../../src/p85/CustodyStorage.sol";
 import {
     Policy,
     Limits,
@@ -117,10 +118,10 @@ contract ProtectionTest is P85Flow {
         // round gate: max(p_ret + 401, anchor 170 + 5,000) = 5,170 binds over 180 + 401.
         uint256 lot = lotOf(gid(1));
         clock(5_170, 6_399);
-        vm.expectRevert(StakeCustody.RoundGateNotMet.selector);
+        vm.expectRevert(CustodyStorage.RoundGateNotMet.selector);
         matureOne(lot);
         clock(5_171, 6_399);
-        vm.expectRevert(StakeCustody.TimeGateNotMet.selector);
+        vm.expectRevert(CustodyStorage.TimeGateNotMet.selector);
         matureOne(lot);
         clock(5_171, 6_400);
         matureOne(lot);
@@ -236,7 +237,7 @@ contract ProtectionTest is P85Flow {
         in_ = _reserveInput(RES_J, ASG_J, allMembers(), 1);
         in_.members[0].rootKeyHash = keccak256("a staged key would sit here");
         vm.prank(address(election));
-        vm.expectRevert(StakeCustody.WrongKey.selector); // only the current or staged key is allowed
+        vm.expectRevert(CustodyStorage.WrongKey.selector); // only the current or staged key is allowed
         custody.reserveCandidate(in_);
     }
 

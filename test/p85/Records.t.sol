@@ -3,6 +3,7 @@ pragma solidity 0.8.37;
 
 import {P85Flow} from "./P85Flow.sol";
 import {StakeCustody} from "../../src/p85/StakeCustody.sol";
+import {CustodyStorage} from "../../src/p85/CustodyStorage.sol";
 import {
     RootRecord,
     RecordKind,
@@ -46,7 +47,7 @@ contract RecordsTest is P85Flow {
                 abi.encode(SessionClosedData(RES_J))
             )
         );
-        vm.expectRevert(StakeCustody.RecordOutOfOrder.selector);
+        vm.expectRevert(CustodyStorage.RecordOutOfOrder.selector);
         custody.applyRootRecords(1);
     }
 
@@ -63,22 +64,22 @@ contract RecordsTest is P85Flow {
                 abi.encode(SessionClosedData(RES_J))
             )
         );
-        vm.expectRevert(StakeCustody.RecordOutOfOrder.selector);
+        vm.expectRevert(CustodyStorage.RecordOutOfOrder.selector);
         custody.applyRootRecords(1);
     }
 
     function test_unknownRecordKindIsRejected() public {
         pushRecord(RecordKind.None, "");
-        vm.expectRevert(StakeCustody.UnknownRecordKind.selector);
+        vm.expectRevert(CustodyStorage.UnknownRecordKind.selector);
         custody.applyRootRecords(1);
     }
 
     function test_batchBoundsAndEmptyPrefixAreRejected() public {
-        vm.expectRevert(StakeCustody.EmptyBatch.selector);
+        vm.expectRevert(CustodyStorage.EmptyBatch.selector);
         custody.applyRootRecords(0);
-        vm.expectRevert(StakeCustody.EmptyBatch.selector);
+        vm.expectRevert(CustodyStorage.EmptyBatch.selector);
         custody.applyRootRecords(1); // nothing pending
-        vm.expectRevert(StakeCustody.BatchTooLarge.selector);
+        vm.expectRevert(CustodyStorage.BatchTooLarge.selector);
         custody.applyRootRecords(33);
     }
 
@@ -86,12 +87,12 @@ contract RecordsTest is P85Flow {
         reserve(RES_J, ASG_J, allMembers(), 1);
         pushRecord(RecordKind.SessionClosed, abi.encode(SessionClosedData(RES_J)));
         pushRecord(RecordKind.SessionClosed, abi.encode(SessionClosedData(RES_J))); // closes twice
-        vm.expectRevert(StakeCustody.SessionNotOpen.selector);
+        vm.expectRevert(CustodyStorage.SessionNotOpen.selector);
         custody.applyRootRecords(2);
         assertEq(custody.recordCursor(), 0, "a failed batch applies nothing");
         custody.applyRootRecords(1);
         assertEq(custody.recordCursor(), 1);
-        vm.expectRevert(StakeCustody.SessionNotOpen.selector);
+        vm.expectRevert(CustodyStorage.SessionNotOpen.selector);
         custody.applyRootRecords(1); // the bad record stays at the head: fail closed
         assertEq(custody.recordCursor(), 1);
     }
@@ -125,14 +126,14 @@ contract RecordsTest is P85Flow {
 
     function test_sessionClosedRejectsUnknownSessions() public {
         pushRecord(RecordKind.SessionClosed, abi.encode(SessionClosedData(keccak256("none"))));
-        vm.expectRevert(StakeCustody.UnknownSession.selector);
+        vm.expectRevert(CustodyStorage.UnknownSession.selector);
         custody.applyRootRecords(1);
     }
 
     function test_sessionClosedCannotAbortAnAcknowledgedHandoff() public {
         handoffExcluding(0);
         pushRecord(RecordKind.SessionClosed, abi.encode(SessionClosedData(RES_J)));
-        vm.expectRevert(StakeCustody.SessionNotOpen.selector);
+        vm.expectRevert(CustodyStorage.SessionNotOpen.selector);
         custody.applyRootRecords(1);
     }
 
@@ -254,7 +255,7 @@ contract RecordsTest is P85Flow {
 
     function test_ackRejectsUnknownSessions() public {
         pushRecord(RecordKind.Ack, ackData(keccak256("none"), H_ROUND, 100, 101));
-        vm.expectRevert(StakeCustody.UnknownSession.selector);
+        vm.expectRevert(CustodyStorage.UnknownSession.selector);
         custody.applyRootRecords(1);
     }
 
@@ -263,7 +264,7 @@ contract RecordsTest is P85Flow {
         pushRecord(RecordKind.SessionClosed, abi.encode(SessionClosedData(RES_J)));
         pushRecord(RecordKind.Ack, ackData(RES_J, H_ROUND, 100, 101));
         custody.applyRootRecords(1);
-        vm.expectRevert(StakeCustody.SessionNotOpen.selector);
+        vm.expectRevert(CustodyStorage.SessionNotOpen.selector);
         custody.applyRootRecords(1);
     }
 
@@ -273,14 +274,14 @@ contract RecordsTest is P85Flow {
         pushRecord(RecordKind.Ack, ackData(RES_J, H_ROUND, 100, 101));
         pushRecord(RecordKind.Ack, ackData(RES_J2, H_ROUND, 100, 101)); // incumbent is now J
         custody.applyRootRecords(1);
-        vm.expectRevert(StakeCustody.IncumbentMismatch.selector);
+        vm.expectRevert(CustodyStorage.IncumbentMismatch.selector);
         custody.applyRootRecords(1);
     }
 
     function test_ackRejectsAReplacedRoundBeforeTheIncumbentsFirstRound() public {
         reserve(RES_J, ASG_J, allMembers(), 1);
         pushRecord(RecordKind.Ack, ackData(RES_J, 0, 100, 101)); // genesis first round is 1
-        vm.expectRevert(StakeCustody.HRoundBeforeActivation.selector);
+        vm.expectRevert(CustodyStorage.HRoundBeforeActivation.selector);
         custody.applyRootRecords(1);
     }
 
@@ -288,7 +289,7 @@ contract RecordsTest is P85Flow {
         handoffExcluding(0);
         clock(150, 1_200);
         pushRecord(RecordKind.Closure, closureData(GENESIS_ASSIGNMENT, H_ROUND + 1, "genesis"));
-        vm.expectRevert(StakeCustody.HRoundMismatch.selector);
+        vm.expectRevert(CustodyStorage.HRoundMismatch.selector);
         custody.applyRootRecords(1);
     }
 
@@ -377,7 +378,7 @@ contract RecordsTest is P85Flow {
             RecordKind.RecoveryAck,
             abi.encode(RecoveryAckData(RES_J, ASG_J, 100, 101, 130, 130, 131, 3, 3)) // ASG_J exists
         );
-        vm.expectRevert(StakeCustody.AssignmentExists.selector);
+        vm.expectRevert(CustodyStorage.AssignmentExists.selector);
         custody.applyRootRecords(1);
     }
 
@@ -387,14 +388,14 @@ contract RecordsTest is P85Flow {
             RecordKind.RecoveryAck,
             abi.encode(RecoveryAckData(RES_J, bytes32(0), 100, 101, 130, 130, 131, 3, 3))
         );
-        vm.expectRevert(StakeCustody.AssignmentExists.selector);
+        vm.expectRevert(CustodyStorage.AssignmentExists.selector);
         custody.applyRootRecords(1);
     }
 
     function test_recoveredSessionCannotBeAcknowledgedAgain() public {
         _recover();
         pushRecord(RecordKind.Ack, ackData(RES_J, H_ROUND, 100, 101));
-        vm.expectRevert(StakeCustody.SessionNotOpen.selector);
+        vm.expectRevert(CustodyStorage.SessionNotOpen.selector);
         custody.applyRootRecords(1);
     }
 
@@ -449,7 +450,7 @@ contract RecordsTest is P85Flow {
         closeGenesisAt(150, 1_200);
         clock(160, 1_300);
         pushRecord(RecordKind.Closure, closureData(GENESIS_ASSIGNMENT, H_ROUND, "another proof"));
-        vm.expectRevert(StakeCustody.ConflictingClosure.selector);
+        vm.expectRevert(CustodyStorage.ConflictingClosure.selector);
         custody.applyRootRecords(1);
     }
 
@@ -460,7 +461,7 @@ contract RecordsTest is P85Flow {
             abi.decode(closureData(GENESIS_ASSIGNMENT, H_ROUND, "genesis"), (ClosureData));
         d.exposureDigest = keccak256("tampered exposure digest");
         pushRecord(RecordKind.Closure, abi.encode(d));
-        vm.expectRevert(StakeCustody.ClosureDigestMismatch.selector);
+        vm.expectRevert(CustodyStorage.ClosureDigestMismatch.selector);
         custody.applyRootRecords(1);
     }
 
@@ -471,7 +472,7 @@ contract RecordsTest is P85Flow {
             abi.decode(closureData(GENESIS_ASSIGNMENT, H_ROUND, "genesis"), (ClosureData));
         d.keyHistoryDigest = keccak256("tampered key digest");
         pushRecord(RecordKind.Closure, abi.encode(d));
-        vm.expectRevert(StakeCustody.ClosureDigestMismatch.selector);
+        vm.expectRevert(CustodyStorage.ClosureDigestMismatch.selector);
         custody.applyRootRecords(1);
     }
 
@@ -479,7 +480,7 @@ contract RecordsTest is P85Flow {
         // an assignment custody never reserved: the root cannot close it (the Reserved J of the open session is staged instead, see
         // PendingClosureSpec)
         pushRecord(RecordKind.Closure, closureData(ASG_J, H_ROUND, "j"));
-        vm.expectRevert(StakeCustody.AssignmentNotActive.selector);
+        vm.expectRevert(CustodyStorage.AssignmentNotActive.selector);
         custody.applyRootRecords(1);
     }
 
@@ -510,27 +511,27 @@ contract RecordsTest is P85Flow {
 
     function test_retirementRecordNeedsARequest() public {
         pushRecord(RecordKind.Retirement, abi.encode(RetirementData(gid(0), 1, bytes32(0))));
-        vm.expectRevert(StakeCustody.RetirementNotRequested.selector);
+        vm.expectRevert(CustodyStorage.RetirementNotRequested.selector);
         custody.applyRootRecords(1);
     }
 
     function test_retirementRecordNeedsTheCurrentGeneration() public {
         requestRetirement(0);
         pushRecord(RecordKind.Retirement, abi.encode(RetirementData(gid(0), 2, bytes32(0))));
-        vm.expectRevert(StakeCustody.StaleGeneration.selector);
+        vm.expectRevert(CustodyStorage.StaleGeneration.selector);
         custody.applyRootRecords(1);
     }
 
     function test_retirementRecordForUnknownIdentityIsRejected() public {
         pushRecord(RecordKind.Retirement, abi.encode(RetirementData(99, 1, bytes32(0))));
-        vm.expectRevert(StakeCustody.UnknownIdentity.selector);
+        vm.expectRevert(CustodyStorage.UnknownIdentity.selector);
         custody.applyRootRecords(1);
     }
 
     function test_retirementRecordRejectedWhileReferencesAreLive() public {
         requestRetirement(0);
         retireRecordPushOnly(gid(0), 160, 1_210);
-        vm.expectRevert(StakeCustody.RefsStillLive.selector);
+        vm.expectRevert(CustodyStorage.RefsStillLive.selector);
         custody.applyRootRecords(1);
     }
 
@@ -542,7 +543,7 @@ contract RecordsTest is P85Flow {
         pushRecord(
             RecordKind.Retirement, abi.encode(RetirementData(gid(0), 1, keccak256("wrong digest")))
         );
-        vm.expectRevert(StakeCustody.RefDigestMismatch.selector);
+        vm.expectRevert(CustodyStorage.RefDigestMismatch.selector);
         custody.applyRootRecords(1);
     }
 
@@ -553,7 +554,7 @@ contract RecordsTest is P85Flow {
         pushRecord(RecordKind.Ack, ackData(RES_J, H_ROUND, 100, 101));
         closeGenesisAt(50, 1_200); // z = max(p(1,100) = 99, 50) = 99
         retireRecordPushOnly(gid(0), 98, 1_210); // p_ret = 98 < z = 99
-        vm.expectRevert(StakeCustody.RetirementBeforeLiability.selector);
+        vm.expectRevert(CustodyStorage.RetirementBeforeLiability.selector);
         custody.applyRootRecords(1);
     }
 
@@ -571,7 +572,7 @@ contract RecordsTest is P85Flow {
     function test_retirementCannotBeImportedTwice() public {
         reachMaturable(0);
         retireRecordPushOnly(gid(0), 170, 1_300);
-        vm.expectRevert(StakeCustody.RetirementAlreadyImported.selector);
+        vm.expectRevert(CustodyStorage.RetirementAlreadyImported.selector);
         custody.applyRootRecords(1);
     }
 

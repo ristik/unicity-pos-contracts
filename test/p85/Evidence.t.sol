@@ -5,6 +5,7 @@ import {P85Flow} from "./P85Flow.sol";
 import {UncheckedPolicy} from "./UncheckedPolicy.sol";
 import {Evidence} from "../../src/p85/Evidence.sol";
 import {StakeCustody} from "../../src/p85/StakeCustody.sol";
+import {CustodyStorage} from "../../src/p85/CustodyStorage.sol";
 import {CaseView} from "../../src/p85/IP85.sol";
 import {
     Policy,
@@ -298,7 +299,7 @@ contract EvidenceTest is P85Flow {
         bytes32 caseID = _submit(ROOT, rootPk(0), 1, 10, genesisExposure(0));
         clock(3_000, 5_000); // every other maturity gate is now open
         uint256 lot = lotOf(gid(0));
-        vm.expectRevert(StakeCustody.EvidenceHoldPending.selector);
+        vm.expectRevert(CustodyStorage.EvidenceHoldPending.selector);
         matureOne(lot);
         _settle(caseID, lot);
         assertEq(evidence.pendingHolds(lot), 0);
@@ -316,7 +317,7 @@ contract EvidenceTest is P85Flow {
         bytes32 caseID = _submit(ROOT, rootPk(0), 1, 10, genesisExposure(0));
         clock(9_000, 90_000); // far past every gate; settlement is simply delayed
         uint256 lot = lotOf(gid(0));
-        vm.expectRevert(StakeCustody.EvidenceHoldPending.selector);
+        vm.expectRevert(CustodyStorage.EvidenceHoldPending.selector);
         matureOne(lot);
         _settle(caseID, lot);
         matureOne(lot);
@@ -554,7 +555,7 @@ contract EvidenceTest is P85Flow {
         _submit(ROOT, rootPk(0), 1, 10, genesisExposure(0));
         ReserveInput memory in_ = _reserveInput(RES_J, ASG_J, allMembers(), 1);
         vm.prank(address(election));
-        vm.expectRevert(StakeCustody.IdentityExcluded.selector);
+        vm.expectRevert(CustodyStorage.IdentityExcluded.selector);
         custody.reserveCandidate(in_);
         // J without the excluded identity reserves, and K (the incumbent slate) still contains it
         reserve(RES_J, ASG_J, allExcept(0), 1);
@@ -576,10 +577,10 @@ contract EvidenceTest is P85Flow {
     }
 
     function test_applyPenaltyIsReservedToTheFixedEvidenceModule() public {
-        vm.expectRevert(StakeCustody.NotEvidence.selector);
+        vm.expectRevert(CustodyStorage.NotEvidence.selector);
         custody.applyPenalty(keccak256("case"), 1);
         vm.prank(address(election));
-        vm.expectRevert(StakeCustody.NotEvidence.selector);
+        vm.expectRevert(CustodyStorage.NotEvidence.selector);
         custody.applyPenalty(keccak256("case"), 1);
     }
 
@@ -589,16 +590,16 @@ contract EvidenceTest is P85Flow {
         uint256 otherLot = lotOf(gid(1));
         // a lot that the case's exposure does not contain
         vm.prank(address(evidence));
-        vm.expectRevert(StakeCustody.LotNotInExposure.selector);
+        vm.expectRevert(CustodyStorage.LotNotInExposure.selector);
         custody.applyPenalty(caseID, otherLot);
         // an unknown case has no exposure at all
         vm.prank(address(evidence));
-        vm.expectRevert(StakeCustody.LotNotInExposure.selector);
+        vm.expectRevert(CustodyStorage.LotNotInExposure.selector);
         custody.applyPenalty(keccak256("unknown case"), lot);
         // a settled (case, lot) pair cannot be debited again, even by the evidence module itself
         _settle(caseID, lot);
         vm.prank(address(evidence));
-        vm.expectRevert(StakeCustody.PenaltyAlreadyApplied.selector);
+        vm.expectRevert(CustodyStorage.PenaltyAlreadyApplied.selector);
         custody.applyPenalty(caseID, lot);
     }
 }

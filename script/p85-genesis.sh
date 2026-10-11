@@ -25,7 +25,7 @@ import json, sys
 work, out = sys.argv[1], sys.argv[2]
 state = json.load(open(f"{work}/state.json"))
 dep = json.load(open(f"{work}/deployment.json"))
-keep = {dep[k].lower() for k in ("factory", "custody", "election", "evidence", "selection", "reader", "policy")}
+keep = {dep[k].lower() for k in ("factory", "custody", "genesisImpl", "election", "evidence", "selection", "reader", "policy")}
 alloc = {}
 for addr, acct in state.items():
     if addr.lower() not in keep:

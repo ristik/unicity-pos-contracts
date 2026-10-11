@@ -6,6 +6,7 @@ import {MockRootRecords} from "./MockRootRecords.sol";
 import {ElectionPolicy} from "../../src/p85/ElectionPolicy.sol";
 import {Quantize} from "../../src/p85/Quantize.sol";
 import {StakeCustody} from "../../src/p85/StakeCustody.sol";
+import {CustodyStorage} from "../../src/p85/CustodyStorage.sol";
 import {
     ElectionParams,
     Limits,
@@ -267,7 +268,7 @@ contract ElectionGasTest is P85Flow {
 
         uint64 id = gid(0); // a genesis identity holds one lot
         bondFor(id, 100 * UCT); // the second of L = 2
-        vm.expectRevert(StakeCustody.LotCapacity.selector);
+        vm.expectRevert(CustodyStorage.LotCapacity.selector);
         this.bondExtra(id);
     }
 
