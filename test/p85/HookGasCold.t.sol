@@ -65,7 +65,9 @@ contract HookGasColdTest is P85Flow {
         (kind, V, L, C) = _env();
         if (bytes(kind).length == 0) return;
         if (keccak256(bytes(kind)) == keccak256("elect-heavy")) {
-            F = L == 1 ? (2 * Quantize.WEIGHT_CAP_B) / 10 + 1 : (2 * Quantize.WEIGHT_CAP_B) / (10 * C) + 1;
+            F = L == 1
+                ? (2 * Quantize.WEIGHT_CAP_B) / 10 + 1
+                : (2 * Quantize.WEIGHT_CAP_B) / (10 * C) + 1;
         }
         super.setUp();
         _populate();
@@ -114,7 +116,10 @@ contract HookGasColdTest is P85Flow {
     function test_measureCold() public {
         if (bytes(kind).length == 0) return; // not a measurement run
         uint256 used;
-        if (keccak256(bytes(kind)) == keccak256("elect") || keccak256(bytes(kind)) == keccak256("elect-heavy")) {
+        if (
+            keccak256(bytes(kind)) == keccak256("elect")
+                || keccak256(bytes(kind)) == keccak256("elect-heavy")
+        ) {
             vm.prank(SYS);
             uint256 b = gasleft();
             election.elect(keccak256("origin"));
@@ -124,8 +129,7 @@ contract HookGasColdTest is P85Flow {
             custody.applyRootRecords(1);
             used = b - gasleft();
         }
-        emit log_string(
-            string.concat(
+        emit log_string(string.concat(
                 "HOOK-GAS {\"kind\":\"",
                 kind,
                 "\",\"v\":",
@@ -137,8 +141,7 @@ contract HookGasColdTest is P85Flow {
                 ",\"cold_gas\":",
                 vm.toString(used),
                 "}"
-            )
-        );
+            ));
     }
 
     // --- scenario builders (as in ElectionGasTest) ------------------------------------------------------------------------------------

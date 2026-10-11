@@ -24,3 +24,9 @@ The profile reserves `H_records x hookRecordGas` for the records and `electGas` 
 | 128/8/32 | 2 x 38,063,747 = 76,127,494 | 80,800,475 | 156,927,969 | 52.2% |
 - These are the hook's terms only. The 300,887,744 includes the B1 import and finalize terms of the lane's profile; a profile with larger caps must recompute the whole system envelope ("never accept because each call fits g_sys separately"): the hook share alone is 52% of the lane's pinned figure at the profile ceiling.
 - Not measured: a closure of an Active J that is the incumbent of a pending session (the session locks only defer the release), and committees of different lot counts per member (the worst case here is uniform, `lMax` per member). The RecoveryAck dominates every record, as it should: it derives K and closes J in one record.
+
+## What the figures do not include
+
+- **The real registry's `recordAt` cost.** The records come from `MockRootRecords` here, called by the test contract; the real SealRegistry reads the record (index, id, predecessor, kind, anchors, the payload words) from its fixed slots on every `recordAt`, and the hook itself makes the gate reads (`HookReadsGas`, 150,000 in the profile). The measured figure is custody's side of the call, a lower bound of what the profile's per-record reservation must cover.
+- **`SessionClosed` and `Retirement` records are unmeasured** here (the warm figures of `HookGas.t.sol` bound them far below the RecoveryAck: 0.4M and 0.2M at four members). Only the records that scale with the committee (Ack, the staging and the closure of J, the RecoveryAck) and the election are in the table.
+- Other committee shapes at `recovery` (cold): 5 members x 2 lots 2,405,614; 6 x 1 2,281,165; 6 x 2 2,813,701; 7 x 2 3,221,793; 8 x 2 3,629,888. A reservation of 3,000,000 with the profile's 1.25 margin covers up to about 2.4M: 6 x 1, and 5 x 2 only barely (2,405,614 x 1.25 = 3,007,018).
