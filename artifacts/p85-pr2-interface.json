@@ -69,6 +69,7 @@
       "initialize(bytes32,(bytes32,uint256,address,address,address,address,address,address,address,address,uint128,uint128,(uint32,uint32,uint32,uint32),(bytes32,bytes32,uint64,uint64,uint64),(uint32,uint32,uint32,uint64,uint64,uint64,uint64,uint64),(address,address,bytes,bytes,bytes32,bytes32,address,uint256)[]))": "19d0722e",
       "initialized()": "158ef93e",
       "isIndexed(uint64)": "0d5b1019",
+      "lastAttemptResult()": "00b74a50",
       "liveCount()": "fc474d62",
       "liveIndexAt(uint32)": "f61e2c8e",
       "manifestHash()": "337f3f32",

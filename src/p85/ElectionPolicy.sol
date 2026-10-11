@@ -233,6 +233,9 @@ contract ElectionPolicy {
     uint64[] internal _index;
     mapping(uint64 => uint32) internal _indexPosition; // 1-based; zero means absent
     EligibilityReader public reader;
+    /// @dev The result of the last election attempt, reserved or NoCandidate: the system hook's attempt emits no log a client can read, so the
+    /// outcome of the last attempt (and for a NoCandidate its Reason) is read as `result(lastAttemptResult)`. Appended last: no slot moves.
+    bytes32 public lastAttemptResult;
 
     /// @param factory_ the deployment factory that will initialize this module, fixed at construction. The module is deployed first so
     /// the factory's own creation code stays small; only that factory can initialize it, and it can do so once.
@@ -611,6 +614,7 @@ contract ElectionPolicy {
         attemptCursor = attempt;
         attemptProgress = p;
         attemptTime = t;
+        lastAttemptResult = resultID;
         openResult = resultID;
         emit ElectionOpened(resultID, attempt, in_.assignmentID, digest, origin);
         return Outcome.Reserved;
@@ -639,6 +643,7 @@ contract ElectionPolicy {
         attemptCursor = attempt;
         attemptProgress = p;
         attemptTime = t;
+        lastAttemptResult = resultID;
         emit NoCandidate(resultID, attempt, why, origin);
     }
 
