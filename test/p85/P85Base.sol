@@ -4,6 +4,7 @@ pragma solidity 0.8.37;
 import {Test, Vm} from "forge-std/Test.sol";
 import {PosFactory} from "../../src/p85/PosFactory.sol";
 import {StakeCustody} from "../../src/p85/StakeCustody.sol";
+import {CustodyGenesis} from "../../src/p85/CustodyGenesis.sol";
 import {ElectionPolicy} from "../../src/p85/ElectionPolicy.sol";
 import {Evidence} from "../../src/p85/Evidence.sol";
 import {SelectionEngine} from "../../src/p85/SelectionEngine.sol";
@@ -48,6 +49,12 @@ abstract contract P85Base is Test {
     address internal reporter = makeAddr("reporter");
 
     uint256 internal constant N_GENESIS = 4;
+
+    /// @dev The genesis implementation, created by its own fixed account so the nonce the module and factory addresses derive from is unchanged.
+    function _genesisImpl(address f) internal returns (address) {
+        vm.prank(address(uint160(uint256(keccak256("p85-test-genesis-impl-deployer")))));
+        return address(new CustodyGenesis(f));
+    }
 
     function setUp() public virtual {
         roots = new MockRootRecords();
@@ -112,7 +119,7 @@ abstract contract P85Base is Test {
         // the modules are constructed with the address the factory will have: five creations (three modules, the engine, the reader)
         // precede it
         address f = vm.computeCreateAddress(address(this), vm.getNonce(address(this)) + 5);
-        address cu = address(new StakeCustody(f));
+        address cu = address(new StakeCustody(f, _genesisImpl(f)));
         address el = address(new ElectionPolicy(f));
         address ev = address(new Evidence(f));
         PosFactory.Config memory c = PosFactory.Config({
@@ -164,7 +171,7 @@ abstract contract P85Base is Test {
     /// @dev Wire the modules by hand (this test contract acts as the factory), to run with a custom
     /// policy source or resource limits that the factory's FixedPolicy bounds would not allow.
     function _deployManual(address policySource, Limits memory limits) internal {
-        custody = new StakeCustody(address(this));
+        custody = new StakeCustody(address(this), _genesisImpl(address(this)));
         election = new ElectionPolicy(address(this));
         evidence = new Evidence(address(this));
         GenesisIdentity[] memory ids = _genesisIdentities();

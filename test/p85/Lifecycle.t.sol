@@ -3,6 +3,7 @@ pragma solidity 0.8.37;
 
 import {P85Flow} from "./P85Flow.sol";
 import {StakeCustody} from "../../src/p85/StakeCustody.sol";
+import {CustodyStorage} from "../../src/p85/CustodyStorage.sol";
 import {
     RecordKind,
     ReserveInput,
@@ -57,10 +58,10 @@ contract LifecycleTest is P85Flow {
         assertEq(lotv(lot).category, 2, "an active reference still encumbers the lot");
         uint256[] memory ids = new uint256[](1);
         ids[0] = lot;
-        vm.expectRevert(StakeCustody.LotStillReferenced.selector);
+        vm.expectRevert(CustodyStorage.LotStillReferenced.selector);
         custody.mature(ids); // request-time exit is refused
         vm.prank(vm.addr(0x9201));
-        vm.expectRevert(StakeCustody.InsufficientCredit.selector);
+        vm.expectRevert(CustodyStorage.InsufficientCredit.selector);
         custody.claim(1, vm.addr(0x9201)); // no credit exists yet
 
         // a replacement candidate J2 excludes the retiring identity and is acknowledged; G and J close
@@ -78,11 +79,11 @@ contract LifecycleTest is P85Flow {
 
         // before the retirement record the lot still cannot mature
         clock(9_000, 90_000);
-        vm.expectRevert(StakeCustody.RetirementNotImported.selector);
+        vm.expectRevert(CustodyStorage.RetirementNotImported.selector);
         custody.mature(ids);
         retireRecordAt(id, 9_000, 90_000);
         // p_ret = 9,000: the round gate is p > 11,000
-        vm.expectRevert(StakeCustody.RoundGateNotMet.selector);
+        vm.expectRevert(CustodyStorage.RoundGateNotMet.selector);
         custody.mature(ids);
         clock(11_001, 90_000 + 3_600);
         custody.mature(ids);
@@ -105,7 +106,7 @@ contract LifecycleTest is P85Flow {
         assertEq(recipient.balance, 1_500 * UCT);
         _exact();
         vm.prank(vm.addr(0x9201));
-        vm.expectRevert(StakeCustody.InsufficientCredit.selector);
+        vm.expectRevert(CustodyStorage.InsufficientCredit.selector);
         custody.claim(1, recipient);
 
         // the genesis identities were never touched and stay encumbered by J2

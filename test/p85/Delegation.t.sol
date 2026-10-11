@@ -4,6 +4,7 @@ pragma solidity 0.8.37;
 import {P85Base} from "./P85Base.sol";
 import {ElectionPolicy} from "../../src/p85/ElectionPolicy.sol";
 import {StakeCustody} from "../../src/p85/StakeCustody.sol";
+import {CustodyStorage} from "../../src/p85/CustodyStorage.sol";
 import {Delegation, DelegationRequest} from "../../src/p85/P85Types.sol";
 
 /// @notice admitDelegation: owner authorization plus EVM possession over the exact payload, the
@@ -171,7 +172,7 @@ contract DelegationTest is P85Base {
         bytes32 digest = election.delegationDigest(r);
         bytes memory ownerSig = sign(ownerPk(0), digest);
         bytes memory evmSig = sign(evmPk(1), digest);
-        vm.expectRevert(StakeCustody.KeyAlreadyUsed.selector);
+        vm.expectRevert(CustodyStorage.KeyAlreadyUsed.selector);
         election.admitDelegation(r, ownerSig, evmSig);
     }
 
@@ -180,7 +181,7 @@ contract DelegationTest is P85Base {
         bytes32 digest = election.delegationDigest(r);
         bytes memory ownerSig = sign(ownerPk(0), digest);
         bytes memory evmSig = sign(rootPk(0), digest);
-        vm.expectRevert(StakeCustody.KeyAlreadyUsed.selector);
+        vm.expectRevert(CustodyStorage.KeyAlreadyUsed.selector);
         election.admitDelegation(r, ownerSig, evmSig);
     }
 

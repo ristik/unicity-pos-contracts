@@ -4,6 +4,8 @@ pragma solidity 0.8.37;
 import {P85Base} from "./P85Base.sol";
 import {PosFactory} from "../../src/p85/PosFactory.sol";
 import {StakeCustody} from "../../src/p85/StakeCustody.sol";
+import {CustodyStorage} from "../../src/p85/CustodyStorage.sol";
+import {CustodyGenesis} from "../../src/p85/CustodyGenesis.sol";
 import {ElectionPolicy} from "../../src/p85/ElectionPolicy.sol";
 import {Evidence} from "../../src/p85/Evidence.sol";
 import {SelectionEngine} from "../../src/p85/SelectionEngine.sol";
@@ -32,17 +34,17 @@ contract Deployer {
             uint160(
                 uint256(
                     keccak256(
-                        abi.encodePacked(bytes1(0xd6), bytes1(0x94), address(this), nonce + 5)
+                        abi.encodePacked(bytes1(0xd6), bytes1(0x94), address(this), nonce + 6)
                     )
                 )
             )
         );
-        m.custody = address(new StakeCustody(f));
+        m.custody = address(new StakeCustody(f, address(new CustodyGenesis(f))));
         m.election = address(new ElectionPolicy(f));
         m.evidence = address(new Evidence(f));
         m.selection = address(new SelectionEngine());
         m.reader = address(new EligibilityReader(m.custody, m.evidence));
-        nonce += 6; // three modules, the engine, the reader, the factory
+        nonce += 7; // the genesis implementation, three modules, the engine, the reader, the factory
         return address(new PosFactory{value: msg.value}(m));
     }
 
@@ -106,33 +108,33 @@ contract GenesisTest is P85Base {
 
     function test_custodyInitializeOnlyByFactory() public {
         CustodyConfig memory c;
-        vm.expectRevert(StakeCustody.NotFactory.selector);
+        vm.expectRevert(CustodyStorage.NotFactory.selector);
         custody.initialize(bytes32(0), c);
     }
 
     function test_custodyInitializeCannotRunTwice() public {
         CustodyConfig memory c;
         vm.prank(address(factory));
-        vm.expectRevert(StakeCustody.AlreadyInitialized.selector);
+        vm.expectRevert(CustodyStorage.AlreadyInitialized.selector);
         custody.initialize(bytes32(0), c);
     }
 
     function test_seedGenesisOnlyByFactory() public {
-        vm.expectRevert(StakeCustody.NotFactory.selector);
+        vm.expectRevert(CustodyStorage.NotFactory.selector);
         custody.seedGenesis(address(1), address(2), "", "", address(3));
     }
 
     function test_seedGenesisAfterSealReverts() public {
         vm.prank(address(factory));
-        vm.expectRevert(StakeCustody.NotInitialized.selector);
+        vm.expectRevert(CustodyStorage.NotInitialized.selector);
         custody.seedGenesis(address(1), address(2), "", "", address(3));
     }
 
     function test_sealGenesisOnlyByFactoryAndOnce() public {
-        vm.expectRevert(StakeCustody.NotFactory.selector);
+        vm.expectRevert(CustodyStorage.NotFactory.selector);
         custody.sealGenesis();
         vm.prank(address(factory));
-        vm.expectRevert(StakeCustody.NotInitialized.selector);
+        vm.expectRevert(CustodyStorage.NotInitialized.selector);
         custody.sealGenesis();
     }
 
@@ -191,11 +193,12 @@ contract GenesisTest is P85Base {
     }
 
     function test_uninitializedModulesRejectEverything() public {
-        StakeCustody raw = new StakeCustody(address(this));
+        StakeCustody raw =
+            new StakeCustody(address(this), address(new CustodyGenesis(address(this))));
         vm.deal(address(this), 1);
-        vm.expectRevert(StakeCustody.NotInitialized.selector);
+        vm.expectRevert(CustodyStorage.NotInitialized.selector);
         raw.bond{value: 1}(1);
-        vm.expectRevert(StakeCustody.NotInitialized.selector);
+        vm.expectRevert(CustodyStorage.NotInitialized.selector);
         raw.register("", "", address(1));
         ElectionPolicy rawElection = new ElectionPolicy(address(this));
         vm.expectRevert(ElectionPolicy.NotInitialized.selector);
@@ -238,7 +241,7 @@ contract GenesisTest is P85Base {
         });
         PosFactory.Config memory c = _config(ids);
         vm.deal(address(this), 99 * UCT);
-        vm.expectRevert(StakeCustody.InvalidGenesis.selector);
+        vm.expectRevert(CustodyStorage.InvalidGenesis.selector);
         deployer.factory{value: 99 * UCT}(c);
     }
 
@@ -276,7 +279,7 @@ contract GenesisTest is P85Base {
 
         ids = _atWeights(65_537, 1); // one member alone above B
         vm.deal(address(this), 65_538 * 100 * UCT);
-        vm.expectRevert(StakeCustody.InvalidGenesis.selector);
+        vm.expectRevert(CustodyStorage.InvalidGenesis.selector);
         deployer.factory{value: 65_538 * 100 * UCT}(_config(ids));
     }
 
@@ -294,7 +297,7 @@ contract GenesisTest is P85Base {
         });
         PosFactory.Config memory c = _config(ids);
         vm.deal(address(this), 100 * UCT);
-        vm.expectRevert(StakeCustody.KeyAlreadyUsed.selector);
+        vm.expectRevert(CustodyStorage.KeyAlreadyUsed.selector);
         deployer.factory{value: 100 * UCT}(c);
     }
 
@@ -312,7 +315,7 @@ contract GenesisTest is P85Base {
         });
         PosFactory.Config memory c = _config(ids);
         vm.deal(address(this), 100 * UCT);
-        vm.expectRevert(StakeCustody.InvalidRootKey.selector);
+        vm.expectRevert(CustodyStorage.InvalidRootKey.selector);
         deployer.factory{value: 100 * UCT}(c);
     }
 
@@ -334,37 +337,37 @@ contract GenesisTest is P85Base {
         PosFactory.Config memory c = _config(_oneIdentity());
         c.treasury = address(0);
         vm.deal(address(this), 100 * UCT);
-        vm.expectRevert(StakeCustody.InvalidGenesis.selector);
+        vm.expectRevert(CustodyStorage.InvalidGenesis.selector);
         deployer.factory{value: 100 * UCT}(c);
         c = _config(_oneIdentity());
         c.bondUnit = 0;
         vm.deal(address(this), 100 * UCT);
-        vm.expectRevert(StakeCustody.InvalidGenesis.selector);
+        vm.expectRevert(CustodyStorage.InvalidGenesis.selector);
         deployer.factory{value: 100 * UCT}(c);
         c = _config(_oneIdentity());
         c.limits.vMax = 0;
         vm.deal(address(this), 100 * UCT);
-        vm.expectRevert(StakeCustody.InvalidGenesis.selector);
+        vm.expectRevert(CustodyStorage.InvalidGenesis.selector);
         deployer.factory{value: 100 * UCT}(c);
         c = _config(_oneIdentity());
         c.limits.lMax = 0;
         vm.deal(address(this), 100 * UCT);
-        vm.expectRevert(StakeCustody.InvalidGenesis.selector);
+        vm.expectRevert(CustodyStorage.InvalidGenesis.selector);
         deployer.factory{value: 100 * UCT}(c);
         c = _config(_oneIdentity());
         c.limits.rMax = 2; // active + candidate + K needs at least three
         vm.deal(address(this), 100 * UCT);
-        vm.expectRevert(StakeCustody.InvalidGenesis.selector);
+        vm.expectRevert(CustodyStorage.InvalidGenesis.selector);
         deployer.factory{value: 100 * UCT}(c);
         c = _config(_oneIdentity());
         c.limits.maxBatch = 0;
         vm.deal(address(this), 100 * UCT);
-        vm.expectRevert(StakeCustody.InvalidGenesis.selector);
+        vm.expectRevert(CustodyStorage.InvalidGenesis.selector);
         deployer.factory{value: 100 * UCT}(c);
         c = _config(_oneIdentity());
         c.genesis.assignmentID = bytes32(0);
         vm.deal(address(this), 100 * UCT);
-        vm.expectRevert(StakeCustody.InvalidGenesis.selector);
+        vm.expectRevert(CustodyStorage.InvalidGenesis.selector);
         deployer.factory{value: 100 * UCT}(c);
         // the unmodified configuration is accepted
         c = _config(_oneIdentity());
@@ -376,7 +379,7 @@ contract GenesisTest is P85Base {
         PosFactory.Config memory c = _config(_oneIdentity());
         c.limits.maxBatch = 33;
         vm.deal(address(this), 100 * UCT);
-        vm.expectRevert(StakeCustody.InvalidGenesis.selector);
+        vm.expectRevert(CustodyStorage.InvalidGenesis.selector);
         deployer.factory{value: 100 * UCT}(c);
     }
 
@@ -384,7 +387,7 @@ contract GenesisTest is P85Base {
         PosFactory.Config memory c = _config(_oneIdentity());
         c.limits.vMax = 129;
         vm.deal(address(this), 100 * UCT);
-        vm.expectRevert(StakeCustody.InvalidGenesis.selector);
+        vm.expectRevert(CustodyStorage.InvalidGenesis.selector);
         deployer.factory{value: 100 * UCT}(c);
     }
 
@@ -392,7 +395,7 @@ contract GenesisTest is P85Base {
         PosFactory.Config memory c = _config(_oneIdentity());
         c.limits.lMax = 9;
         vm.deal(address(this), 100 * UCT);
-        vm.expectRevert(StakeCustody.InvalidGenesis.selector);
+        vm.expectRevert(CustodyStorage.InvalidGenesis.selector);
         deployer.factory{value: 100 * UCT}(c);
     }
 
@@ -400,7 +403,7 @@ contract GenesisTest is P85Base {
         PosFactory.Config memory c = _config(_oneIdentity());
         c.limits.rMax = 5;
         vm.deal(address(this), 100 * UCT);
-        vm.expectRevert(StakeCustody.InvalidGenesis.selector);
+        vm.expectRevert(CustodyStorage.InvalidGenesis.selector);
         deployer.factory{value: 100 * UCT}(c);
     }
 

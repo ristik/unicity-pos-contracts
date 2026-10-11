@@ -3,6 +3,7 @@ pragma solidity 0.8.37;
 
 import {P85Flow} from "./P85Flow.sol";
 import {StakeCustody} from "../../src/p85/StakeCustody.sol";
+import {CustodyStorage} from "../../src/p85/CustodyStorage.sol";
 import {
     RootRecord,
     RecordKind,
@@ -241,8 +242,8 @@ contract AuthenticatedRecordsTest is P85Flow {
                 assertEq(asg(GENESIS_ASSIGNMENT).tClose, 1_200, change);
             } else {
                 bytes4 selector = keccak256(bytes(custodyError)) == keccak256("ConflictingClosure")
-                    ? StakeCustody.ConflictingClosure.selector
-                    : StakeCustody.ClosureDigestMismatch.selector;
+                    ? CustodyStorage.ConflictingClosure.selector
+                    : CustodyStorage.ClosureDigestMismatch.selector;
                 assertTrue(
                     keccak256(bytes(custodyError)) == keccak256("ConflictingClosure")
                         || keccak256(bytes(custodyError)) == keccak256("ClosureDigestMismatch"),

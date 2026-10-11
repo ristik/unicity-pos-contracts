@@ -27,6 +27,8 @@ import {IRootRecords, IPolicySource, IEvidence, IElectionPolicy, CaseView} from 
 import {KeyLib} from "./KeyLib.sol";
 import {Quantize} from "./Quantize.sol";
 
+import {CustodyStorage} from "./CustodyStorage.sol";
+
 /// @title StakeCustody
 /// @notice Immutable native-UCT self-bond custody for the P85 PoS profile (design v5 sections 2-4).
 /// Clean-room implementation written from the design; see docs/p85/PROVENANCE.md.
@@ -37,334 +39,53 @@ import {Quantize} from "./Quantize.sol";
 ///
 /// Conservation after every successful call (section 3):
 ///     balance = F + E + D + C + U,  F + E + D = sum(remaining),  C = sum(credits),  U >= 0.
-/// No proxy, delegatecall, arbitrary call, sweep, administrator withdrawal or module setter exists.
-contract StakeCustody is ReentrancyGuard {
-    uint256 internal constant BPS = 10_000;
-
-    // Lot categories: free bonded F, encumbered E, draining D; Released once matured into credit.
-    uint8 internal constant CAT_FREE = 1;
-    uint8 internal constant CAT_ENCUMBERED = 2;
-    uint8 internal constant CAT_DRAINING = 3;
-    uint8 internal constant CAT_RELEASED = 4;
-
-    uint8 internal constant ASSIGN_RESERVED = 1;
-    uint8 internal constant ASSIGN_ACTIVE = 2;
-    uint8 internal constant ASSIGN_ABORTED = 3;
-
-    uint8 internal constant SESSION_OPEN = 1;
-    uint8 internal constant SESSION_ACKED = 2;
-    uint8 internal constant SESSION_CLOSED = 3;
-    uint8 internal constant SESSION_RECOVERED = 4;
-
-    uint8 internal constant ROLE_BIT_OWNER = 1;
-    uint8 internal constant ROLE_BIT_WITHDRAWAL = 2;
-    uint8 internal constant ROLE_BIT_CONSENT = 4;
-
-    uint8 internal constant ROLE_ROOT = 1;
-    uint8 internal constant ROLE_EVM = 2;
-
-    bytes32 internal constant POP_REGISTER = keccak256("unicity.p85.pop.register");
-    bytes32 internal constant POP_ROOT_KEY = keccak256("unicity.p85.pop.proposeRootKey");
-    bytes32 internal constant EXPOSURE_DOMAIN = keccak256("unicity.p85.exposure");
-    /// @dev The profile cap B on a committee's total committed weight.
-    uint256 internal constant WEIGHT_CAP_B = Quantize.WEIGHT_CAP_B;
-    bytes32 internal constant EXPOSURE_DIGEST_DOMAIN = keccak256("unicity.p85.exposure-digest");
-    bytes32 internal constant KEY_DIGEST_DOMAIN = keccak256("unicity.p85.key-history-digest");
-    bytes32 internal constant CHAIN_DOMAIN = keccak256("unicity.p85.exposure-chain");
-    bytes32 internal constant CLOSURE_DOMAIN = keccak256("unicity.p85.closure");
-
-    // --- errors -------------------------------------------------------------------------------
-    error NotFactory();
-    error AlreadyInitialized();
-    error NotInitialized();
-    error ManifestMismatch();
-    error InvalidGenesis();
-    error NotElection();
-    error NotEvidence();
-    error NotOwner();
-    error UnknownIdentity();
-    error InvalidRootKey();
-    error KeyAlreadyUsed();
-    error BadPossessionProof();
-    error ZeroAddress();
-    error ZeroValue();
-    error AmountTooLarge();
-    error GenerationClosing();
-    error LotCapacity();
-    error NoOpenLots();
-    error RetirementAlreadyRequested();
-    error RoleNonceMismatch();
-    error RoleTupleMismatch();
-    error NoPendingRoles();
-    error NoRoleChange();
-    error NotNominated();
-    error StaleGeneration();
-    error PrimaryRetiring();
-    error IdentityExcluded();
-    error InvalidCandidate();
-    error SessionExists();
-    error AssignmentExists();
-    error IncumbentMismatch();
-    error LineageMismatch();
-    error MembersUnsorted();
-    error WrongKey();
-    error LotSetMismatch();
-    error LotNotEligible();
-    error ReferenceCapacity();
-    error InsufficientCoverage();
-    error ZeroWeight();
-    error InvalidMemberCount();
-    error RecordsPending();
-    error RecordOutOfOrder();
-    error UnknownRecordKind();
-    error BatchTooLarge();
-    error SessionNotOpen();
-    error UnknownSession();
-    error AssignmentNotReserved();
-    error AssignmentNotActive();
-    error PendingClosureUnresolved();
-    error ClosureDigestMismatch();
-    error ConflictingClosure();
-    error HRoundMismatch();
-    error HRoundBeforeActivation();
-    error RetirementNotRequested();
-    error RetirementAlreadyImported();
-    error RefsStillLive();
-    error RefDigestMismatch();
-    error RetirementBeforeLiability();
-    error LotUnknown();
-    error LotAlreadyReleased();
-    error LotStillReferenced();
-    error RetirementNotImported();
-    error EvidenceHoldPending();
-    error RoundGateNotMet();
-    error EvidenceGateNotMet();
-    error TimeGateNotMet();
-    error PenaltyAlreadyApplied();
-    error LotNotInExposure();
-    error ExposureUnknown();
-    error InsufficientCredit();
-    error TransferFailed();
-    error EmptyBatch();
-
-    // --- events -------------------------------------------------------------------------------
-    event Initialized(bytes32 manifestHash);
-    event Registered(
-        uint64 indexed id, address indexed owner, bytes32 rootKeyHash, address withdrawal
-    );
-    event Bonded(uint64 indexed id, uint64 generation, uint256 indexed lotID, uint256 amount);
-    event RolesProposed(uint64 indexed id, address owner, address withdrawal, uint64 nonce);
-    event RolesAccepted(uint64 indexed id, address owner, address withdrawal, uint64 nonce);
-    event RetirementRequested(uint64 indexed id, uint64 generation);
-    event CandidateReserved(bytes32 indexed resultID, bytes32 sessionID, bytes32 exposureDigest);
-    event RootRecordsApplied(uint64 firstIndex, uint64 lastIndex, bytes32 lastRecordID);
-    event LiabilityClosed(
-        bytes32 indexed assignmentID, uint64 pClose, uint64 tClose, uint64 anchor
-    );
-    event RetirementImported(uint64 indexed id, uint64 generation, uint64 pRet, uint64 tRet);
-    event PenaltyApplied(
-        bytes32 indexed caseID,
-        uint256 indexed lotID,
-        uint256 debit,
-        uint256 bounty,
-        uint256 treasuryCredit
-    );
-    event LotMatured(uint256 indexed lotID, address indexed creditor, uint256 amount);
-    event CreditClaimed(address indexed creditor, address indexed to, uint256 amount);
-
-    // --- storage ------------------------------------------------------------------------------
-    struct PendingRoles {
-        address newOwner;
-        address newWithdrawal;
-        uint64 nonce;
-        uint8 required; // bit set of ROLE_BIT_*
-        uint8 given;
-    }
-
-    struct Lot {
-        uint64 id;
-        uint64 generation;
-        uint128 initial;
-        uint128 remaining;
-        uint128 penalized;
-        uint8 category;
-        uint16 capBps;
-        uint32 refCount;
-        uint64 holdRetirement;
-        uint64 timeFloor;
-        // Maxima over closed obligations; later policy reductions cannot shorten them.
-        uint64 holdUntil;
-        uint64 evidenceUntil;
-        uint64 timeUntil;
-    }
-
-    struct Session {
-        uint8 state;
-        bytes32 assignmentID;
-        bytes32 lineage;
-        uint64 attempt;
-        bytes32 incumbentAssignmentID;
-    }
-
-    struct KeyRecord {
-        uint64 id;
-        uint8 role;
-    }
-
-    struct RetirementInfo {
-        bool imported;
-        uint64 pRet;
-        uint64 tRet;
-    }
-
-    address public immutable FACTORY;
-    bool internal genesisStarted;
-    bool public initialized;
-    bytes32 internal genesisAssignmentID;
-    bytes32 public manifestHash;
-    bytes32 public network;
-    address public election;
-    address public evidence;
-    address public policySource;
-    address public roots;
-    address public treasury;
-    uint128 public bondUnit;
-    uint128 public minBond;
-    Limits public limits;
-
-    uint64 public nextStakingID;
-    uint256 public nextLotID;
-    bytes32 public lastAckedAssignment;
-    uint64 public recordCursor;
-    bytes32 public lastRecordID;
-
-    // Accounting: balance = totalFree + totalEncumbered + totalDraining + totalCredits + surplus.
-    uint256 public totalFree;
-    uint256 public totalEncumbered;
-    uint256 public totalDraining;
-    uint256 public totalCredits;
-    mapping(address => uint256) public credit;
-
-    mapping(uint64 => Position) public positions;
-    mapping(uint64 => PendingRoles) internal _pendingRoles;
-    mapping(address => uint64) public registerNonce;
-    mapping(bytes32 => KeyRecord) internal _keys;
-    mapping(uint64 => mapping(uint64 => uint256[])) internal _generationLots;
-    mapping(uint256 => Lot) public lots;
-    mapping(uint64 => mapping(uint64 => RetirementInfo)) public retirements;
-    mapping(uint64 => mapping(uint64 => bytes32)) public exposureChain;
-    mapping(uint64 => mapping(uint64 => uint64)) public maxLiabilityAnchor;
-    mapping(uint64 => mapping(uint64 => uint32)) public liveExposures;
-    mapping(bytes32 => Assignment) public assignments;
-    mapping(bytes32 => Exposure) public exposures;
-    mapping(bytes32 => mapping(uint256 => bool)) internal _exposureHasLot;
-    mapping(bytes32 => Session) internal _sessions;
-    mapping(bytes32 => uint256) public caseDebited;
-    mapping(bytes32 => mapping(uint256 => bool)) internal penaltyApplied;
-    /// @dev The Reserved J whose closure the root ordered before the session's resolving record, zero when none. Its closure identity and anchors
-    /// wait in J's own Assignment (closureKey, hRound, pClose, tClose), unused until J activates; the RecoveryAck applies them. Appended last: no
-    /// existing slot moves.
-    bytes32 internal pendingAssignment;
+/// No proxy, arbitrary call, sweep, administrator withdrawal or module setter exists. The one delegatecall is the factory's genesis step:
+/// `initialize`, `seedGenesis` and `sealGenesis` run in CustodyGenesis (an immutable address fixed at construction) in this contract's storage,
+/// reachable only by the factory and only until genesis is sealed (afterwards each of them reverts); the code is not here to keep the runtime
+/// under EIP-170.
+contract StakeCustody is CustodyStorage {
+    /// @notice The address of the genesis implementation the genesis stubs delegate to.
+    address public immutable GENESIS_IMPL;
 
     /// @param factory_ the deployment factory that will initialize this module, fixed at construction. The module is deployed first so
     /// the factory's own creation code stays small; only that factory can initialize it, and it can do so once.
     // forge-lint: disable-next-line(missing-zero-check)
-    constructor(address factory_) {
-        FACTORY = factory_;
+    constructor(address factory_, address genesisImpl_) CustodyStorage(factory_) {
+        GENESIS_IMPL = genesisImpl_;
     }
 
-    // --- initialization -----------------------------------------------------------------------
+    // --- genesis (delegated) ------------------------------------------------------------------
 
-    /// @notice Factory-only genesis step 1: wire the fixed modules and parameters. The factory then
-    /// calls `seedGenesis` once per manifest identity and `sealGenesis`, all in its constructor.
-    function initialize(bytes32 manifestHash_, CustodyConfig calldata c) external {
-        if (msg.sender != FACTORY) revert NotFactory();
-        if (genesisStarted) revert AlreadyInitialized();
-        if (
-            c.treasury == address(0) || c.bondUnit == 0 || c.limits.vMax == 0 || c.limits.lMax == 0
-                || c.limits.rMax < 3 || c.limits.maxBatch == 0
-                || c.genesis.assignmentID == bytes32(0)
-        ) revert InvalidGenesis();
-        // Immutable development resource ceilings; alternative test genesis remains bounded.
-        if (c.limits.vMax > 128) revert InvalidGenesis();
-        if (c.limits.lMax > 8) revert InvalidGenesis();
-        if (c.limits.rMax > 4) revert InvalidGenesis();
-        if (c.limits.maxBatch > 32) revert InvalidGenesis();
-        genesisStarted = true;
-        manifestHash = manifestHash_;
-        network = c.network;
-        // forge-lint: disable-start(missing-events-access-control)
-        election = c.election;
-        evidence = c.evidence;
-        policySource = c.policySource;
-        roots = c.roots;
-        treasury = c.treasury;
-        bondUnit = c.bondUnit;
-        minBond = c.minBond;
-        limits = c.limits;
-        // forge-lint: disable-end(missing-events-access-control)
-        genesisAssignmentID = c.genesis.assignmentID;
-        Assignment storage a = assignments[c.genesis.assignmentID];
-        a.state = ASSIGN_ACTIVE;
-        a.lineage = c.genesis.lineage;
-        a.rootEpoch = c.genesis.rootEpoch;
-        a.evmEpoch = c.genesis.evmEpoch;
-        a.firstRound = c.genesis.firstRound;
-        a.offsetSet = true;
-        a.policyID = IPolicySource(policySource).currentPolicyID();
+    /// @notice Factory-only genesis steps 1-3 run in CustodyGenesis, by delegatecall: the code lives there so this runtime keeps the room.
+    /// `initialize` wires the fixed modules and parameters, `seedGenesis` takes one manifest identity with its bond (msg.value) and an Active
+    /// exposure in the genesis assignment, `sealGenesis` fixes the genesis digests. The factory calls all of them in its constructor.
+    function initialize(bytes32, CustodyConfig calldata) external {
+        _genesis();
     }
 
-    /// @notice Factory-only genesis step 2: one manifest identity with its bond (msg.value) and an
-    /// Active exposure in the genesis assignment. Manifest authentication replaces fresh possession.
-    function seedGenesis(
-        address owner,
-        address withdrawal,
-        bytes calldata rootKey,
-        bytes calldata evmKey,
-        address operatorPayee
-    ) external payable {
-        if (msg.sender != FACTORY) revert NotFactory();
-        if (!genesisStarted || initialized) revert NotInitialized();
-        uint256 weight = msg.value / bondUnit;
-        if (
-            owner == address(0) || withdrawal == address(0) || operatorPayee == address(0)
-                || weight == 0 || weight > WEIGHT_CAP_B || nextStakingID >= limits.vMax
-        ) revert InvalidGenesis();
-        uint64 id = ++nextStakingID;
-        bytes32 rootHash = _claimKey(rootKey, id, ROLE_ROOT);
-        bytes32 evmHash = _claimKey(evmKey, id, ROLE_EVM);
-        positions[id] = Position(owner, withdrawal, rootHash, bytes32(0), 1, 0, 0, 0, false);
-        uint256[] memory seeded = new uint256[](1);
-        seeded[0] = _newLot(id, msg.value);
-        assignments[genesisAssignmentID].exposureIDs
-            .push(
-                _createExposure(
-                    genesisAssignmentID,
-                    id,
-                    1,
-                    // weight <= B is checked in seedGenesis, and the factory caps their total at B
-                    // forge-lint: disable-next-line(unsafe-typecast)
-                    uint64(weight),
-                    // forge-lint: disable-next-line(unsafe-typecast)
-                    uint64(weight), // at genesis q = x
-                    rootHash,
-                    evmHash,
-                    operatorPayee,
-                    seeded
-                )
-            );
+    function seedGenesis(address, address, bytes calldata, bytes calldata, address)
+        external
+        payable
+    {
+        _genesis();
     }
 
-    /// @notice Factory-only genesis step 3: commit the exposure digests and seal initialization.
     function sealGenesis() external {
+        _genesis();
+    }
+
+    function _genesis() private {
         if (msg.sender != FACTORY) revert NotFactory();
-        if (!genesisStarted || initialized || nextStakingID == 0) revert NotInitialized();
-        Assignment storage a = assignments[genesisAssignmentID];
-        a.exposureDigest = _digestExposures(a.exposureIDs);
-        a.keyDigest = _digestKeys(a.exposureIDs);
-        lastAckedAssignment = genesisAssignmentID;
-        initialized = true;
-        emit Initialized(manifestHash);
+        // the genesis functions return nothing; a revert of the implementation is passed on as it is
+        // the target is the immutable genesis implementation fixed at construction, and only the factory reaches this line
+        // forge-lint: disable-next-line(controlled-delegatecall)
+        (bool ok, bytes memory ret) = GENESIS_IMPL.delegatecall(msg.data);
+        if (!ok) {
+            // forge-lint: disable-next-line(unsafe-typecast)
+            assembly ("memory-safe") {
+                revert(add(ret, 32), mload(ret))
+            }
+        }
     }
 
     modifier whenInitialized() {
@@ -1007,101 +728,6 @@ contract StakeCustody is ReentrancyGuard {
         if (!KeyLib.verify(key, digest, pop)) revert BadPossessionProof();
     }
 
-    function _claimKey(bytes memory key, uint64 id, uint8 role) private returns (bytes32 keyHash) {
-        if (key.length != KeyLib.KEY_LENGTH) revert InvalidRootKey();
-        keyHash = keccak256(key);
-        KeyRecord storage k = _keys[keyHash];
-        if (k.id != 0) revert KeyAlreadyUsed();
-        k.id = id;
-        k.role = role;
-    }
-
-    function _newLot(uint64 id, uint256 amount) private returns (uint256 lotID) {
-        Policy memory terms = IPolicySource(policySource).policy();
-        Position storage p = positions[id];
-        if (amount > type(uint128).max) revert AmountTooLarge();
-        lotID = ++nextLotID;
-        Lot storage l = lots[lotID];
-        l.id = id;
-        l.generation = p.generation;
-        // forge-lint: disable-next-line(unsafe-typecast)
-        l.initial = uint128(amount); // bounded by the check above
-        // forge-lint: disable-next-line(unsafe-typecast)
-        l.remaining = uint128(amount);
-        l.category = CAT_FREE;
-        l.capBps = terms.lifetimeCapBps;
-        l.holdRetirement = terms.holdRetirement;
-        l.timeFloor = terms.timeFloor;
-        totalFree += amount;
-        p.openLots++;
-        p.lotCount++;
-        _generationLots[id][p.generation].push(lotID);
-    }
-
-    function _createExposure(
-        bytes32 assignmentID,
-        uint64 id,
-        uint64 generation,
-        uint64 weight,
-        uint64 rawWeight,
-        bytes32 rootKeyHash,
-        bytes32 evmKeyHash,
-        address operatorPayee,
-        uint256[] memory lotIDs
-    ) private returns (bytes32 exposureID) {
-        exposureID = keccak256(
-            abi.encode(EXPOSURE_DOMAIN, network, block.chainid, address(this), assignmentID, id)
-        );
-        Exposure storage e = exposures[exposureID];
-        e.assignmentID = assignmentID;
-        e.id = id;
-        e.generation = generation;
-        e.rootKeyHash = rootKeyHash;
-        e.evmKeyHash = evmKeyHash;
-        e.weight = weight;
-        e.rawWeight = rawWeight;
-        e.operatorPayee = operatorPayee;
-        for (uint256 i = 0; i < lotIDs.length; ++i) {
-            Lot storage l = lots[lotIDs[i]];
-            if (l.refCount >= limits.rMax) revert ReferenceCapacity();
-            l.refCount++;
-            // An unreferenced lot is never draining here: a retiring identity cannot be reserved and
-            // K is derived only from locked, still-referenced exposures.
-            if (l.category == CAT_FREE) _move(l, CAT_ENCUMBERED);
-            e.lotIDs.push(lotIDs[i]);
-            _exposureHasLot[exposureID][lotIDs[i]] = true;
-        }
-        liveExposures[id][generation]++;
-        exposureChain[id][generation] =
-            keccak256(abi.encode(CHAIN_DOMAIN, exposureChain[id][generation], exposureID));
-    }
-
-    function _digestExposures(bytes32[] storage ids) private view returns (bytes32 digest) {
-        digest = EXPOSURE_DIGEST_DOMAIN;
-        for (uint256 i = 0; i < ids.length; ++i) {
-            Exposure storage e = exposures[ids[i]];
-            digest = keccak256(
-                abi.encode(
-                    digest,
-                    ids[i],
-                    e.id,
-                    e.weight,
-                    e.rawWeight,
-                    e.operatorPayee,
-                    keccak256(abi.encode(e.lotIDs))
-                )
-            );
-        }
-    }
-
-    function _digestKeys(bytes32[] storage ids) private view returns (bytes32 digest) {
-        digest = KEY_DIGEST_DOMAIN;
-        for (uint256 i = 0; i < ids.length; ++i) {
-            Exposure storage e = exposures[ids[i]];
-            digest = keccak256(abi.encode(digest, e.id, e.rootKeyHash, e.evmKeyHash));
-        }
-    }
-
     function _unlockIncumbent(bytes32 incumbentAssignmentID) private {
         bytes32[] storage ids = assignments[incumbentAssignmentID].exposureIDs;
         for (uint256 i = 0; i < ids.length; ++i) {
@@ -1132,24 +758,6 @@ contract StakeCustody is ReentrancyGuard {
                 _move(l, retiring ? CAT_DRAINING : CAT_FREE);
             }
         }
-    }
-
-    function _move(Lot storage l, uint8 to) private {
-        _subCategory(l.category, l.remaining);
-        _addCategory(to, l.remaining);
-        l.category = to;
-    }
-
-    function _addCategory(uint8 category, uint256 amount) private {
-        if (category == CAT_FREE) totalFree += amount;
-        else if (category == CAT_ENCUMBERED) totalEncumbered += amount;
-        else if (category == CAT_DRAINING) totalDraining += amount;
-    }
-
-    function _subCategory(uint8 category, uint256 amount) private {
-        if (category == CAT_FREE) totalFree -= amount;
-        else if (category == CAT_ENCUMBERED) totalEncumbered -= amount;
-        else if (category == CAT_DRAINING) totalDraining -= amount;
     }
 
     // --- getters ------------------------------------------------------------------------------
