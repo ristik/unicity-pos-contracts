@@ -1,5 +1,5 @@
 {
   "repo": "https://github.com/ristik/bft-core",
-  "commit": "b464375df8ae7113a953558dfbafb31f61945d4c",
+  "commit": "1231579df5e1492507873c0773af45acfeff967f",
   "note": "A bft-core commit whose shared fixtures (bft-core xrepo/fixtures.json) are byte-identical to this repository's copies. CI checks it with bft-core's own xrepo/check.py. Move it when a shared file changes on either side; see bft-core xrepo/README.md."
 }
