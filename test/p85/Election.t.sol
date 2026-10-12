@@ -131,6 +131,9 @@ contract ElectionTest is P85Flow {
         assertEq(r.assignmentID, assignmentID);
         assertTrue(r.snapshotDigest != bytes32(0));
         assertEq(election.openResult(), resultID);
+        assertEq(
+            election.lastAttemptResult(), resultID, "a reserved attempt is the last attempt too"
+        );
         assertEq(election.attemptCursor(), 1);
 
         // custody holds the reservation: same lineage, the next epochs, the incumbent slate locked
@@ -298,6 +301,11 @@ contract ElectionTest is P85Flow {
         assertEq(r.attempt, 1);
         assertEq(election.attemptCursor(), 1);
         assertEq(election.openResult(), bytes32(0), "no unresolved result");
+        assertEq(
+            election.lastAttemptResult(),
+            resultID,
+            "the attempt's result is readable without its origin: result(lastAttemptResult())"
+        );
         assertEq(custody.assignmentExposures(_assignmentOf(resultID)).length, 0, "no reservation");
         assertEq(custody.lastAckedAssignment(), GENESIS_ASSIGNMENT, "the authority continues");
         // the attempt is consumed: a retry waits one cadence
