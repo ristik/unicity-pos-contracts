@@ -244,11 +244,11 @@
       "gate": {
         "b2": 89920,
         "budget": 7000000,
-        "intrinsic": 77320,
+        "intrinsic": 358920,
         "reserve": 1000000,
         "rsmt": 5950,
-        "total": 2432036,
-        "uc": 1258846
+        "total": 1562636,
+        "uc": 107846
       },
       "irTime": 1700000005,
       "leaves": 1,
@@ -354,11 +354,11 @@
       "gate": {
         "b2": 132000,
         "budget": 7000000,
-        "intrinsic": 110600,
+        "intrinsic": 558600,
         "reserve": 1000000,
         "rsmt": 17088,
-        "total": 3777380,
-        "uc": 2517692
+        "total": 1923380,
+        "uc": 215692
       },
       "irTime": 1700000025,
       "leaves": 3,
