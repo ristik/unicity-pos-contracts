@@ -1772,7 +1772,8 @@ contract TokenVerifierTest is BridgeBase {
         assertGt(over, BridgeBounds.TX_GAS_BUDGET);
         assertLt(
             over - total,
-            BridgeBounds.MAX_ANCHORS * 32 * (BridgeBounds.PER_BYTE + BridgeBounds.EXEC_PER_BYTE + 1),
+            BridgeBounds.MAX_ANCHORS * 32
+                * (BridgeBounds.PER_BYTE + BridgeBounds.EXEC_PER_BYTE + 1),
             "the refused bundle is one ABI word of certificate padding per anchor larger"
         );
         _pad(s, ucs, add);
@@ -1808,7 +1809,11 @@ contract TokenVerifierTest is BridgeBase {
         assertEq(maxUc, 617_798);
         uint256 minUc = BridgeBounds.ucGas(1, 0, 0, 0);
         assertEq(minUc, 94_476);
-        assertLe(BridgeBounds.MAX_ANCHORS * maxUc, BridgeBounds.TX_GAS_BUDGET, "eight maximum certificates alone");
+        assertLe(
+            BridgeBounds.MAX_ANCHORS * maxUc,
+            BridgeBounds.TX_GAS_BUDGET,
+            "eight maximum certificates alone"
+        );
         assertLe(
             BridgeBounds.MAX_ANCHORS * minUc + BridgeBounds.GAS_RESERVE,
             BridgeBounds.TX_GAS_BUDGET,
