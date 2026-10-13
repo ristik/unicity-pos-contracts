@@ -457,7 +457,11 @@ contract CertGroupsTest is Test {
 /// @notice What the Solidity scan and grouping cost (execution gas, warm, in-memory), for the review of the scan allowance
 ///         (briefs/b1-any-age-contract-review.md). Printed with -vv; the assertions only keep the shapes honest.
 contract CertGroupsGasTest is CertGroupsTest {
-    function _spend(Anchor[] memory a) internal view returns (uint256 g, CertGroups.Counts memory n) {
+    function _spend(Anchor[] memory a)
+        internal
+        view
+        returns (uint256 g, CertGroups.Counts memory n)
+    {
         uint256 before = gasleft();
         n = CertGroups.measure(a);
         g = before - gasleft();
@@ -481,7 +485,14 @@ contract CertGroupsGasTest is CertGroupsTest {
         for (uint256 i = 0; i < 16; ++i) {
             a[i] = _claim(
                 shard,
-                _uc(shard, siblings, 32, distinctSeals ? 4 + i : 4, sigs, distinctSeals ? uint8(i) : 0xaa),
+                _uc(
+                    shard,
+                    siblings,
+                    32,
+                    distinctSeals ? 4 + i : 4,
+                    sigs,
+                    distinctSeals ? uint8(i) : 0xaa
+                ),
                 bytes32(i)
             );
         }
@@ -492,22 +503,54 @@ contract CertGroupsGasTest is CertGroupsTest {
     }
 
     function test_gas_sixteenAnchors_eightShards_sixteenSeals() public view {
-        _report("16 anchors, depth 3, 16 sigs, sixteen distinct seals", _sixteen(hex"e0", 2, 16, true));
+        _report(
+            "16 anchors, depth 3, 16 sigs, sixteen distinct seals", _sixteen(hex"e0", 2, 16, true)
+        );
     }
 
     function test_gas_sixteenAnchors_deepShard_256Siblings() public view {
         bytes memory deep = new bytes(33);
         deep[32] = 0x80;
-        _report("16 anchors, depth 256, 16 sigs, sixteen distinct seals", _sixteen(deep, 256, 16, true));
+        _report(
+            "16 anchors, depth 256, 16 sigs, sixteen distinct seals", _sixteen(deep, 256, 16, true)
+        );
     }
 
     function test_gas_sixteenExactDuplicates_ofOneMaximalClaim() public view {
-        bytes memory ir = bytes.concat(Cbor.head(2, 20_000), new bytes(20_000));
+        bytes memory ir = bytes.concat(Cbor.head(2, 12_000), new bytes(12_000));
         bytes memory uc = _ucWith(hex"c0", 1, 0, ir, _seal(4, 16, 0xaa));
         Anchor[] memory a = new Anchor[](16);
         for (uint256 i = 0; i < 16; ++i) {
             a[i] = _claim(hex"c0", uc, bytes32(uint256(1)));
         }
-        _report("16 exact duplicates of one 20 KB claim", a);
+        _report("16 exact duplicates of one 12 KB claim", a);
+    }
+
+    /// Sixteen seals that differ only in the last signature byte, with every digest forced to collide: the worst case of the
+    /// pairwise byte comparison (a real keccak never collides, so this is an upper bound on the grouping, not a reachable cost).
+    function test_gas_sixteenNearIdenticalSeals_withForcedCollisions() public view {
+        Anchor[] memory a = new Anchor[](16);
+        for (uint256 i = 0; i < 16; ++i) {
+            bytes memory uc = _uc(hex"c0", 1, 0, 4, 16, 0xaa);
+            uc[uc.length - 1] = bytes1(uint8(i));
+            a[i] = _claim(hex"c0", uc, bytes32(i));
+        }
+        uint256 before = gasleft();
+        CertGroups.Counts memory n = CertGroups.measure(a, 0);
+        console.log("16 near-identical seals, all digests forced to collide");
+        console.log("  solidity gas %d  S %d A %d", before - gasleft(), n.s, n.a);
+        before = gasleft();
+        n = CertGroups.measure(a);
+        console.log("  the same with the real digests: %d", before - gasleft());
+    }
+
+    /// Item-dense input: one UC whose input record is 12,000 one-byte items (inside the 32,768 item budget and the 24 KiB UC bound).
+    function test_gas_itemDenseClaim() public view {
+        bytes memory ir = bytes.concat(Cbor.head(4, 12_000), _fill(12_000, 0x00));
+        Anchor[] memory a = _one(_ucWith(hex"c0", 1, 0, ir, _seal(4, 1, 0xaa)));
+        uint256 before = gasleft();
+        CertGroups.measure(a);
+        console.log("one claim, 12,000 one-byte items");
+        console.log("  solidity gas %d", before - gasleft());
     }
 }
