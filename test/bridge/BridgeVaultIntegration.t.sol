@@ -25,7 +25,7 @@ contract BridgeVaultIntegrationTest is BridgeBase {
         _etchDoubles();
         verifier = new TokenVerifier();
         vault = _deployVault(keccak256("execution-genesis"));
-        _progDefault(B1Calls.UC_VERIFIER, TRUE_OUT);
+        _progDefault(B1Calls.CERT_BATCH, BATCH_TRUE);
         _progDefault(B1Calls.RSMT_VERIFIER, TRUE_OUT);
     }
 
@@ -41,7 +41,7 @@ contract BridgeVaultIntegrationTest is BridgeBase {
                 tokenVerifier: address(verifier),
                 tokenVerifierCodeHash: address(verifier).codehash,
                 b1ProfileHash: keccak256("b1"),
-                policyBody: _b(".policy.bytes")
+                policyBody: _policyV2(11)
             })
         );
     }
@@ -121,16 +121,14 @@ contract BridgeVaultIntegrationTest is BridgeBase {
 
     /// @dev A proof for the vault's policy: golden policy body, anchor and three leaf paths.
     function _proof(bytes memory history) internal view returns (bytes memory) {
-        return abi.encode(
-            _b(".policy.bytes"), history, _goldenAnchors("return"), _goldenLeafProofs("return")
-        );
+        return
+            abi.encode(
+                _policyV2(11), history, _goldenAnchors("return"), _goldenLeafProofs("return")
+            );
     }
 
     function _mintProof(bytes memory history) internal view returns (bytes memory) {
-        return
-            abi.encode(
-                _b(".policy.bytes"), history, _goldenAnchors("mint"), _goldenLeafProofs("mint")
-            );
+        return abi.encode(_policyV2(11), history, _goldenAnchors("mint"), _goldenLeafProofs("mint"));
     }
 
     // ---------------------------------------------------------------------------------------------
@@ -162,7 +160,7 @@ contract BridgeVaultIntegrationTest is BridgeBase {
     function test_redeem_everyB1CallRunsBeforeAnyStateChange() public {
         uint256 n = _lock(vault, ALICE, 1 ether);
         _kernelDefault(_ret(vault, n, 1 ether, BOB, keccak256("eta")));
-        _progDefault(B1Calls.UC_VERIFIER, FALSE_OUT);
+        _progDefault(B1Calls.CERT_BATCH, BATCH_FALSE);
         vm.expectRevert(abi.encodeWithSelector(UCRejected.selector));
         vault.redeem(_proof(hex"aabbcc"));
         assertEq(vault.credited(), 0);
@@ -192,8 +190,7 @@ contract BridgeVaultIntegrationTest is BridgeBase {
         _kernelDefault(_ret(vault, n, 1 ether, BOB, keccak256("eta")));
         Anchor[] memory a = _goldenAnchors("return");
         a[0].partition = 12;
-        bytes memory proof =
-            abi.encode(_b(".policy.bytes"), hex"aabbcc", a, _goldenLeafProofs("return"));
+        bytes memory proof = abi.encode(_policyV2(11), hex"aabbcc", a, _goldenLeafProofs("return"));
         vm.expectRevert(abi.encodeWithSelector(PolicyTupleMismatch.selector));
         vault.redeem(proof);
     }

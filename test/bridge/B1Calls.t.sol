@@ -8,8 +8,8 @@ import {BudgetExceeded} from "../../src/bridge/BridgeErrors.sol";
 
 /// @dev Exposes the internal request builders so their caps can be tested directly.
 contract B1CallsHarness {
-    function uc(Anchor memory a) external pure returns (bytes memory) {
-        return B1Calls.ucRequest(a);
+    function batch(Anchor[] memory a) external pure returns (bytes memory) {
+        return B1Calls.batchRequest(a);
     }
 
     function member(bytes memory value) external pure returns (bytes memory) {
@@ -28,12 +28,34 @@ contract B1CallsTest is Test {
         a.uc = new bytes(ucLen);
     }
 
-    function test_ucRequest_capsAreEnforced() public {
-        assertEq(h.uc(_anchor(33, 24576)).length, 4 + 4 + 2 + 33 + 96 + 4 + 24576);
+    function _table(uint256 k, uint256 shardLen, uint256 ucLen)
+        internal
+        pure
+        returns (Anchor[] memory t)
+    {
+        t = new Anchor[](k);
+        for (uint256 i = 0; i < k; ++i) {
+            t[i] = _anchor(shardLen, ucLen);
+        }
+    }
+
+    function test_batchRequest_capsAreEnforced() public {
+        // header 4, then per claim: partition 4, shard length 2, shard, three words, UC length 4, UC
+        assertEq(h.batch(_table(1, 33, 24576)).length, 4 + 4 + 2 + 33 + 96 + 4 + 24576);
+        assertEq(h.batch(_table(16, 1, 10)).length, 4 + 16 * (4 + 2 + 1 + 96 + 4 + 10));
         vm.expectRevert(abi.encodeWithSelector(BudgetExceeded.selector));
-        h.uc(_anchor(34, 0));
+        h.batch(_table(1, 34, 0));
         vm.expectRevert(abi.encodeWithSelector(BudgetExceeded.selector));
-        h.uc(_anchor(1, 24577));
+        h.batch(_table(1, 1, 24577));
+    }
+
+    function test_batchRequest_claimCountIsOneToSixteen() public {
+        vm.expectRevert(abi.encodeWithSelector(BudgetExceeded.selector));
+        h.batch(_table(0, 1, 1));
+        vm.expectRevert(abi.encodeWithSelector(BudgetExceeded.selector));
+        h.batch(_table(17, 1, 1));
+        bytes memory req = h.batch(_table(16, 1, 1));
+        assertEq(bytes4(req), bytes4(hex"02000010"), "version 2, flags 0, K = 16");
     }
 
     function test_memberRequest_valueCap() public {

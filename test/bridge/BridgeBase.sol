@@ -30,23 +30,25 @@ abstract contract BridgeBase is Test {
     bytes32 internal constant MARKER = bytes32("UNICITY_TOKEN_SEMANTICS");
 
     string internal G;
-    string internal B1V;
+    /// @dev The B1 vector file is large (the any-age corpus): tests that need it read it themselves, once.
+    string internal constant B1V_PATH = "test/bridge/b1-vectors.json";
 
     function _loadGolden() internal {
         G = vm.readFile("test/bridge/golden.json");
-        B1V = vm.readFile("test/bridge/b1-vectors.json");
     }
 
     function _etchDoubles() internal {
-        address[3] memory targets = [B1Calls.UC_VERIFIER, B1Calls.RSMT_VERIFIER, B1Calls.KERNEL];
+        address[3] memory targets = [B1Calls.CERT_BATCH, B1Calls.RSMT_VERIFIER, B1Calls.KERNEL];
         for (uint256 i = 0; i < targets.length; ++i) {
             vm.etch(targets[i], REVERT_CODE);
         }
     }
 
-    /// @dev The mock selector of a target's default answer: the first four bytes of its requests.
-    function _selectorOf(address target) internal pure returns (bytes4) {
-        return target == B1Calls.KERNEL ? bytes4(0) : bytes4(0x01000001);
+    /// @dev The calldata prefix of a target's default answer: the batch header (version 2, flags 0), the RSMT header (version 1, flags 0,
+    ///      count 1), or any call to the kernel.
+    function _selectorOf(address target) internal pure returns (bytes memory) {
+        if (target == B1Calls.KERNEL) return hex"00000000";
+        return target == B1Calls.CERT_BATCH ? bytes(hex"0200") : bytes(hex"01000001");
     }
 
     function _prog(address target, bytes memory req, bytes memory out) internal {
@@ -237,20 +239,29 @@ abstract contract BridgeBase is Test {
         return abi.encode(MARKER, valid, r);
     }
 
-    /// @dev UC request for one claim, written byte by byte rather than through the library.
-    function _expectedUC(Anchor memory a) internal pure returns (bytes memory) {
-        return bytes.concat(
-            hex"0100",
-            hex"0001",
-            bytes4(a.partition),
-            bytes2(uint16(a.shard.length)),
-            a.shard,
-            a.shardConfHash,
-            a.expectedStateRoot,
-            a.expectedIRHash,
-            bytes4(uint32(a.uc.length)),
-            a.uc
-        );
+    /// @dev The CERT_BATCH_V2 request over a table of anchors, written byte by byte rather than through the library: `02 00 | K | claims`.
+    function _expectedBatch(Anchor[] memory as_) internal pure returns (bytes memory out) {
+        out = bytes.concat(hex"0200", bytes2(uint16(as_.length)));
+        for (uint256 i = 0; i < as_.length; ++i) {
+            Anchor memory a = as_[i];
+            out = bytes.concat(
+                out,
+                bytes4(a.partition),
+                bytes2(uint16(a.shard.length)),
+                a.shard,
+                a.shardConfHash,
+                a.expectedStateRoot,
+                a.expectedIRHash,
+                bytes4(uint32(a.uc.length)),
+                a.uc
+            );
+        }
+    }
+
+    /// @dev The policy body `["UNICITY_BR_AGG_PARTITION", 2, partition]`, written byte by byte (a 24-byte text-as-bytes domain).
+    function _policyV2(uint256 partition) internal pure returns (bytes memory) {
+        return
+            bytes.concat(hex"83", hex"5818", "UNICITY_BR_AGG_PARTITION", hex"02", _uint(partition));
     }
 
     /// @dev RSMT request with the raw 32-byte leaf value `v = H(C(b(txHash), t))`.
@@ -265,6 +276,8 @@ abstract contract BridgeBase is Test {
         }
     }
 
-    bytes internal constant TRUE_OUT = abi.encode(uint256(1), true);
+    bytes internal constant TRUE_OUT = abi.encode(uint256(1), true); // RSMT membership v1
     bytes internal constant FALSE_OUT = abi.encode(uint256(1), false);
+    bytes internal constant BATCH_TRUE = abi.encode(uint256(2), true); // CERT_BATCH_V2
+    bytes internal constant BATCH_FALSE = abi.encode(uint256(2), false);
 }
