@@ -25,3 +25,18 @@ root authenticates with Ethereum storage proofs for a Retirement and a RejectRes
 getters report. bft-core's `rootchain/evmstate` derives every slot from the declared layout and must land on the recorded one
 (`testdata/` there holds copies). The custody scenarios use the test mock as `roots`; bft-core pairs them with registry storage built from
 the registry fixture's slot rules.
+
+# xrepo-go-records.json, xrepo-custody-view.json, xrepo-genesis-input.json
+The cross-repository consistency suite (bft-core `xrepo/README.md` has the whole picture and the list of what is and is not covered).
+
+- `xrepo-go-records.json` is produced by bft-core (`XREPO_UPDATE=1 go test ./xrepo`) from this repository's `publication.json`: the root
+  records its projection emits for that result (recovery: Closure of G, Closure of the Reserved J, RecoveryAck, Closure of K; ack; session
+  closed) with the assignment ids the root names and the digests it derives. `XRepoRecords.t.sol` applies them VERBATIM (nothing replaced,
+  unlike `AuthenticatedRecords.t.sol`) and checks custody's state after every record.
+- `xrepo-custody-view.json` is generated here by the same test (`P85_WRITE_FIXTURES=true`): what custody holds after each record. bft-core
+  compares it with its own model.
+- `xrepo-genesis-input.json` is what bft-core's `ubft pos-relayer genesis --out-contracts` writes for a committed plan over the FULL shard
+  configuration. `XRepoGenesis.t.sol` runs `script/P85Genesis.s.sol` on it and checks custody holds the genesis assignment under the file's id.
+
+All shared files, in both directions, are listed in bft-core `xrepo/fixtures.json`; CI compares every copy with bft-core at the commit in
+`xrepo/bft-core-pin.json`.
