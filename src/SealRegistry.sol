@@ -11,13 +11,21 @@ import {
     PriorTipMismatch,
     OldTipEndMismatch,
     InvalidInterval,
-    TooManyEntries,
-    RingFull,
+    AppendGap,
+    BadAppend,
     NonContiguousEpochs,
-    ExpiredEntry,
+    AppendStartNotIncreasing,
+    AppendClosesUsableOrigin,
     StartAfterOrigin,
     OriginEpochMismatch,
-    EntryAlreadyPresent
+    EntryAlreadyPresent,
+    OriginEpochRegression,
+    OriginRoundRegression,
+    OriginBeyondImportedTip,
+    FirstOriginBeforeGenesis,
+    OriginBeforeStart,
+    OriginAtOrAfterEnd,
+    ImportedUsableMismatch
 } from "./B1Layout.sol";
 
 import {IRootRecords} from "./p85/IP85.sol";
@@ -613,92 +621,98 @@ contract SealRegistry is IRootRecords {
         _store(SLOT_PHASE, PHASE_FINALIZED);
     }
 
-    // ------------------------------------------------------------------ B1 pruned history
+    // ------------------------------------------------------------------ B1 permanent history
 
-    /// @dev Applies the committed update to the circular queue of live root-epoch intervals, in the
-    /// order of the design: bind and check the parent tip, prune before inserting (so occupancy never
-    /// exceeds K_max), write the former tip's closure once if it survives, append the new entries and
-    /// check the final live set. O is the origin round and L = max(0, O - W_cert); an entry is live
-    /// iff it is open or its exclusive end exceeds L.
+    /// @dev Applies the committed update to the permanent registry, mirroring bft-core `b1state.Registry.Apply`: bind the parent tip, check
+    /// the update's own shape, append the new epochs after the imported tip (closing the former tip once), then move the usable origin to
+    /// (originEpoch, originRound) under the write-side guards. Nothing is pruned or deleted. Any error reverts the whole call, so no
+    /// partial import is published. How many epochs one block may import (B) is the profile's admission rule at the paired verifier and
+    /// the system-call gas, not a word of this registry.
     function _applyB1(B1Update calldata update, uint64 originRound, uint64 originEpoch) private {
-        uint256 k = _load(B1Layout.F_W_CERT) + 1;
-        uint256 origin = originRound;
-        uint256 low = origin > k - 1 ? origin - (k - 1) : 0;
-        uint256 head = _load(B1Layout.F_HEAD);
-        uint256 count = _load(B1Layout.F_COUNT);
-        if (count == 0 || count > k || head >= k) revert B1StateInvalid();
-
-        uint256 tail = _load(B1Layout.queueSlot((head + count - 1) % k));
-        if (_load(B1Layout.entrySlot(tail, 6)) != 0) revert B1StateInvalid(); // the tail is open
-        if (update.priorTipEpoch != tail) revert PriorTipMismatch();
+        uint256 tip = _load(B1Layout.F_IMPORTED_TIP);
+        if (_load(B1Layout.entrySlot(tip, 0)) != 1 || _load(B1Layout.entrySlot(tip, 6)) != 0) {
+            revert B1StateInvalid(); // the imported tip is the one open entry
+        }
+        if (update.priorTipEpoch != tip) revert PriorTipMismatch();
 
         B1Entry[] calldata news = update.newEntries;
         uint256 a = news.length;
-        if (a > k) revert TooManyEntries();
-        if (update.hasOldTipEnd != (a != 0)) revert OldTipEndMismatch();
-        if (!update.hasOldTipEnd && update.oldTipEnd != 0) revert OldTipEndMismatch();
-        if (update.hasOldTipEnd && update.oldTipEnd <= _load(B1Layout.entrySlot(tail, 4))) {
-            revert InvalidInterval();
-        }
-
-        // Prune from the head while the entry's effective end is at or below L. The former tip's
-        // effective end is the supplied oldTipEnd, so a tip that is deleted is never closed first.
-        while (count != 0) {
-            uint256 e = _load(B1Layout.queueSlot(head));
-            bool ended;
-            uint256 end;
-            if (count == 1) {
-                ended = update.hasOldTipEnd;
-                end = update.oldTipEnd;
-            } else {
-                ended = _load(B1Layout.entrySlot(e, 6)) != 0;
-                end = _load(B1Layout.entrySlot(e, 5));
+        if (a == 0) {
+            if (update.hasOldTipEnd || update.oldTipEnd != 0) revert OldTipEndMismatch();
+            if (tip != originEpoch) revert OriginEpochMismatch();
+        } else {
+            if (!update.hasOldTipEnd || update.oldTipEnd != news[0].start) {
+                revert OldTipEndMismatch();
             }
-            if (!ended || end > low) break; // survivor (the boundary-crossing entry is retained)
-            _deleteEntry(e, head);
-            head = (head + 1) % k;
-            count--;
+            _appendAll(news, tip, originRound, originEpoch);
+            tip = news[a - 1].epoch;
+            _store(B1Layout.F_IMPORTED_TIP, tip);
         }
-        if (count == 0) head = 0;
+        _advanceOrigin(originEpoch, originRound);
+        if (originEpoch != tip) revert ImportedUsableMismatch(); // no preload mode: the usable epoch is the imported tip
+    }
 
-        if (a != 0) {
-            if (count + a > k) revert RingFull();
-            if (count != 0) {
-                // The former tip survives: it closes exactly where its successor starts.
-                if (news[0].epoch != uint256(tail) + 1 || news[0].start != update.oldTipEnd) {
-                    revert NonContiguousEpochs();
-                }
-                _store(B1Layout.entrySlot(tail, 5), update.oldTipEnd);
-                _store(B1Layout.entrySlot(tail, 6), 1);
-            } else {
-                // Everything expired: the first new entry must be the one that crosses L.
-                if (news[0].epoch <= tail) revert NonContiguousEpochs();
-                if (news[0].start > low) revert StartAfterOrigin();
+    /// @dev The update's shape (bft-core `b1state` update validation) and `Registry.append` for each new epoch, in order.
+    function _appendAll(
+        B1Entry[] calldata news,
+        uint256 tip,
+        uint64 originRound,
+        uint64 originEpoch
+    ) private {
+        uint256 a = news.length;
+        if (tip == type(uint64).max) revert BadAppend();
+        bool ready = _load(B1Layout.F_ORIGIN_READY) == 1;
+        uint256 prevStart = _load(B1Layout.entrySlot(tip, 4));
+        for (uint256 i = 0; i < a; i++) {
+            B1Entry calldata en = news[i];
+            if (en.bodyKind == 1) revert BadAppend(); // the genesis body is installed at genesis only
+            if (en.epoch != tip + 1 + i) revert AppendGap();
+            if (i != 0 && (!news[i - 1].hasEnd || news[i - 1].end != en.start)) {
+                revert NonContiguousEpochs();
             }
-            for (uint256 i = 0; i < a; i++) {
-                B1Entry calldata en = news[i];
-                if (i != 0) {
-                    B1Entry calldata prev = news[i - 1];
-                    if (en.epoch != uint256(prev.epoch) + 1 || en.start != prev.end) {
-                        revert NonContiguousEpochs();
-                    }
-                }
-                if (en.hasEnd == (i == a - 1)) revert InvalidInterval(); // only the last is open
-                if (en.hasEnd && en.end <= low) revert ExpiredEntry();
-                if (en.start > origin) revert StartAfterOrigin();
-                if (_load(B1Layout.entrySlot(en.epoch, 0)) != 0) revert EntryAlreadyPresent();
-                B1Layout.checkEntry(en, false);
-                _writeEntry(en);
-                _store(B1Layout.queueSlot((head + count) % k), en.epoch);
-                count++;
+            if (en.start > originRound || (en.hasEnd && en.end > originRound)) {
+                revert StartAfterOrigin();
             }
-            tail = news[a - 1].epoch;
+            if (en.hasEnd == (i == a - 1)) revert InvalidInterval(); // only the last is open
+            if (i == a - 1 && en.epoch != originEpoch) revert OriginEpochMismatch();
+            B1Layout.checkEntry(en, false);
+            if (en.start <= prevStart) revert AppendStartNotIncreasing();
+            if (
+                i == 0 && ready && tip == _load(SLOT_ORIGIN_ROOT_EPOCH)
+                    && en.start <= _load(SLOT_CLOCK_ROOT_ROUND)
+            ) {
+                revert AppendClosesUsableOrigin();
+            }
+            if (_load(B1Layout.entrySlot(en.epoch, 0)) != 0) revert EntryAlreadyPresent();
+            if (i == 0) {
+                // The former tip closes exactly where its successor starts, once.
+                _store(B1Layout.entrySlot(tip, 5), en.start);
+                _store(B1Layout.entrySlot(tip, 6), 1);
+            }
+            _writeEntry(en);
+            prevStart = en.start;
         }
+    }
 
-        if (count == 0) revert B1StateInvalid();
-        if (tail != originEpoch) revert OriginEpochMismatch();
-        _store(B1Layout.F_HEAD, head);
-        _store(B1Layout.F_COUNT, count);
+    /// @dev `Registry.advance`: the usable origin moves forward onto an installed epoch whose interval holds the origin round.
+    function _advanceOrigin(uint64 epoch, uint64 round) private {
+        bool ready = _load(B1Layout.F_ORIGIN_READY) == 1;
+        if (ready) {
+            if (epoch < _load(SLOT_ORIGIN_ROOT_EPOCH)) revert OriginEpochRegression();
+            if (round < _load(SLOT_CLOCK_ROOT_ROUND)) revert OriginRoundRegression();
+        } else if (epoch < _load(B1Layout.F_GENESIS_EPOCH)) {
+            revert FirstOriginBeforeGenesis();
+        }
+        if (epoch > _load(B1Layout.F_IMPORTED_TIP) || _load(B1Layout.entrySlot(epoch, 0)) != 1) {
+            revert OriginBeyondImportedTip();
+        }
+        if (round < _load(B1Layout.entrySlot(epoch, 4))) revert OriginBeforeStart();
+        if (
+            _load(B1Layout.entrySlot(epoch, 6)) != 0 && round >= _load(B1Layout.entrySlot(epoch, 5))
+        ) {
+            revert OriginAtOrAfterEnd();
+        }
+        if (!ready) _store(B1Layout.F_ORIGIN_READY, 1);
     }
 
     /// @dev Writes the 11 metadata words and 8 words per member of one entry.
@@ -732,31 +746,14 @@ contract SealRegistry is IRootRecords {
         }
     }
 
-    /// @dev Clears every metadata word, every member word and the queue word of one entry.
-    function _deleteEntry(uint256 e, uint256 queueIndex) private {
-        uint256 m = _load(B1Layout.entrySlot(e, 9));
-        for (uint256 j = 0; j < m; j++) {
-            for (uint256 f = 0; f < B1Layout.MEMBER_FIELDS; f++) {
-                _store(B1Layout.memberSlot(e, j, f), 0);
-            }
-        }
-        for (uint256 f = 0; f < B1Layout.ENTRY_FIELDS; f++) {
-            _store(B1Layout.entrySlot(e, f), 0);
-        }
-        _store(B1Layout.queueSlot(queueIndex), 0);
-    }
-
-    /// @dev Finalize re-asserts what the last open established: a non-empty ring within K_max whose
-    /// tail is the open interval of the origin epoch.
+    /// @dev Finalize re-asserts what the last open established: format 2, a usable origin that is the imported tip, and the tip is the one
+    /// open present entry at or after the genesis epoch.
     function _checkB1Invariants() private view {
-        uint256 k = _load(B1Layout.F_W_CERT) + 1;
-        uint256 head = _load(B1Layout.F_HEAD);
-        uint256 count = _load(B1Layout.F_COUNT);
-        if (count == 0 || count > k || head >= k) revert B1StateInvalid();
-        uint256 tail = _load(B1Layout.queueSlot((head + count - 1) % k));
+        uint256 tip = _load(B1Layout.F_IMPORTED_TIP);
         if (
-            _load(B1Layout.entrySlot(tail, 0)) != 1 || _load(B1Layout.entrySlot(tail, 6)) != 0
-                || tail != _load(SLOT_ORIGIN_ROOT_EPOCH)
+            _load(B1Layout.F_FORMAT) != B1Layout.FORMAT || _load(B1Layout.F_ORIGIN_READY) != 1
+                || tip < _load(B1Layout.F_GENESIS_EPOCH) || tip != _load(SLOT_ORIGIN_ROOT_EPOCH)
+                || _load(B1Layout.entrySlot(tip, 0)) != 1 || _load(B1Layout.entrySlot(tip, 6)) != 0
         ) revert B1StateInvalid();
     }
 

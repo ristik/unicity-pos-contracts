@@ -4,11 +4,11 @@ pragma solidity 0.8.37;
 
 import {B1Layout, B1Entry} from "./B1Layout.sol";
 
-/// W_cert <= delta_ev < delta_hold does not hold, or W_cert + 1 overflows.
+/// delta_ev < delta_hold does not hold, or B is zero.
 error ProfileBounds();
-/// K_max exceeds the largest maximal actual-call gas fixture; a larger budget does not admit it.
-error UnmeasuredKMax();
-/// The profile's g_sys does not cover the conservative registry envelope for its K_max.
+/// B (epochs imported per block) exceeds the largest maximal actual-call gas fixture; a larger budget does not admit it.
+error UnmeasuredB();
+/// The profile's g_sys does not cover the conservative registry envelope for its B.
 error GasEnvelopeShort();
 /// The genesis entry is not the open interval of the root genesis epoch.
 error GenesisEntryInvalid();
@@ -21,7 +21,9 @@ struct B1GenesisParams {
     // The pinned genesis UC time: records.ucTime before any import.
     uint64 genesisUcTime;
     uint16 network;
-    uint64 wCert;
+    // B: the most validator epochs one block imports (the profile's MaxEpochsPerUpdate). Not a registry word: the paired verifier and
+    // the system-call gas enforce it. Used here only for the gas envelope.
+    uint64 maxEpochsPerUpdate;
     uint64 deltaEv;
     uint64 deltaHold;
     bytes32 profileHash;
@@ -41,50 +43,36 @@ struct B1Word {
 /// function (B1Layout.checkEntry) that checks runtime entries. Zero words are absent from a genesis
 /// allocation, so only non-zero words are returned.
 contract B1GenesisBuilder {
-    /// Largest K_max exercised by maximal actual-call fixtures; raising it requires re-measurement.
-    uint256 public constant MAX_MEASURED_K = 16;
+    /// Largest B exercised by maximal actual-call fixtures; raising it requires re-measurement.
+    uint256 public constant MAX_MEASURED_B = 2;
 
-    /// The base was raised by 40,000 for the records import: finalize now reads the import round, and the larger runtime and its
-    /// selector dispatch add measured cost to every open and finalize (worst measured growth 27,000 at 1.5x), and the per-delete term by 6,000 (measured growth up to 84,000 at K_max 16 after the larger runtime changed the compiler's layout of the pruning loop). The import call itself is
-    /// charged separately (G_R_admit and the import's own gross gas, PR1c control-records spec section 6).
-    /// Measured-plus-margin allowance for the pinned runtime (docs/b1-registry-gas.md): every
-    /// cost of a maximal open+finalize other than the history SSTOREs the rectangle covers. Fitted
-    /// coefficients (731000 base, 633000 insert, 128000 delete) times a 1.5x safety factor, not a proof.
-    /// Since a <= K_max and p <= K_max, the profile uses base + (perInsert + perDelete) * K_max.
-    uint256 public constant G_REST_BASE = 1_136_500;
-    uint256 public constant G_REST_PER_INSERT = 949_500;
-    uint256 public constant G_REST_PER_DELETE = 198_000;
-    uint256 public constant G_REST_PER_ENTRY = G_REST_PER_INSERT + G_REST_PER_DELETE;
+    /// Measured-plus-margin allowance for the pinned runtime (docs/b1-registry-gas.md): every cost of a maximal open+finalize other
+    /// than the history SSTOREs the rectangle covers, for B imported epochs of the 16-member ceiling. Coefficients are fitted from the
+    /// maximal actual-call fixtures at B = 1 and 2 with a 1.5x safety factor, not a proof.
+    uint256 public constant G_REST_BASE = 1_150_000;
+    uint256 public constant G_REST_PER_EPOCH = 250_000;
 
-    function gRestFor(uint256 inserted, uint256 deleted) public pure returns (uint256) {
-        return G_REST_BASE + G_REST_PER_INSERT * inserted + G_REST_PER_DELETE * deleted;
+    function gRestBound(uint256 b) public pure returns (uint256) {
+        return G_REST_BASE + G_REST_PER_EPOCH * b;
     }
 
-    function gRestBound(uint256 kMax) public pure returns (uint256) {
-        return G_REST_BASE + G_REST_PER_ENTRY * kMax;
-    }
-
-    /// g_sys >= 67536 + 326144*K + 22100*(524*K+4) + 7100*524*K + G_rest (design v4, realizable
-    /// system metering). A conservative rectangle, not an attainable cost.
-    function minGSys(uint256 kMax, uint256 gRest) public pure returns (uint256) {
-        return 67_536 + 326_144 * kMax + 22_100 * (524 * kMax + 4) + 7100 * 524 * kMax + gRest;
+    /// g_sys >= 155936 + (505244 + 177800*16)*B + G_rest(B): the full-entry write rectangle for B epochs at the 16-member ceiling (11 + 8N
+    /// words per entry, one predecessor closure, cursors) plus the measured rest. A conservative rectangle, not an attainable cost.
+    function minGSys(uint256 b, uint256 gRest) public pure returns (uint256) {
+        return 155_936 + (505_244 + 177_800 * 16) * b + gRest;
     }
 
     function words(B1GenesisParams calldata p) external pure returns (B1Word[] memory out) {
-        if (p.wCert > p.deltaEv || p.deltaEv >= p.deltaHold || p.wCert == type(uint64).max) {
-            revert ProfileBounds();
-        }
-        uint256 kMax = uint256(p.wCert) + 1;
-        if (kMax > MAX_MEASURED_K) revert UnmeasuredKMax();
-        if (p.gRest < gRestBound(kMax) || p.gSys < minGSys(kMax, p.gRest)) {
-            revert GasEnvelopeShort();
-        }
+        if (p.maxEpochsPerUpdate == 0 || p.deltaEv >= p.deltaHold) revert ProfileBounds();
+        uint256 b = p.maxEpochsPerUpdate;
+        if (b > MAX_MEASURED_B) revert UnmeasuredB();
+        if (p.gRest < gRestBound(b) || p.gSys < minGSys(b, p.gRest)) revert GasEnvelopeShort();
         B1Entry calldata en = p.entry;
         if (en.epoch != p.rootEpoch || en.hasEnd) revert GenesisEntryInvalid();
         uint64 total = B1Layout.checkEntry(en, true);
 
         uint256 m = en.members.length;
-        out = new B1Word[](15 + 11 + 8 * m);
+        out = new B1Word[](16 + 11 + 8 * m);
         uint256 n = 0;
         // Operational words, re-exported under the single layout (no layoutVersion word).
         n = _put(out, n, _name("genesisCommitment"), p.genesisCommitment);
@@ -96,13 +84,13 @@ contract B1GenesisBuilder {
         n = _put(out, n, _name("phase"), bytes32(uint256(2)));
         // B1 immutable and mutable words.
         n = _put(out, n, B1Layout.F_NETWORK, bytes32(uint256(p.network)));
-        n = _put(out, n, B1Layout.F_W_CERT, bytes32(uint256(p.wCert)));
+        n = _put(out, n, B1Layout.F_FORMAT, bytes32(B1Layout.FORMAT));
         n = _put(out, n, B1Layout.F_PROFILE_HASH, p.profileHash);
         n = _put(out, n, B1Layout.F_INITIALIZED, bytes32(uint256(1)));
-        n = _put(out, n, B1Layout.F_COUNT, bytes32(uint256(1)));
-        // head = 0 is absent. Queue slot 0 holds the genesis epoch (a zero epoch is a present word:
-        // count, not the word, distinguishes it from emptiness).
-        n = _put(out, n, B1Layout.queueSlot(0), bytes32(uint256(en.epoch)));
+        // g and I are both the genesis epoch (a zero epoch is an absent word, and a valid occupied epoch: the entry's present word, not
+        // these, distinguishes it); originReady is 0 and so absent, and the operational origin epoch and round are 0 until the first origin.
+        n = _put(out, n, B1Layout.F_GENESIS_EPOCH, bytes32(uint256(en.epoch)));
+        n = _put(out, n, B1Layout.F_IMPORTED_TIP, bytes32(uint256(en.epoch)));
         uint256 e = en.epoch;
         n = _put(out, n, B1Layout.entrySlot(e, 0), bytes32(uint256(1)));
         n = _put(out, n, B1Layout.entrySlot(e, 1), bytes32(uint256(en.bodyKind)));

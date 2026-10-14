@@ -5,7 +5,7 @@ precondition on [bft-core F4 (#12)](https://github.com/ristik/bft-core/issues/12
 repository/toolchain and ownership must be recorded before implementation; no complete PoS contract
 package is assumed to exist in BFT Core."*
 
-**Implemented so far:** the SealRegistry (with the B1 pruned authenticated root-epoch history, see
+**Implemented so far:** the SealRegistry (with the B1 permanent authenticated root-epoch history, see
 [`docs/b1-registry-gas.md`](docs/b1-registry-gas.md)), WUCT native wrapper, simplified FeeCollector,
 immutable timestamp vesting vault, and the P85 custody, identity and evidence modules (`src/`,
 `src/p85/`). Nothing here is deployed, and no genesis, activation, issuance or PoS feature follows
@@ -102,19 +102,20 @@ layout is protocol surface, not an implementation detail.
 ## SealRegistry
 
 `src/SealRegistry.sol` implements the assignment-aware registry profile for H3 and, for B1 (bft-core
-#62), the pruned authenticated root-epoch history. It retains the immutable genesis configuration hash,
-tracks a separate active EVM assignment hash and shard epoch, and stores the live root-epoch intervals
-(full members and weights) that certificate verification reads. The paired BFT/Ureth verifier
+#62, any-age verification), the permanent authenticated root-epoch history. It retains the immutable genesis configuration hash,
+tracks a separate active EVM assignment hash and shard epoch, and stores every installed root-epoch entry
+(full members and weights, kept forever) that certificate verification reads. The paired BFT/Ureth verifier
 authenticates the ordered supersession chain and the history and supplies their bounded projections;
 the contract checks the projection's old/new context, commitment digest, epoch arithmetic and the
-queue invariants. Layout, update projection, genesis and the gas analysis are in
+append-only history invariants (it mirrors bft-core `b1state.Registry.Apply`). Layout, update projection, genesis and the gas analysis are in
 [`docs/b1-registry-gas.md`](docs/b1-registry-gas.md).
 
 - **Layout.** No Solidity state variables. One fresh layout (no layout-version word, no migration): every
-  field lives at `keccak256("unicity.seal-registry/" || name)`, plus a circular queue of epochs and
-  per-epoch entry and member words at derived slots. A test requires the compiled storage layout to be empty.
+  field lives at `keccak256("unicity.seal-registry/" || name)`, plus per-epoch entry and member words at
+  derived slots, looked up directly by epoch (no queue, no window). A test requires the compiled storage layout to be empty.
 - **Genesis.** No constructor. Genesis places the runtime code at `a_sr` and writes the operational words,
-  the immutable profile words (`b1.network`, `b1.wCert`, `b1.profileHash`), `b1.initialized`, the queue and
+  the immutable words (`b1.network`, `b1.format` = 2, `b1.profileHash`), `b1.initialized`, the cursors
+  `b1.genesisEpoch` and `b1.importedTipEpoch` (both the genesis epoch; `b1.originReady` = 0) and
   the genesis entry with its members. `src/B1GenesisBuilder.sol` builds those words under the runtime's
   bounds and refuses a profile whose `g_sys` does not cover the registry envelope; it is a build-time
   helper and is not part of the runtime.
@@ -122,8 +123,9 @@ queue invariants. Layout, update projection, genesis and the gas analysis are in
   storage. Root-only acknowledgements still advance root epoch by exactly one and preserve the assignment.
   Direct EVM assignment acknowledgements advance root and shard epochs by one. Only a paired-verifier
   projection can fold a multi-step supersession span; its root/shard deltas and commitment are checked,
-  while the immutable genesis hash is never rewritten. Every `open` prunes intervals whose end is at or
-  below `L = max(0, O - W_cert)`, closes the former tip once and inserts the new live intervals. Only the
+  while the immutable genesis hash is never rewritten. Every `open` appends the new epochs after the imported tip, closes the former tip once at the first
+  successor's start, advances `b1.importedTipEpoch` and moves the usable origin onto the new tip; nothing is ever
+  pruned or deleted. Only the
   system caller may `open` or `finalize`.
 - **Compiler.** Solidity 0.8.37 with the IR pipeline (owner decision on bft-core #12); no metadata hash or
   CBOR trailer is emitted.
