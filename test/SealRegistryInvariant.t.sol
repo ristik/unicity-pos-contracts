@@ -103,7 +103,8 @@ contract SealRegistryHandler is SealRegistryBase {
         OpenArgs memory a = firstPayload();
         a.n = uint64(uintWord("round.authorized") + 1);
         // The origin round advances by the epoch delta, so every new interval starts after the tip.
-        a.rootRound = uint64(uintWord("clock.rootRound") + rootDelta);
+        // above the genesis start and the usable origin round, so every new interval starts after the tip
+        a.rootRound = uint64(uintWord("clock.rootRound") + rootDelta + 10);
         a.update = advanceUpdate(tipEpoch(), a.rootRound, rootDelta, 2);
         a.rootEpoch = oldRoot + rootDelta;
         a.certEpoch = oldShard;
@@ -200,7 +201,8 @@ contract SealRegistryInvariantTest is SealRegistryBase {
 
     function invariant_genesisIdentityAndActiveHashStayValid() public view {
         assertEq(b1Word("b1.initialized"), 1);
-        assertEq(b1Word("b1.wCert"), W_CERT);
+        assertEq(b1Word("b1.format"), 2);
+        assertEq(b1Word("b1.genesisEpoch"), ROOT_EPOCH);
         assertEq(bytes32(b1Word("b1.profileHash")), PROFILE_HASH);
         assertEq(b1Word("b1.network"), NETWORK);
         assertEq(word("genesisCommitment"), GENESIS_COMMITMENT);
@@ -229,27 +231,22 @@ contract SealRegistryInvariantTest is SealRegistryBase {
         assertEq(word("inbox.consumed"), bytes32(0));
     }
 
-    /// The ring is never empty or over K_max, its epochs are consecutive and its intervals contiguous
-    /// with exactly one open tail, which is the assignment's root epoch once a block has opened.
-    function invariant_ringIsAContiguousLiveSetWithOneOpenTail() public view {
-        uint256 count = b1Word("b1.count");
-        assertGe(count, 1);
-        assertLe(count, kMax());
-        assertLt(b1Word("b1.head"), kMax());
-        uint256[] memory es = liveEpochs();
-        for (uint256 i = 0; i < es.length; i++) {
-            assertEq(ent(es[i], 0), bytes32(uint256(1)), "live entry present");
-            bool last = i == es.length - 1;
-            assertEq(uint256(ent(es[i], 6)), last ? 0 : 1, "only the tail is open");
-            if (!last) {
-                assertEq(es[i + 1], es[i] + 1, "consecutive epochs");
-                assertEq(ent(es[i], 5), ent(es[i + 1], 4), "end is the next start");
-            }
+    /// The history is permanent and contiguous: every epoch from the genesis epoch to the imported tip is present, consecutive, closed at the
+    /// successor's start except the one open tip, and the tip is the assignment's root epoch once a block has opened.
+    function invariant_historyIsPermanentContiguousWithOneOpenTip() public view {
+        uint256 g = b1Word("b1.genesisEpoch");
+        uint256 tip = b1Word("b1.importedTipEpoch");
+        assertGe(tip, g);
+        for (uint256 e = g; e <= tip; e++) {
+            assertEq(ent(e, 0), bytes32(uint256(1)), "installed entry present");
+            bool last = e == tip;
+            assertEq(uint256(ent(e, 6)), last ? 0 : 1, "only the tip is open");
+            if (!last) assertEq(ent(e, 5), ent(e + 1, 4), "end is the next start");
         }
-        assertEq(es[es.length - 1], uintWord("assignment.rootEpoch"), "tail is the root epoch");
-        // No stale words for epochs that have left the window.
-        for (uint256 e = 0; e < es[0] && e < TRACK_EPOCHS; e++) {
-            assertEntryAbsent(e, TRACK_MEMBERS);
+        assertEq(ent(tip + 1, 0), bytes32(0), "nothing beyond the imported tip");
+        if (b1Word("b1.originReady") == 1) {
+            assertEq(tip, uintWord("assignment.rootEpoch"), "tip is the root epoch");
+            assertEq(tip, uintWord("origin.rootEpoch"), "the usable epoch is the tip");
         }
     }
 

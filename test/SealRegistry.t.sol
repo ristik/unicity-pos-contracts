@@ -99,12 +99,12 @@ contract SealRegistryTest is SealRegistryBase {
 
     function test_b1FixedGenesisWordsAndNoLayoutVersion() public view {
         assertEq(b1Word("b1.network"), NETWORK);
-        assertEq(b1Word("b1.wCert"), W_CERT);
+        assertEq(b1Word("b1.format"), 2);
         assertEq(bytes32(b1Word("b1.profileHash")), PROFILE_HASH);
         assertEq(b1Word("b1.initialized"), 1);
-        assertEq(b1Word("b1.head"), 0);
-        assertEq(b1Word("b1.count"), 1);
-        assertEq(queueAt(0), ROOT_EPOCH);
+        assertEq(b1Word("b1.genesisEpoch"), ROOT_EPOCH);
+        assertEq(b1Word("b1.importedTipEpoch"), ROOT_EPOCH);
+        assertEq(b1Word("b1.originReady"), 0);
         assertEntryStored(genesisEntry(), 8);
         assertEq(uint256(vm.load(A_SR, keccak256("unicity.seal-registry/layoutVersion"))), 0);
         assertEq(uint256(vm.load(A_SR, keccak256("unicity.seal-registry.v1/layoutVersion"))), 0);
@@ -798,10 +798,11 @@ contract SealRegistryTest is SealRegistryBase {
         assertGe(uintWord("clock.rootRound"), uint256(before[fieldIndex("clock.rootRound")]));
         assertEq(uintWord("phase"), 1);
         assertEq(a.shardConfHash, FULL_SHARD_CONF_HASH);
-        assertEq(b1Word("b1.wCert"), W_CERT);
+        assertEq(b1Word("b1.format"), 2);
         assertEq(b1Word("b1.initialized"), 1);
-        assertGe(b1Word("b1.count"), 1);
-        assertLe(b1Word("b1.count"), kMax());
+        assertEq(b1Word("b1.originReady"), 1);
+        assertEq(b1Word("b1.genesisEpoch"), ROOT_EPOCH);
+        assertGe(b1Word("b1.importedTipEpoch"), ROOT_EPOCH);
     }
 
     // ---------------------------------------------------------------- code properties
@@ -860,7 +861,9 @@ contract SealRegistryTest is SealRegistryBase {
     {
         a = firstPayload();
         a.n = 2;
-        a.rootRound = 6;
+        uint64 delta = p.newRootEpoch - p.oldRootEpoch;
+        // after the first payload (origin round 5) every new interval must start above the usable origin round: delta epochs end at 5 + delta
+        a.rootRound = 5 + (delta >= 1 && delta <= 4 ? delta : 1);
         a.rootEpoch = p.newRootEpoch;
         a.certEpoch = p.oldShardEpoch;
         a.authEpoch = p.newShardEpoch;
@@ -875,7 +878,6 @@ contract SealRegistryTest is SealRegistryBase {
         a.successorTR = keccak256("ack successor TR");
         a.activeConfHash = p.newActiveConfHash;
         a.assignment = p;
-        uint64 delta = p.newRootEpoch - p.oldRootEpoch;
         // Even refused (invalid) projections carry a well-formed update when the span is small.
         if (delta >= 1 && delta <= 4) {
             a.update = advanceUpdate(p.oldRootEpoch, a.rootRound, delta, 3);

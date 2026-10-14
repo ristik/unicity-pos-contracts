@@ -17,7 +17,7 @@ import {
     B1GenesisParams,
     B1Word,
     ProfileBounds,
-    UnmeasuredKMax,
+    UnmeasuredB,
     GasEnvelopeShort,
     GenesisEntryInvalid
 } from "../src/B1GenesisBuilder.sol";
@@ -50,8 +50,8 @@ contract SealRegistryB1GenesisTest is SealRegistryBase {
     function test_thereAreExactlyTheNonZeroGenesisWords() public view {
         B1Word[] memory ws = _build(genesisParams());
         // 6 operational (genesisCommitment, config, rootEpoch, activeConf, records.ucTime, phase; shard epoch 0 is
-        // absent) + 6 profile/queue (network, wCert, profileHash, initialized, count, queue[0] = 1)
-        // + 8 entry metadata (activationCommitID, end, hasEnd are zero) + the non-zero member words.
+        // absent) + 6 profile and cursors (network, format, profileHash, initialized, genesisEpoch, importedTipEpoch;
+        // originReady is 0) + 8 entry metadata (activationCommitID, end, hasEnd are zero) + the non-zero member words.
         assertEq(ws.length, 6 + 6 + 8 + nonZeroMemberWords(genesisEntry().members));
         for (uint256 i = 0; i < ws.length; i++) {
             assertTrue(ws[i].value != bytes32(0), "zero words are omitted");
@@ -81,21 +81,38 @@ contract SealRegistryB1GenesisTest is SealRegistryBase {
     }
 
     bytes32 internal constant GENESIS_STORAGE_DIGEST =
-        0x7f69338f0f9ebc1140fb3c43c3f21ea570c8c61f8abe3038f53a3ee5033cb065;
+        0x8c9f35d7df00fd660f826cb340b4adc651c90cf0d6a6ff4ee9ab9d9f36e26c76;
 
     function test_theInstalledGenesisRoundTripsThroughTheIndependentReaders() public view {
         assertEntryStored(genesisEntry(), 8);
         assertEq(b1Word("b1.network"), NETWORK);
-        assertEq(b1Word("b1.count"), 1);
-        assertEq(queueAt(0), ROOT_EPOCH);
+        assertEq(b1Word("b1.format"), 2);
+        assertEq(b1Word("b1.genesisEpoch"), ROOT_EPOCH);
+        assertEq(b1Word("b1.importedTipEpoch"), ROOT_EPOCH);
+        assertEq(b1Word("b1.originReady"), 0);
         assertEq(uintWord("phase"), 2);
         assertEq(word("assignment.activeConfHash"), FULL_SHARD_CONF_HASH);
     }
 
-    function test_aGenesisEntryOfSixtyFourMaximalMembersIsAccepted() public {
+    /// Epoch zero is a valid, occupied genesis epoch: g and I are zero words (absent), and only the entry's present word says it exists.
+    function test_aZeroGenesisEpochIsOccupiedByItsPresentWord() public view {
         B1GenesisParams memory p = genesisParams();
-        p.entry.members = new B1Member[](64);
-        for (uint256 j = 0; j < 64; j++) {
+        p.rootEpoch = 0;
+        p.entry.epoch = 0;
+        B1Word[] memory ws = _build(p);
+        bool present;
+        for (uint256 i = 0; i < ws.length; i++) {
+            assertTrue(ws[i].slot != fixedSlot("b1.genesisEpoch"), "g = 0 is an absent word");
+            assertTrue(ws[i].slot != fixedSlot("b1.importedTipEpoch"), "I = 0 is an absent word");
+            if (ws[i].slot == eSlot(0, 0)) present = ws[i].value == bytes32(uint256(1));
+        }
+        assertTrue(present, "the entry for epoch 0 says it is present");
+    }
+
+    function test_aGenesisEntryOfSixteenMaximalMembersIsAccepted() public {
+        B1GenesisParams memory p = genesisParams();
+        p.entry.members = new B1Member[](16);
+        for (uint256 j = 0; j < 16; j++) {
             p.entry.members[j] = member(0xA0, uint8(j));
         }
         assertEq(_build(p).length, 6 + 6 + 8 + nonZeroMemberWords(p.entry.members));
@@ -104,22 +121,12 @@ contract SealRegistryB1GenesisTest is SealRegistryBase {
         for (uint256 i = 0; i < ws.length; i++) {
             vm.store(A_SR, ws[i].slot, ws[i].value);
         }
-        assertEq(memW(ROOT_EPOCH, 63, 7), bytes32(uint256(member(0xA0, 63).weight)));
+        assertEq(memW(ROOT_EPOCH, 15, 7), bytes32(uint256(member(0xA0, 15).weight)));
     }
 
     // ---------------------------------------------------------------- profile bounds
 
-    function test_wCertMustNotExceedDeltaEvAndDeltaEvMustBeBelowDeltaHold() public {
-        B1GenesisParams memory p = genesisParams();
-        p.wCert = p.deltaEv; // equality is allowed: W_cert <= delta_ev
-        p.gRest = builder.gRestBound(uint256(p.wCert) + 1);
-        p.gSys = builder.minGSys(uint256(p.wCert) + 1, p.gRest);
-        _build(p);
-
-        B1GenesisParams memory over = genesisParams();
-        over.wCert = over.deltaEv + 1;
-        _expectRefusal(over, ProfileBounds.selector);
-
+    function test_deltaEvMustBeBelowDeltaHoldAndBMustBePositive() public {
         B1GenesisParams memory hold = genesisParams();
         hold.deltaHold = hold.deltaEv; // delta_ev < delta_hold is strict
         _expectRefusal(hold, ProfileBounds.selector);
@@ -127,51 +134,43 @@ contract SealRegistryB1GenesisTest is SealRegistryBase {
         B1GenesisParams memory inverted = genesisParams();
         inverted.deltaHold = inverted.deltaEv - 1;
         _expectRefusal(inverted, ProfileBounds.selector);
+
+        B1GenesisParams memory zero = genesisParams();
+        zero.maxEpochsPerUpdate = 0;
+        _expectRefusal(zero, ProfileBounds.selector);
     }
 
-    function test_kMaxMustNotOverflow() public {
+    function test_measuredBCapIsAcceptedAndNextBIsRefusedDespiteAmpleGas() public {
+        // The largest actual-call fixture is explicitly B = 2, not a budget-derived limit.
+        assertEq(builder.MAX_MEASURED_B(), 2);
         B1GenesisParams memory p = genesisParams();
-        p.wCert = type(uint64).max;
-        p.deltaEv = type(uint64).max;
-        p.deltaHold = type(uint64).max;
-        _expectRefusal(p, ProfileBounds.selector);
-    }
-
-    function test_measuredKCapIsAcceptedAndNextKIsRefusedDespiteAmpleGas() public {
-        // The largest actual-call fixture is explicitly K = 16, not a budget-derived limit.
-        assertEq(builder.MAX_MEASURED_K(), 16);
-        B1GenesisParams memory p = genesisParams();
-        p.wCert = 15;
-        p.deltaEv = 16;
-        p.deltaHold = 17;
-        p.gRest = builder.gRestBound(16);
-        p.gSys = builder.minGSys(16, p.gRest);
+        p.maxEpochsPerUpdate = 2;
+        p.gRest = builder.gRestBound(2);
+        p.gSys = builder.minGSys(2, p.gRest);
         _build(p);
 
-        p.wCert = 16; // K = 17; every other profile and entry check still passes
+        p.maxEpochsPerUpdate = 3; // every other profile and entry check still passes
         p.gRest = 10 ** 30;
         p.gSys = 10 ** 40;
-        _expectRefusal(p, UnmeasuredKMax.selector);
+        _expectRefusal(p, UnmeasuredB.selector);
     }
 
-    function testFuzz_unmeasuredKIsRefusedDespiteAmpleGas(uint64 wCert) public {
+    function testFuzz_unmeasuredBIsRefusedDespiteAmpleGas(uint64 b) public {
         B1GenesisParams memory p = genesisParams();
-        p.wCert = uint64(bound(wCert, 16, type(uint64).max - 1));
-        p.deltaEv = p.wCert;
-        p.deltaHold = p.wCert + 1;
+        p.maxEpochsPerUpdate = uint64(bound(b, 3, type(uint64).max));
         p.gRest = 10 ** 30;
         p.gSys = 10 ** 40;
-        _expectRefusal(p, UnmeasuredKMax.selector);
+        _expectRefusal(p, UnmeasuredB.selector);
     }
 
     // ---------------------------------------------------------------- gas envelope
 
     function test_minGSysIsTheSpecifiedEnvelope() public view {
-        // K = 1: 67536 + 326144 + 22100*528 + 7100*524 + G_rest
-        assertEq(builder.minGSys(1, 0), 15_782_880);
-        assertEq(builder.minGSys(1, 12_345), 15_782_880 + 12_345);
-        // K = 4: 67536 + 4*326144 + 22100*(524*4+4) + 7100*524*4 + G_rest
-        assertEq(builder.minGSys(4, 0), 67_536 + 1_304_576 + 22_100 * 2100 + 7100 * 2096);
+        // B = 1: 155936 + (505244 + 177800*16) = 3,505,980, the contract's planning cross-check at N = 16
+        assertEq(builder.minGSys(1, 0), 3_505_980);
+        assertEq(builder.minGSys(1, 12_345), 3_505_980 + 12_345);
+        // B = 2: 155936 + 2*(505244 + 177800*16)
+        assertEq(builder.minGSys(2, 0), 155_936 + 2 * (505_244 + 177_800 * 16));
     }
 
     function test_gSysBelowTheEnvelopeIsRefusedAndAtTheEnvelopeAccepted() public {
@@ -184,7 +183,7 @@ contract SealRegistryB1GenesisTest is SealRegistryBase {
     function test_gRestBelowTheFrozenBoundIsRefused() public {
         B1GenesisParams memory p = genesisParams();
         p.gRest -= 1; // below the measured-plus-margin allowance
-        p.gSys = builder.minGSys(kMax(), p.gRest); // consistent g_sys for the lower G_rest
+        p.gSys = builder.minGSys(maxEpochsFixture, p.gRest); // consistent g_sys for the lower G_rest
         _expectRefusal(p, GasEnvelopeShort.selector);
     }
 
@@ -219,7 +218,7 @@ contract SealRegistryB1GenesisTest is SealRegistryBase {
         _expectRefusal(none, BadMemberCount.selector);
 
         B1GenesisParams memory many = genesisParams();
-        many.entry.members = members(65, 0xA0);
+        many.entry.members = members(17, 0xA0);
         _expectRefusal(many, BadMemberCount.selector);
 
         B1GenesisParams memory id = genesisParams();

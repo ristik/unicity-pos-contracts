@@ -208,70 +208,38 @@ contract SealRegistryB1GasModelTest is Test, CancunPrices {
     }
 }
 
-/// @notice Gross gas of maximal registry updates up to the measured genesis K_max cap.
+/// @notice Gross gas of maximal updates of the permanent registry: B = 0, 1 and 2 imported epochs of the 16-member ceiling.
 ///
-/// The system call budget (design v4, "Realizable system metering") is
-///   g_sys >= 67536 + 326144*K + 22100*(524*K+4) + 7100*524*K + G_rest(K, C_max),
-/// where the two SSTORE terms are a conservative rectangle for the HISTORY writes only (insert, closure,
-/// head, count, queue and clears: every addressed write at 22100, every clear at 7100, no refund credit),
-/// and G_rest bounds every other cost of open + finalize: SLOADs, hashing, calldata decode, memory,
-/// the operational-registry writes and the whole of finalize.
+/// The system call budget is g_sys >= 155936 + (505244 + 177800*16)*B + G_rest(B), where the SSTORE rectangle covers the HISTORY writes only
+/// (per imported epoch 11 + 8*16 = 139 entry words at 22100, plus the former tip's closure (2 words) and the cursor words (importedTipEpoch,
+/// originReady), no refund credit and nothing is ever cleared), and G_rest bounds every other cost of open + finalize: SLOADs, hashing, calldata
+/// decode, memory, the operational-registry writes and the whole of finalize.
 ///
-/// Method. Each fixture runs the real open and finalize calls against committed, cold state
-/// (`vm.cool`, so every first access pays the Cancun cold price), records the storage accesses, and prices
-/// every SSTORE with the Cancun model checked against the EVM in SealRegistryB1GasModelTest. Then
+/// Method. Each fixture runs the real open and finalize calls against committed, cold state (`vm.cool`, so every first access pays the Cancun
+/// cold price), records the storage accesses, and prices every SSTORE with the Cancun model checked against the EVM in
+/// SealRegistryB1GasModelTest. Then
 ///   history  = the exact price of every write to a history slot (these are what the rectangle covers);
 ///   rest     = gross gas - history  (SLOADs, operational writes, finalize and all other work stay in rest);
-///   rest*    = rest with every operational write re-priced at the 22100 worst case (28 writes at most),
-///              which is conservative whatever state the operational words are in.
-/// The test asserts a 1.5x margin over rest* for each fixture, both for (a, p) and for K_max.
-/// The affine allowance is fitted to these measurements, not an instruction-level proof. The
-/// structural history-write rectangle and operational-write allowance are checked independently.
-/// See docs/b1-registry-gas.md for the coefficient derivation and limits of the evidence.
-///
-/// Shapes (a = entries inserted, p = entries deleted, every entry 64 members with 128-byte node IDs):
-///   replace: a full ring is deleted, K new entries inserted (a = p = K, the former tip is deleted);
-///   mixed:   a full ring loses K-1 entries, the surviving tip is closed, K-1 are inserted;
-///   insert:  a ring of one open tail gains K-1 entries (p = 0);
-///   prune:   an update with no new entries deletes K-1 entries (a = 0).
-/// Node ID variants (`_lessThan` and `_checkNodeID` are the only data-dependent code per member):
-///   0: members differ in node-ID word 0 (the comparison exits at its first word);
-///   1: all members share a 96-byte prefix and differ in word 3 (the comparison runs four words);
-///   2: all-zero IDs of increasing length 1..64 (all four words equal, ordered by length).
-/// Gas under forge's test EVM is a measurement of this runtime, not a claim about the final client:
-/// the ureth system-integration PR re-measures under the real client.
+///   rest*    = rest with every operational write re-priced at the 22100 worst case (28 writes at most).
+/// The test asserts a 1.5x margin over rest* for each fixture. The affine allowance is fitted to these measurements, not an instruction-level
+/// proof. Node ID variants: 0 members differ in word 0; 1 all share a 96-byte prefix and differ in word 3; 2 all-zero IDs of increasing length.
+/// Gas under forge's test EVM is a measurement of this runtime, not a claim about the final client: the ureth system-integration PR re-measures.
 abstract contract SealRegistryB1GasBase is SealRegistryB1Helpers, CancunPrices {
     uint256 internal constant WORD_SSTORE_MAX = 22_100;
-    uint256 internal constant WORD_CLEAR_MAX = 7100;
     /// open (acknowledgement path) writes at most 26 operational words, finalize 2.
     uint256 internal constant OPERATIONAL_WRITES_MAX = 28;
     uint64 internal constant ORIGIN0 = 1000;
-
-    uint256 internal constant SHAPE_REPLACE = 0;
-    uint256 internal constant SHAPE_MIXED = 1;
-    uint256 internal constant SHAPE_INSERT = 2;
-    uint256 internal constant SHAPE_PRUNE = 3;
+    uint256 internal constant ENTRY_WORDS_MAX = 11 + 8 * 16;
 
     mapping(bytes32 => bool) internal isOperational;
     mapping(bytes32 => uint256) internal seenInRun;
     mapping(bytes32 => bytes32) internal committedValue;
     uint256 internal runId;
 
-    function K() internal pure virtual returns (uint256);
-
-    /// @dev true: the committed ring holds K maximal entries; false: only a maximal open tail.
-    function committedFullRing() internal pure virtual returns (bool);
-
     function setUp() public virtual override {
-        wCertFixture = uint64(K() - 1);
         super.setUp();
-        if (committedFullRing()) {
-            seedMaxRing(K());
-        } else {
-            B1Entry[] memory es = new B1Entry[](1);
-            es[0] = maxEntry(uint64(K()), ORIGIN0, 0, 0);
-            seedRing(es, 0, ORIGIN0);
-        }
+        // a committed, ready registry with a maximal open tip: epoch 1 (genesis) opened at ORIGIN0
+        step(plainAt(ORIGIN0));
         string[28] memory names = [
             "genesisCommitment",
             "config.shardConfHash",
@@ -310,11 +278,10 @@ abstract contract SealRegistryB1GasBase is SealRegistryB1Helpers, CancunPrices {
 
     // ---------------------------------------------------------------- fixtures
 
-    /// @dev 64 members with 128-byte IDs (variant 2: lengths 1..64 of zero bytes) in strictly
-    /// increasing raw order, with full-width keys and weights.
+    /// @dev 16 members with 128-byte IDs in strictly increasing raw order, with full-width keys and weights.
     function maxMembers(uint8 seed, uint8 variant) internal pure returns (B1Member[] memory ms) {
-        ms = new B1Member[](64);
-        for (uint256 j = 0; j < 64; j++) {
+        ms = new B1Member[](16);
+        for (uint256 j = 0; j < 16; j++) {
             B1Member memory m = member(seed, uint8(j));
             if (variant == 2) {
                 m.nodeIDLength = uint64(j + 1);
@@ -340,68 +307,21 @@ abstract contract SealRegistryB1GasBase is SealRegistryB1Helpers, CancunPrices {
         }
     }
 
-    function maxEntry(uint64 epoch, uint64 start, uint64 end, uint8 variant)
-        internal
-        pure
-        returns (B1Entry memory en)
-    {
-        en = entry(epoch, start, end, 1);
-        en.members = maxMembers(uint8(epoch), variant);
-    }
-
-    /// @dev The ring a maximal replacement removes: K maximal entries over [L, O] with one start per
-    /// round of the window, O = ORIGIN0. Written in setUp, so the words are committed state.
-    function seedMaxRing(uint256 k) internal {
-        uint64 L0 = ORIGIN0 - wCertFixture;
-        B1Entry[] memory es = new B1Entry[](k);
-        for (uint64 i = 0; i < k; i++) {
-            es[i] = maxEntry(i + 1, L0 + i, i == k - 1 ? 0 : L0 + i + 1, 0);
+    /// @dev `b` consecutive maximal entries ending at origin round O (the i-th starting at O - b + i, the last open).
+    function maxAck(uint64 b, uint8 variant) internal view returns (OpenArgs memory a) {
+        uint64 tip = tipEpoch();
+        uint64 O = ORIGIN0 + 10;
+        B1Entry[] memory es = new B1Entry[](b);
+        for (uint64 i = 1; i <= b; i++) {
+            uint64 start = O - b + i;
+            es[i - 1] = entry(tip + i, start, i == b ? 0 : start + 1, 1);
+            es[i - 1].members = maxMembers(uint8(tip + i), variant);
         }
-        seedRing(es, 0, ORIGIN0);
-    }
-
-    /// @dev Replacement at O' = O + K: the old tip closes at L' (p = K deletions) and K new maximal
-    /// intervals are inserted (a = K): the first starts at L', the rest at distinct rounds in (L', O'].
-    function replaceArgs(uint256 k, uint8 variant) internal view returns (OpenArgs memory a) {
-        uint64 O1 = ORIGIN0 + uint64(k);
-        uint64 L1 = O1 - wCertFixture;
-        B1Update memory u = B1Update({
-            priorTipEpoch: uint64(k),
-            hasOldTipEnd: true,
-            oldTipEnd: L1,
-            newEntries: new B1Entry[](k)
-        });
-        for (uint64 i = 0; i < k; i++) {
-            u.newEntries[i] =
-                maxEntry(uint64(k) + 1 + i, L1 + i, i == k - 1 ? 0 : L1 + i + 1, variant);
-        }
-        a = ackWith(O1, uint64(k), u);
-    }
-
-    /// @dev K-1 maximal entries appended behind the tip at O' = O + K - 1, where L' = O: over a full
-    /// ring the K-1 older entries expire (mixed: p = a = K-1, the tip survives and is closed); over a
-    /// ring of one open tail nothing expires (insert: p = 0, a = K-1).
-    function tailArgs(uint256 k, uint8 variant) internal view returns (OpenArgs memory a) {
-        uint64 O1 = ORIGIN0 + uint64(k) - 1;
-        B1Update memory u = B1Update({
-            priorTipEpoch: uint64(k),
-            hasOldTipEnd: true,
-            oldTipEnd: ORIGIN0 + 1,
-            newEntries: new B1Entry[](k - 1)
-        });
-        for (uint64 i = 0; i < k - 1; i++) {
-            u.newEntries[i] = maxEntry(
-                uint64(k) + 1 + i, ORIGIN0 + 1 + i, i == k - 2 ? 0 : ORIGIN0 + 2 + i, variant
-            );
-        }
-        a = ackWith(O1, uint64(k - 1), u);
-    }
-
-    /// @dev Prune-only: an update with no new entries at the round where all but the tail expire.
-    /// The window [L, O] holds the k entries; at O' = O + k - 1, L' = O' - W = O, so every entry
-    /// except the tail (whose start is O) has end <= O = L' and is removed.
-    function pruneArgs(uint256 k) internal view returns (OpenArgs memory a) {
-        a = plainAt(ORIGIN0 + uint64(k) - 1);
+        a = ackWith(
+            O,
+            b,
+            B1Update({priorTipEpoch: tip, hasOldTipEnd: true, oldTipEnd: O - b + 1, newEntries: es})
+        );
     }
 
     // ---------------------------------------------------------------- measurement
@@ -411,12 +331,10 @@ abstract contract SealRegistryB1GasBase is SealRegistryB1Helpers, CancunPrices {
         uint256 histCharge; // exact price of every write to a history slot
         uint256 opCharge; // exact price of every write to an operational slot
         uint256 readCharge; // exact price of every SLOAD (stays in G_rest)
-        uint256 histWrites; // every write to a history slot
-        uint256 histNonzero; // of which the written value is non-zero (inserts, closure, head, count)
+        uint256 histWrites;
         uint256 opWrites;
         uint256 reads;
-        uint256 maxNonzeroWrite; // dearest history write of a non-zero value
-        uint256 maxZeroWrite; // dearest history write of zero (a clear, or a zero over zero)
+        uint256 maxWrite; // dearest history write
     }
 
     /// @dev Prices one call's recorded accesses with the Cancun model. Every call starts cold.
@@ -448,22 +366,15 @@ abstract contract SealRegistryB1GasBase is SealRegistryB1Helpers, CancunPrices {
                     t.opCharge += c;
                 } else {
                     t.histWrites++;
-                    if (sa.newValue != bytes32(0)) {
-                        t.histNonzero++;
-                        if (c > t.maxNonzeroWrite) t.maxNonzeroWrite = c;
-                    } else if (c > t.maxZeroWrite) {
-                        t.maxZeroWrite = c;
-                    }
                     t.histCharge += c;
+                    if (c > t.maxWrite) t.maxWrite = c;
                 }
             }
         }
     }
 
-    /// @dev The test EVM credits the capped refund (at most one fifth of the gas used) to the call that
-    /// earned it, so a `gasleft()` difference is net. Gross, which is what the system call is metered
-    /// on (design v4: no refund credit), adds the credit back; see
-    /// test_theFixturesAddBackTheRefundCreditSoGrossIsMeasured. Call right after the measured call.
+    /// @dev The test EVM credits the capped refund to the call that earned it, so a `gasleft()` difference is net. Gross, which is what the
+    /// system call is metered on (no refund credit), adds the credit back. Nothing in the permanent registry clears a word, so it is 0 here.
     function grossOf(uint256 net) internal view returns (uint256) {
         return net + uint256(uint64(vm.lastFrameGas().gasRefunded));
     }
@@ -496,261 +407,91 @@ abstract contract SealRegistryB1GasBase is SealRegistryB1Helpers, CancunPrices {
         price(d, t);
     }
 
-    /// @dev Spec SSTORE allowance: I = 524a+4 writes at 22100 and D = 524p clears at 7100.
-    function allowance(uint256 a, uint256 p) internal pure returns (uint256) {
-        return WORD_SSTORE_MAX * (524 * a + 4) + WORD_CLEAR_MAX * 524 * p;
+    /// @dev The history-write rectangle for `b` imported epochs of the 16-member ceiling: 139 entry words each, the former tip's two closure
+    /// words and the two cursor words.
+    function allowance(uint256 b) internal pure returns (uint256) {
+        return b == 0 ? 0 : WORD_SSTORE_MAX * (ENTRY_WORDS_MAX * b + 4);
     }
 
-    /// @dev Everything in the call except the history writes, with every operational write re-priced at
-    /// its 22100 worst case.
+    /// @dev Everything in the call except the history writes, with every operational write re-priced at its 22100 worst case.
     function restWorst(Tally memory t) internal pure returns (uint256) {
         return t.gross - t.histCharge - t.opCharge + WORD_SSTORE_MAX * OPERATIONAL_WRITES_MAX;
     }
 
-    function check(string memory name, uint256 a, uint256 p, uint8 variant, Tally memory t)
-        internal
-    {
+    function check(string memory name, uint256 b, uint8 variant, Tally memory t) internal {
         uint256 rest = restWorst(t);
         emit log_named_string("fixture", name);
-        emit log_named_uint("  K_max", K());
+        emit log_named_uint("  B (epochs imported)", b);
         emit log_named_uint("  nodeID variant", variant);
-        emit log_named_uint("  a (insertions)", a);
-        emit log_named_uint("  p (deletions)", p);
         emit log_named_uint("  gross (open + finalize)", t.gross);
         emit log_named_uint("  history SSTORE (exact Cancun)", t.histCharge);
-        emit log_named_uint("  SSTORE rectangle", allowance(a, p));
+        emit log_named_uint("  SSTORE rectangle", allowance(b));
         emit log_named_uint("  operational SSTORE (exact)", t.opCharge);
         emit log_named_uint("  SLOAD (exact)", t.readCharge);
         emit log_named_uint("  rest* (worst operational writes)", rest);
-        emit log_named_uint("  rest* bound for (a, p)", builder.gRestFor(a, p));
-        emit log_named_uint("  G_rest(K_max)", builder.gRestBound(K()));
+        emit log_named_uint("  G_rest(B) allowance", builder.gRestBound(b));
 
-        // The premises that make the rectangle cover the history writes: a deleted entry writes at most
-        // 524 words (11 + 8*64 + queue), an inserted one at most 524 (plus 4 words per update: closure
-        // end and flag, head, count); every non-zero write is an insertion-side write priced at most
-        // 22100, and a write of zero (a clear, or a no-op over zero) costs at most 5000 <= 7100.
-        assertLe(t.histNonzero, 524 * a + 4, "non-zero history writes within I");
-        assertLe(t.histWrites, 524 * (a + p) + 4, "history writes within I + D");
-        assertLe(t.maxNonzeroWrite, WORD_SSTORE_MAX, "no non-zero write above 22100");
-        assertLe(t.maxZeroWrite, 5000, "no write of zero above 5000");
-        assertLe(t.histCharge, allowance(a, p), "history SSTOREs within the rectangle");
+        // The premises that make the rectangle cover the history writes: an imported epoch writes at most 139 words, the update at most 4 more
+        // (the former tip's end and flag, importedTipEpoch, originReady), and no write is dearer than a cold set.
+        assertLe(
+            t.histWrites, ENTRY_WORDS_MAX * b + 4, "history writes within the rectangle's count"
+        );
+        assertLe(t.maxWrite, WORD_SSTORE_MAX, "no history write above 22100");
+        assertLe(t.histCharge, allowance(b), "history SSTOREs within the rectangle");
         assertLe(t.opWrites, OPERATIONAL_WRITES_MAX, "operational writes within 28");
         // Preserve the stated 1.5x safety factor, not just coverage of the measured remainder.
-        uint256 withMargin = (3 * rest + 1) / 2;
-        assertLe(withMargin, builder.gRestFor(a, p), "rest* has 1.5x margin for (a, p)");
-        assertLe(withMargin, builder.gRestBound(K()), "rest* has 1.5x margin for K_max");
-        // The design's envelope, end to end, for the shape actually run and for the rectangle at p = a = K.
-        assertLe(t.gross, allowance(a, p) + builder.gRestBound(K()), "gross within the envelope");
-        assertLe(
-            t.gross,
-            allowance(K(), K()) + builder.gRestBound(K()),
-            "gross within the maximal envelope"
-        );
+        assertLe((3 * rest + 1) / 2, builder.gRestBound(b), "rest* has 1.5x margin for B");
+        assertLe(t.gross, allowance(b) + builder.gRestBound(b), "gross within the envelope");
     }
+}
 
-    // ---------------------------------------------------------------- tests
-
-    /// Baseline with no history insertion or deletion, in both full-ring and tail-only state.
+contract SealRegistryB1GasTest is SealRegistryB1GasBase {
     function test_noHistoryChange() public {
-        Tally memory t = run(plainAt(ORIGIN0));
-        check("unchanged", 0, 0, 0, t);
-        assertEq(liveEpochs().length, committedFullRing() ? K() : 1);
+        Tally memory t = run(plainAt(ORIGIN0 + 5));
+        check("unchanged", 0, 0, t);
+        assertEq(t.histWrites, 0);
     }
 
-    function _replace(uint8 variant) internal {
-        if (!committedFullRing()) return;
-        Tally memory t = run(replaceArgs(K(), variant));
-        check("replace", K(), K(), variant, t);
-        assertEq(t.opWrites, OPERATIONAL_WRITES_MAX, "the acknowledgement path writes 28 words");
-        assertEq(liveEpochs().length, K());
-        assertEntryAbsent(1, 64);
-        assertEq(b1Word("b1.count"), K());
+    function _import(uint64 b, uint8 variant) internal {
+        Tally memory t = run(maxAck(b, variant));
+        check(b == 1 ? "one epoch" : "two epochs", b, variant, t);
+        assertEq(tipEpoch(), 1 + b);
     }
 
-    function _mixed(uint8 variant) internal {
-        if (!committedFullRing() || K() == 1) return;
-        Tally memory t = run(tailArgs(K(), variant));
-        check("mixed", K() - 1, K() - 1, variant, t);
-        assertEq(liveEpochs().length, K());
+    function test_oneEpochVariant0() public {
+        _import(1, 0);
     }
 
-    function _insert(uint8 variant) internal {
-        if (committedFullRing() || K() == 1) return;
-        Tally memory t = run(tailArgs(K(), variant));
-        check("insert", K() - 1, 0, variant, t);
-        assertEq(liveEpochs().length, K());
+    function test_oneEpochVariant1() public {
+        _import(1, 1);
     }
 
-    function _prune() internal {
-        if (!committedFullRing() || K() == 1) return;
-        Tally memory t = run(pruneArgs(K()));
-        check("prune", 0, K() - 1, 0, t);
-        assertEq(liveEpochs().length, 1);
+    function test_oneEpochVariant2() public {
+        _import(1, 2);
     }
 
-    /// p = a = K, distinct leading node-ID words.
-    function test_replaceVariant0() public {
-        _replace(0);
+    function test_twoEpochsVariant0() public {
+        _import(2, 0);
     }
 
-    /// p = a = K, 96-byte common node-ID prefix: every comparison runs four words.
-    function test_replaceVariant1() public {
-        _replace(1);
+    function test_twoEpochsVariant1() public {
+        _import(2, 1);
     }
 
-    /// p = a = K, equal padded words ordered by length.
-    function test_replaceVariant2() public {
-        _replace(2);
+    function test_twoEpochsVariant2() public {
+        _import(2, 2);
     }
 
-    /// p = a = K-1 with the surviving tip closed: prune, closure and insert in one call.
-    function test_mixedVariant0() public {
-        _mixed(0);
-    }
-
-    function test_mixedVariant1() public {
-        _mixed(1);
-    }
-
-    function test_mixedVariant2() public {
-        _mixed(2);
-    }
-
-    /// p = 0, a = K-1: every history write is a fresh zero-to-non-zero set.
-    function test_insertVariant0() public {
-        _insert(0);
-    }
-
-    function test_insertVariant1() public {
-        _insert(1);
-    }
-
-    function test_insertVariant2() public {
-        _insert(2);
-    }
-
-    /// p = K-1 deletions and nothing inserted.
-    function test_prune() public {
-        _prune();
-    }
-}
-
-abstract contract FullRing is SealRegistryB1GasBase {
-    function committedFullRing() internal pure override returns (bool) {
-        return true;
-    }
-}
-
-abstract contract TailOnly is SealRegistryB1GasBase {
-    function committedFullRing() internal pure override returns (bool) {
-        return false;
-    }
-}
-
-contract SealRegistryB1GasK1Test is FullRing {
-    function K() internal pure override returns (uint256) {
-        return 1;
-    }
-}
-
-contract SealRegistryB1GasK2Test is FullRing {
-    function K() internal pure override returns (uint256) {
-        return 2;
-    }
-}
-
-contract SealRegistryB1GasK2InsertTest is TailOnly {
-    function K() internal pure override returns (uint256) {
-        return 2;
-    }
-}
-
-contract SealRegistryB1GasK4Test is FullRing {
-    function K() internal pure override returns (uint256) {
-        return 4;
-    }
-
-    /// Gross metering: deletions' refunds neither lower the system total nor fund the work. A budget
-    /// equal to gross minus the maximum refund fails with no state change; a gross budget succeeds.
-    function test_deletionRefundsDoNotFundTheCall() public {
-        bytes memory data = openCalldata(replaceArgs(4, 0));
-        bytes32 before = b1Digest();
-        uint256 snap = vm.snapshotState();
-        vm.prank(A_SYS);
-        uint256 g0 = gasleft();
-        (bool ok,) = A_SR.call(data);
-        uint256 gross = g0 - gasleft();
-        assertTrue(ok);
-        assertEntryAbsent(1, 64);
-        // 4 deleted entries of 64 members: 4 * 523 entry and member words and 4 queue words.
-        uint256 refundIfNetted = (4 * (11 + 8 * 64) + 4) * 4800;
-        assertGt(gross, refundIfNetted, "the experiment needs a positive net budget");
-        VmSafe.Gas memory lg = vm.lastFrameGas();
-        assertGt(lg.gasRefunded, 0, "the deletions did earn a refund");
-        vm.revertToState(snap);
-        assertEq(before, b1Digest());
-
-        vm.prank(A_SYS);
-        (bool netOk,) = A_SR.call{gas: gross - refundIfNetted}(data);
-        assertFalse(netOk, "a net-of-refund budget is not enough");
-        assertEq(before, b1Digest(), "the out-of-gas candidate left no partial write");
-        assertEq(ent(1, 0), bytes32(uint256(1)), "old entries are still present");
-
-        vm.prank(A_SYS);
-        // A gross budget with headroom for the cheatcode-warmed first run succeeds.
-        (bool grossOk,) = A_SR.call{gas: gross + gross / 4}(data);
-        assertTrue(grossOk, "the gross budget succeeds");
-        assertEntryAbsent(1, 64);
-    }
-
-    /// A shortfall of any size discards the whole candidate: nothing earlier survives.
+    /// A budget short of the needed gas discards the whole candidate: nothing is half-imported.
     function test_aBudgetShortOfTheNeededGasDiscardsTheWholeCandidate() public {
-        bytes memory data = openCalldata(replaceArgs(4, 0));
+        OpenArgs memory a = maxAck(2, 0);
+        bytes memory data = openCalldata(a);
         bytes32 before = b1Digest();
-        uint256 snap = vm.snapshotState();
         vm.prank(A_SYS);
-        uint256 g0 = gasleft();
-        (bool ok,) = A_SR.call(data);
-        uint256 gross = g0 - gasleft();
-        assertTrue(ok);
-        vm.revertToState(snap);
-
-        uint256[4] memory shortBy = [uint256(1_000), 30_000, 1_000_000, 20_000_000];
-        for (uint256 i = 0; i < shortBy.length; i++) {
-            vm.prank(A_SYS);
-            (bool shortOk,) = A_SR.call{gas: gross - shortBy[i]}(data);
-            assertFalse(shortOk);
-            assertEq(before, b1Digest(), "no partial deletion or insertion");
-        }
-    }
-}
-
-contract SealRegistryB1GasK4InsertTest is TailOnly {
-    function K() internal pure override returns (uint256) {
-        return 4;
-    }
-}
-
-contract SealRegistryB1GasK8Test is FullRing {
-    function K() internal pure override returns (uint256) {
-        return 8;
-    }
-}
-
-contract SealRegistryB1GasK8InsertTest is TailOnly {
-    function K() internal pure override returns (uint256) {
-        return 8;
-    }
-}
-
-contract SealRegistryB1GasK16Test is FullRing {
-    function K() internal pure override returns (uint256) {
-        return 16;
-    }
-}
-
-contract SealRegistryB1GasK16InsertTest is TailOnly {
-    function K() internal pure override returns (uint256) {
-        return 16;
+        (bool ok,) = A_SR.call{gas: 2_000_000}(data); // far below what two maximal epochs need
+        assertFalse(ok);
+        assertEq(b1Digest(), before);
+        assertEq(tipEpoch(), 1);
+        assertEq(ent(2, 0), bytes32(0));
     }
 }
