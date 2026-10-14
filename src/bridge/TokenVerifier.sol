@@ -125,11 +125,9 @@ contract TokenVerifier {
         if (history.length > BridgeBounds.MAX_SEMANTIC_BYTES) revert BudgetExceeded();
         // The Solidity CBOR preflight, before any native call: every UC scanned and grouped under the shared item budget, which the Cfg,
         // the policy and the IR openings have already used a part of. Counts E, S, Q, A, P are what the batch is priced by.
-        CertGroups.Counts memory counts = CertGroups.measure(
-            anchors,
-            BridgeBounds.CFG_ITEMS + BridgeBounds.POLICY_ITEMS + BridgeBounds.IR_ITEMS
-                * anchors.length
-        );
+        uint256 spentItems = BridgeBounds.CFG_ITEMS + BridgeBounds.POLICY_ITEMS
+            + BridgeBounds.IR_ITEMS * anchors.length;
+        CertGroups.Counts memory counts = CertGroups.measure(anchors, spentItems);
         r = _kernel(op, cfgBytes, history);
         _checkShape(op, r, c, ch);
         Plan memory plan = _planAnchors(pol, anchors, r, paths);
@@ -149,7 +147,8 @@ contract TokenVerifier {
         uint256 total = BridgeBounds.intrinsicGas(cfgBytes.length, proof.length)
             + BridgeBounds.b2Gas(
                 BridgeBounds.kernelRequestBytes(cfgBytes.length, history.length), r.leaves.length
-            ) + plan.batchGas + leafGas + BridgeBounds.GAS_RESERVE;
+            ) + plan.batchGas + leafGas + BridgeBounds.ITEM_GAS * (spentItems + counts.items)
+            + BridgeBounds.GAS_RESERVE;
         if (total > BridgeBounds.TX_GAS_BUDGET) revert BudgetExceeded();
 
         // One batch call over the whole anchor table, forwarded exactly G_batch. The registry authenticates each claim's expected shard

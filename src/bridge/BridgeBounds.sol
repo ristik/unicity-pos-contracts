@@ -39,6 +39,9 @@ library BridgeBounds {
     /// @dev DN-B ordinary transaction capacity (`maxGas` minus system gas).
     uint256 internal constant TX_GAS_BUDGET = 7_000_000;
     uint256 internal constant GAS_RESERVE = 1_000_000;
+    /// @dev `G_items = 1000*J`: the executed EVM overhead per CBOR item occurrence Solidity traverses (arch's ruling of 2026-10-14). It is
+    ///      composition work, never forwarded to a precompile.
+    uint256 internal constant ITEM_GAS = 1_000;
 
     uint256 internal constant INTRINSIC_BASE = 21_000;
     uint256 internal constant PER_BYTE = 16;

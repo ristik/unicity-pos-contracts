@@ -2240,7 +2240,13 @@ contract TokenVerifierTest is BridgeBase, UcBuilder {
             + BridgeBounds.b2Gas(
                 BridgeBounds.kernelRequestBytes(s.cfgB.length, s.history.length),
                 s.result.leaves.length
-            ) + batch + rsmt + BridgeBounds.GAS_RESERVE;
+            ) + batch + rsmt + BridgeBounds.ITEM_GAS * _items(s) + BridgeBounds.GAS_RESERVE;
+    }
+
+    /// @dev `J`: Cfg, policy, one IR opening per anchor and every UC occurrence's items.
+    function _items(Scenario memory s) internal pure returns (uint256) {
+        return _spentItems(s.anchors.length)
+            + CertGroups.measure(s.anchors, _spentItems(s.anchors.length)).items;
     }
 
     function test_gate_everyGoldenComponentEqualsTheOracleGate() public view {
@@ -2268,7 +2274,12 @@ contract TokenVerifierTest is BridgeBase, UcBuilder {
             );
             (uint256 total,, uint256 rsmt) = _gateOfScenario(s);
             assertEq(rsmt, vm.parseJsonUint(G, string.concat(g, ".rsmt")), "leaves");
-            assertEq(total, vm.parseJsonUint(G, string.concat(g, ".total")), "total");
+            // the golden gate predates G_items: its total is the oracle's until dev4 reseals with J
+            assertEq(
+                total - BridgeBounds.ITEM_GAS * _items(s),
+                vm.parseJsonUint(G, string.concat(g, ".total")),
+                "total"
+            );
             assertEq(n.p, vm.parseJsonUint(G, string.concat(g, ".grouping.p")), "P");
             assertEq(n.k, vm.parseJsonUint(G, string.concat(g, ".grouping.k")), "K");
             assertEq(n.e, vm.parseJsonUint(G, string.concat(g, ".grouping.e")), "E");
