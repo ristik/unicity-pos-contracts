@@ -36,7 +36,7 @@ contract XRepoRecordsTest is P85Flow {
         return ElectionParams({
             nMin: 2,
             nTarget: 10,
-            nMax: 32,
+            nMax: 16,
             maxM: 4,
             distNum: 1,
             distDen: 4,

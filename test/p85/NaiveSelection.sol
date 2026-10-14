@@ -4,7 +4,7 @@ pragma solidity 0.8.37;
 import {Continuity} from "../../src/p85/Continuity.sol";
 import {Quantize} from "../../src/p85/Quantize.sol";
 
-// Loops are bounded by the immutable V ceiling (at most 128 eligible identities) and the committee ceiling (at most 32 members).
+// Loops are bounded by the immutable V ceiling (at most 128 eligible identities) and the committee ceiling (at most 16 members).
 // forge-lint: disable-start(unsafe-typecast, calls-loop)
 
 /// @title NaiveSelection (test reference)
@@ -46,7 +46,7 @@ library NaiveSelection {
         returns (Reason reason, Continuity.Member[] memory chosen)
     {
         if (
-            cfg.nMin == 0 || cfg.nTarget < cfg.nMin || cfg.nMax < cfg.nTarget || cfg.nMax > 32
+            cfg.nMin == 0 || cfg.nTarget < cfg.nMin || cfg.nMax < cfg.nTarget || cfg.nMax > 16
                 || cfg.churn.distDen == 0
         ) {
             return (Reason.InvalidProfile, chosen);

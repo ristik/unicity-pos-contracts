@@ -93,7 +93,7 @@ abstract contract P85Base is Test {
         return ElectionParams({
             nMin: 4,
             nTarget: 10,
-            nMax: 32,
+            nMax: 16,
             maxM: 4,
             distNum: 1,
             distDen: 4,

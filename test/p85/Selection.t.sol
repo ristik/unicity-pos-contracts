@@ -113,7 +113,7 @@ contract SelectionTest is Test {
 
     function test_unsortedOrZeroWeightEligibleListsAreRefused() public {
         Selection.Entry[] memory e = _uniform(1, 6, 5);
-        Selection.Config memory cfg = Selection.Config(4, 10, 32, Continuity.Params(4, 1, 4));
+        Selection.Config memory cfg = Selection.Config(4, 10, 16, Continuity.Params(4, 1, 4));
         Continuity.Member[] memory o = _members(e);
         e[2].id = 1;
         vm.expectRevert(Selection.InvalidEligible.selector);
@@ -124,26 +124,26 @@ contract SelectionTest is Test {
         this._select(o, e, cfg);
     }
 
-    /// @dev The worst case the hook reserves gas for: 128 eligible identities, a full 32-member committee, every outsider ranked above
-    /// the weakest incumbent so each of the 96 outsiders is tried (and refused by the churn budget).
+    /// @dev The worst case the hook reserves gas for: 128 eligible identities, a full 16-member committee, every outsider ranked above
+    /// the weakest incumbent so each of the 112 outsiders is tried (and refused by the churn budget).
     function test_gasAtTheCeiling() public {
         Selection.Entry[] memory e = new Selection.Entry[](128);
         for (uint64 i; i < 128; ++i) {
-            // incumbents 1..32 weigh 10; outsiders 33..128 weigh 11, so each outranks the weakest incumbent
-            e[i] = Selection.Entry(i + 1, bytes32(uint256(i + 1)), i < 32 ? 10 : 11);
+            // incumbents 1..16 weigh 10; outsiders 17..128 weigh 11, so each outranks the weakest incumbent
+            e[i] = Selection.Entry(i + 1, bytes32(uint256(i + 1)), i < 16 ? 10 : 11);
         }
-        Continuity.Member[] memory o = new Continuity.Member[](32);
-        for (uint64 i; i < 32; ++i) {
+        Continuity.Member[] memory o = new Continuity.Member[](16);
+        for (uint64 i; i < 16; ++i) {
             o[i] = Continuity.Member(i + 1, bytes32(uint256(i + 1)), 10);
         }
         // the seed must pass: allow it a wide budget, then every trial replaces one incumbent
-        Selection.Config memory cfg = Selection.Config(4, 32, 32, Continuity.Params(100, 1, 1));
+        Selection.Config memory cfg = Selection.Config(4, 16, 16, Continuity.Params(100, 1, 1));
         uint256 before = gasleft();
         (Selection.Reason reason, Continuity.Member[] memory chosen) = Selection.select(o, e, cfg);
         uint256 used = before - gasleft();
-        emit log_named_uint("selection gas, 128 eligible, committee 32", used);
+        emit log_named_uint("selection gas, 128 eligible, committee 16", used);
         assertEq(uint8(reason), uint8(Selection.Reason.None));
-        assertEq(chosen.length, 32);
+        assertEq(chosen.length, 16);
     }
 
     /// @dev A swap that leaves the committed side of the unchanged-binding overlap at or below two thirds is refused even though the
@@ -160,7 +160,7 @@ contract SelectionTest is Test {
             e[i] = Selection.Entry(i + 1, bytes32(uint256(i + 1)), 10);
         }
         e[14] = Selection.Entry(20, bytes32(uint256(20)), 11);
-        Selection.Config memory cfg = Selection.Config(1, 13, 32, Continuity.Params(4, 1, 1));
+        Selection.Config memory cfg = Selection.Config(1, 13, 16, Continuity.Params(4, 1, 1));
         (Selection.Reason reason, Continuity.Member[] memory chosen) = Selection.select(o, e, cfg);
         require(reason == Selection.Reason.None && chosen.length == 13, "seed must pass");
         for (uint256 k; k < chosen.length; ++k) {

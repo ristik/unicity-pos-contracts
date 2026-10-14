@@ -17,7 +17,7 @@ import {
     RecordKind
 } from "../../src/p85/P85Types.sol";
 
-/// @notice The election's gas at the profile ceilings: 128 identities of 8 lots each, a committed committee of 32, and 96 outsiders that
+/// @notice The election's gas at the profile ceilings: 128 identities of 8 lots each, a committed committee of 16, and 112 outsiders that
 /// outrank the lowest incumbent, so the greedy pass runs a continuity trial for every one of them.
 contract ElectionGasTest is P85Flow {
     address internal constant SYS = address(0xff00000000000000000000000000000000000001);
@@ -40,8 +40,8 @@ contract ElectionGasTest is P85Flow {
     function _electionParams() internal view override returns (ElectionParams memory) {
         return ElectionParams({
             nMin: 4,
-            nTarget: uint32(C == 0 ? 32 : C),
-            nMax: uint32(C == 0 ? 32 : C),
+            nTarget: uint32(C == 0 ? 16 : C),
+            nMax: uint32(C == 0 ? 16 : C),
             maxM: 4,
             distNum: 1,
             distDen: 4,
@@ -129,6 +129,7 @@ contract ElectionGasTest is P85Flow {
 
     function _measureElection(uint256 v, uint256 l, uint256 c, uint256 ceiling) internal {
         uint256 used = _elect(v, l, c);
+        emit log_named_uint(string.concat("plain V", vm.toString(v), " L", vm.toString(l), " C", vm.toString(c)), used);
         assertLt(used, ceiling);
     }
 
@@ -179,7 +180,7 @@ contract ElectionGasTest is P85Flow {
         uint256 c = vm.envOr("P85_MEASURE_C", uint256(0));
         if (v == 0) return; // not a measurement run
         require(
-            v >= 5 && v <= 128 && l >= 1 && l <= 8 && c >= 4 && c <= 32 && c <= v,
+            v >= 5 && v <= 128 && l >= 1 && l <= 8 && c >= 4 && c <= 16 && c <= v,
             "parameters outside the profile ceilings"
         );
         require(
@@ -210,8 +211,8 @@ contract ElectionGasTest is P85Flow {
             ));
     }
 
-    function test_measureV128L8C32() public {
-        _measureElection(128, 8, 32, 47_500_000);
+    function test_measureV128L8C16() public {
+        _measureElection(128, 8, 16, 35_000_000);
     }
 
     function test_measureV64L8C16() public {
@@ -228,9 +229,9 @@ contract ElectionGasTest is P85Flow {
         assertLt(used, 6_000_000);
     }
 
-    function test_measureV128L8C32Heavy() public {
-        uint256 used = _elect(128, 8, 32, _heavyScale(32, 8));
-        assertLt(used, 70_000_000);
+    function test_measureV128L8C16Heavy() public {
+        uint256 used = _elect(128, 8, 16, _heavyScale(16, 8));
+        assertLt(used, 47_000_000);
     }
 
     function test_measureV16L1C8Heavy() public {
@@ -243,9 +244,9 @@ contract ElectionGasTest is P85Flow {
         assertLt(used, 8_200_000);
     }
 
-    function test_measureV128L1C32Heavy() public {
-        uint256 used = _elect(128, 1, 32, _heavyScale(32, 1));
-        assertLt(used, 45_000_000);
+    function test_measureV128L1C16Heavy() public {
+        uint256 used = _elect(128, 1, 16, _heavyScale(16, 1));
+        assertLt(used, 29_000_000);
     }
 
     function test_measureV16L2C8() public {
