@@ -275,7 +275,7 @@ contract ElectionPolicy {
         policySource = IPolicySource(m.policySource);
         ElectionParams calldata p = m.electionParams;
         if (
-            p.nMin == 0 || p.nTarget < p.nMin || p.nMax < p.nTarget || p.nMax > 32 || p.distDen == 0
+            p.nMin == 0 || p.nTarget < p.nMin || p.nMax < p.nTarget || p.nMax > 16 || p.distDen == 0
                 || p.cadenceRounds == 0 || p.cadenceSeconds == 0
         ) revert InvalidParams();
         params = p;
