@@ -1,14 +1,14 @@
 {
   "corpus": {
     "repository": "https://github.com/ristik/native-bridge-plugins",
-    "commit": "e272b0f2fb82c34bda71d7e8a9ade59f2b59cbfc",
+    "commit": "3c0f21a584e20082a8031aebfa00ffb9a49b6ae9",
     "directory": "protocol/vectors",
-    "manifestSha256": "d34c52cc4405d4e1ed0433caac39db3fdc0491b4eb21e96bf83be10ef05bf633",
+    "manifestSha256": "74284438a5ad141a857f5b899ce131a9f2b2fb77ff73c0e88919ddc50f74b583",
     "trustDocumentSha256": "e5454ae4fe566b05dab8c1b15c88a05356b8816b1cd66a2b7adcce184af27fb5"
   },
   "oracle": {
     "repository": "https://github.com/ristik/bft-core",
-    "commit": "04849967bf7dfefc5a6efd00daabeb4ce4f02190"
+    "commit": "f2b23b3f9316055da536731c25d51a88c6b061a6"
   },
   "golden": {
     "file": "test/bridge/golden.json",
