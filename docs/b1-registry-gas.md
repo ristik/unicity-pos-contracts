@@ -1,213 +1,77 @@
-# B1 registry: layout, update projection and the bounded `G_rest` analysis
+# B1 permanent registry: layout, update and the bounded `G_rest` analysis
 
-Scope: bft-core #62 (B1), PR 3 of 4, from the A′ design (`briefs/b1-design-v4.md`: "full authenticated
-root members in deterministically pruned ordinary EVM state"). Nothing here activates in production:
-the registry has no deployment, and the genesis and update bytes below are the contract the Go (PR 1)
-and ureth (PR 2, PR 4) sides pin against.
+Scope: the registry of any-age UC verification (`briefs/b1-any-age-contract.md` section 1, design `b1-any-age-by-signatures.md`). Every
+validator epoch the root authenticates is stored once, in full, and kept forever: no window, no ring, no pruning, no deletion. The
+reference state machine is bft-core `b1state.Registry.Apply`; this contract mirrors it, one named error per Go sentinel.
 
 ## What the registry stores
 
-One fresh layout, no layout-version word, no migration. Fixed words are
-`F(name) = keccak256(UTF8("unicity.seal-registry/" || name))`. All operational fields keep their
-meaning under the new prefix; `layoutVersion` is deleted and `b1.initialized` takes its place in the
-open-time initialization check.
+One fresh layout; `b1.format` = 2 is its only version marker. Fixed words are
+`F(name) = keccak256(UTF8("unicity.seal-registry/" || name))`.
 
 | Word | Meaning |
 |---|---|
-| `b1.network`, `b1.wCert`, `b1.profileHash` | immutable profile words (genesis only); `K_max = b1.wCert + 1` |
-| `b1.initialized`, `b1.head`, `b1.count` | mutable: `initialized = 1` at genesis; `head < K_max`; `count` distinguishes an occupied epoch-zero word from emptiness; `head` resets to 0 when the ring empties |
-| `Q(i) = keccak256(abi.encode(F("b1.queue"), uint256(i)))` | ring slot `i < K_max`: the epoch stored there |
+| `b1.network`, `b1.format`, `b1.profileHash` | immutable (genesis only): network, the format (2), the execution profile hash |
+| `b1.initialized` | 1 at genesis |
+| `b1.genesisEpoch` (g) | the first epoch of this deployment; zero is a valid occupied epoch (an absent word reads zero, the entry's `present` word says it exists) |
+| `b1.importedTipEpoch` (I) | the greatest contiguously installed epoch; the durable import cursor (the number of entries is `I - g + 1`, derived) |
+| `b1.originReady` | 0 before the first usable root origin, 1 after |
+| `origin.rootEpoch` (U), `clock.rootRound` (O) | the usable origin, as before; once ready `g <= U = I` |
 | `E(e,f) = keccak256(abi.encode(F("b1.entry"), e, f))`, `f = 0..10` | `present=1, bodyKind, bodyID, activationCommitID, start, end, hasEnd, signingScheme, signingConfigHash, memberCount, totalWeight` |
-| `M(e,j,f) = keccak256(abi.encode(F("b1.member"), e, j, f))`, `f = 0..7` | `nodeIDLength`, four nodeID words (wire order, left-aligned, zero right padding), two key words (33-byte compressed key: bytes 0..31, then byte 32 left-aligned), `weight` |
+| `M(e,j,f) = keccak256(abi.encode(F("b1.member"), e, j, f))`, `f = 0..7` | `nodeIDLength`, four nodeID words, two key words, `weight` |
 
-An entry is at most `11 + 8*64 = 523` addressed words plus one queue word; live B1 storage is at most
-`6 + 524*K_max` addressed words. Deletion clears every metadata word, every member word and the queue
-word: no tombstones, no stale tails.
+Removed from the windowed layout: `b1.wCert`, `b1.head`, `b1.count` and the `b1.queue` ring. An entry is `11 + 8*N` addressed words (N <= 16, so
+at most 139); storage grows by that much per installed epoch and never shrinks. Entries are looked up directly by epoch.
 
-`artifacts/seal-registry.json` records the compiled runtime and code hash, every fixed slot key, the
-three prefix keys, the field lists, the bounds, the genesis word list and the gas constants. CI
-regenerates it with `script/seal-registry-artifact.sh`; `test/SealRegistryArtifact.t.sol` checks it
+`artifacts/seal-registry.json` records the compiled runtime and code hash, every fixed slot key, the prefix keys, the field lists, the bounds, the
+genesis word list and the gas constants. CI regenerates it with `script/seal-registry-artifact.sh`; `test/SealRegistryArtifact.t.sol` checks it
 against independent derivations.
 
 ## The privileged update (`open`)
 
-`open(...)` keeps the 24 operational arguments and gains a final `B1Update` (selector `0x724236c0`):
+`open(...)` is unchanged in shape (selector `0x724236c0`); the final `B1Update` is
+`{ priorTipEpoch, hasOldTipEnd, oldTipEnd, B1Entry[] newEntries }`, an `B1Entry` carrying `epoch, bodyKind, bodyID, activationCommitID, start,
+hasEnd, end, signingScheme, signingConfigHash, members[]`. The origin epoch and round are the `rootEpoch` and `rootRound` arguments. In order:
 
-```
-B1Update { uint64 priorTipEpoch; bool hasOldTipEnd; uint64 oldTipEnd; B1Entry[] newEntries }
-B1Entry  { uint64 epoch; uint64 bodyKind; bytes32 bodyID; bytes32 activationCommitID; uint64 start;
-           bool hasEnd; uint64 end; uint64 signingScheme; bytes32 signingConfigHash; B1Member[] members }
-B1Member { uint64 nodeIDLength; bytes32[4] nodeID; bytes32[2] key; uint64 weight }
-```
+1. The imported tip is present and open (else `B1StateInvalid`); `priorTipEpoch == I` (`PriorTipMismatch`).
+2. No new entries: `hasOldTipEnd` false (`OldTipEndMismatch`) and the tip is the origin epoch (`OriginEpochMismatch`). Otherwise `hasOldTipEnd` and
+   `oldTipEnd` equal the first entry's start (`OldTipEndMismatch`), and for each entry in order: not a genesis body (`BadAppend`); epoch `I+1+i`
+   (`AppendGap`); the previous entry's end is this start (`NonContiguousEpochs`); start and end not after the origin round (`StartAfterOrigin`); only
+   the last is open (`InvalidInterval`) and it names the origin epoch (`OriginEpochMismatch`); the entry shape (members 1..16, node IDs, keys,
+   weights, identities, `end > start`); the start exceeds the previous start (`AppendStartNotIncreasing`); the first start exceeds the origin
+   round when the usable epoch is the tip (`AppendClosesUsableOrigin`); the epoch is absent (`EntryAlreadyPresent`). The former tip is closed once, at
+   the first start; the entry is written; `b1.importedTipEpoch` advances.
+3. The origin advances (`Registry.advance`): not backwards in epoch or round, onto an installed epoch at or after the genesis epoch, inside its
+   interval; `b1.originReady` becomes 1. The usable epoch must be the imported tip (`ImportedUsableMismatch`): there is no preload mode.
+4. `finalize` re-asserts format 2, `originReady = 1`, `g <= I = U`, and the tip present and open.
 
-This is the Rust-validated projection of the authenticated canonical Update. The origin round `O`
-(`rootRound`), origin epoch (`rootEpoch`), origin identity and block number are the existing `open`
-arguments and are not repeated; network, profile hash, parent hash, root genesis and execution chain
-identity are bound by the committed root input and the Rust bindings and are not re-checked here. The
-update is decoded **from calldata** (no memory copy), so memory does not grow with the update.
-
-With `L = max(0, O - W_cert)`, `open` applies, on the one disposable candidate:
-
-1. Operational checks (unchanged except that a stale root round is now refused on the acknowledgement
-   path too: the clock must be monotone on every open).
-2. Parent binding: `count` in `1..K_max`, `head < K_max`, the tail is open, and `priorTipEpoch` is the
-   tail epoch. New entries are present iff `oldTipEnd` is supplied; `oldTipEnd` must exceed the tail's
-   start.
-3. Prune from the head while the entry's effective end is `<= L` (equality removes; `end = L + 1` is
-   retained; the open tail and a boundary-crossing predecessor are retained however old). The former
-   tip's effective end is `oldTipEnd`; a deleted tip is never closed first.
-4. If the former tip survives, write `end`/`hasEnd` once; its successor must be epoch `tip + 1`
-   starting at `oldTipEnd`. If everything expired, the first new entry must have a later epoch and
-   `start <= L`.
-5. Append the new entries into freed ring slots after pruning (occupancy never exceeds `K_max`; a
-   survivor plus insertion over `K_max` is `RingFull`): consecutive epochs, `end` = next start, only the
-   last open, no closed entry with `end <= L`, `start <= O`, epoch absent, and the shared entry shape
-   rules (1..64 members, nodeIDs 1..128 bytes with zero padding, strictly increasing raw nodeID order
-   which also refuses duplicates, compressed-key prefix 02/03 with zero padding, positive weights with
-   a checked u64 total, non-zero body/signing-config identities and, for non-genesis entries, a
-   non-zero activation identity).
-6. The final tail must be the origin epoch. `finalize` re-asserts a non-empty ring within `K_max`
-   whose tail is present, open and equal to `origin.rootEpoch`.
-
-Any error reverts the whole call: no partial deletion or insertion is publishable. The contract does
-not verify signatures, key curve points, key uniqueness or lineage: the paired Go node authenticates
-the history and the Rust client validates full member semantics before execution. Only `A_SYS` can
-call `open`/`finalize`; there is no other mutating entry point, no delegatecall, no create, no
-selfdestruct.
+How many epochs one block imports (B) is not a registry word: the paired verifier's profile admits at most B and the system-call gas covers it.
+Several named origin errors (`OriginEpochRegression`, `OriginRoundRegression`, `OriginBeyondImportedTip`, `FirstOriginBeforeGenesis`,
+`OriginAtOrAfterEnd`, `ImportedUsableMismatch`) are defence in depth that the earlier checks make unreachable from `open`, exactly as in the Go model.
 
 ## Genesis
 
-There is no constructor. `src/B1GenesisBuilder.sol` (never deployed) builds the genesis allocation's
-non-zero words from `B1GenesisParams`, passing the genesis entry through the same `B1Layout.checkEntry`
-as runtime entries, and refuses: `W_cert <= delta_ev < delta_hold` violations or `K_max` overflow,
-`K_max > MAX_MEASURED_K = 16` (`UnmeasuredKMax`, even with an arbitrarily large gas budget),
-`g_sys` below the envelope below, `G_rest` below the frozen bound, a genesis entry that is not the open
-interval of the root genesis epoch. `test/SealRegistryB1Genesis.t.sol` pins the fixture's storage
-digest so an independent builder can be compared word for word.
+`src/B1GenesisBuilder.sol` builds the genesis words under the runtime's bounds: the operational words, `b1.network`, `b1.format` = 2,
+`b1.profileHash`, `b1.initialized`, `b1.genesisEpoch` = `b1.importedTipEpoch` = the genesis epoch (absent when zero), and the open genesis entry with
+its members. It refuses `B == 0`, `delta_ev >= delta_hold`, `B` above the measured cap (2), a `gRest` below the measured allowance and a `gSys` below
+the envelope.
 
-## Gas: the envelope and `G_rest`
+## Gas
 
-Design v4 requires, before activation,
+The system call budget is `g_sys >= 155936 + (505244 + 177800*16)*B + G_rest(B)` with `G_rest(B) = 1,150,000 + 250,000*B`. The first part is a
+conservative rectangle for the history writes only (per imported epoch 139 entry words at 22,100, the two closure words of the former tip and the
+two cursor words, no refund credit, nothing is cleared); `G_rest` bounds every other cost of open + finalize (SLOADs, hashing, decode, memory,
+the 28 operational writes priced at 22,100, and the whole of finalize).
 
-```
-g_sys >= 67536 + 326144*K + 22100*(524*K + 4) + 7100*524*K + G_rest(K, C_max)
-```
+Measured by `test/SealRegistryB1Gas.t.sol` against committed, cold state with the real calls (Cancun prices checked against the EVM in the same file),
+16-member entries, three node-ID shapes:
 
-The `22100`/`7100` terms are a conservative rectangle for the **history** SSTOREs only (every
-addressed history write at the cold zero-to-non-zero price, every clear at 7100, no refund credit).
-`G_rest` is everything else in `open` + `finalize`: SLOADs, slot hashing, calldata decode, memory, the
-event, **the operational-registry writes** and **the whole of `finalize`**. The registry meters
-ordinarily (gross), so the rectangle and `G_rest` are an activation check, not a runtime debit.
+| Fixture | gross (open + finalize) | history SSTORE (exact) | rest* (worst operational writes) | 1.5 x rest* | `G_rest(B)` |
+|---|---:|---:|---:|---:|---:|
+| B = 0 (no import) | 173,233 | 0 | 728,433 | 1,092,650 | 1,150,000 |
+| B = 1, worst shape | 3,648,558 | 3,075,000 | 905,558 | 1,358,338 | 1,400,000 |
+| B = 2, worst shape | 6,900,066 | 6,144,800 | 1,067,366 | 1,601,049 | 1,650,000 |
 
-**Frozen measured-plus-margin allowance.** For `1 <= K_max <= 16`,
-`G_rest(a, p) = 1 096 500 + 949 500*a + 192 000*p` for `a` inserted and `p` deleted entries.
-Since `a <= K_max` and `p <= K_max`, the admitted profile uses
-`G_rest(K_max) = 1 096 500 + 1 141 500*K_max`. These are **measurements plus a 1.5x safety factor,
-not a proven gas bound**. The constants are in `B1GenesisBuilder` and the artifact, for the pinned
-runtime and compiler profile (`0.8.37`, IR, optimizer 200 runs; forge v1.8.1) only.
-
-### Structural bounds and fixture coverage
-
-The following bounds explain the storage rectangle and the selected fixtures. They do not establish
-an instruction-level bound on `G_rest`; the allowance below is measured-plus-margin.
-
-| Block | Bound (checked first) | Per-iteration work outside the history SSTOREs | Data-dependent branches |
-|---|---|---|---|
-| operational checks | none | a fixed set of cold SLOADs; 15 effect writes, and on the acknowledgement path 11 more writes and one fixed-size log | `transitionCount` 0 or 1: the acknowledgement path is the superset |
-| parent binding | none | `head`, `count`, queue slot, tail words (cold SLOADs) | none (reverts are cheaper than success) |
-| prune loop | `count <= K_max` (`B1StateInvalid`), so `p + 1` iterations | one queue slot, two entry words (or the supplied tip end), then in `_deleteEntry` one `memberCount` load, `8*m + 12` slot hashes (2 to 4 words each) | the `count == 1` select; break |
-| closure | none | two writes, only when the tip survives | survives or not |
-| insert loop | `a <= K_max` (`TooManyEntries`) | one presence SLOAD, `checkEntry`, `523` slot hashes and calldata reads | see below |
-| `checkEntry` per member | `m <= 64` (`BadMemberCount`) | node ID padding (4 fixed words), key prefix, weight sum, ordering | `_lessThan` exits at the first differing node-ID word (1 to 4 words, then length) |
-| `finalize` | none | nine cold SLOADs, 2 writes | none |
-
-The calldata update is read in place (no copy), slot hashes use scratch memory above the free pointer
-that is never kept, and no call, create or recursion exists, so memory does not grow with the update.
-The only per-member data-dependent code is the ordering comparison, so the fixtures drive its worst
-branches: **variant 0** members differ in node-ID word 0 (the comparison exits at its first word),
-**variant 1** members share a 96-byte prefix and differ in word 3 (four words compared), **variant 2**
-node IDs are all-zero bytes of lengths 1 to 64 (all four words equal, ordered by length). The maximal
-member counts and these ordering variants stress the entry-validation paths; the measurements do
-not prove that every possible input costs less.
-
-### Method
-
-`test/SealRegistryB1Gas.t.sol` runs the real `open` and `finalize` against committed state with every
-first storage access cold (`vm.cool`), records the storage accesses, and prices each SSTORE with the
-exact Cancun rules (EIP-2929, 2200, 3529: 2100 cold surcharge; 100 when the value is unchanged or the
-slot is dirty; 20000 for a clean zero to non-zero; 2900 for any other clean change). That model is
-itself tested against the EVM (`SealRegistryB1GasModelTest`: a cold set is 22100, a cold clear or
-overwrite 5000, a dirty rewrite 100, a cold read 2100, a warm read 100, a write after a cold read 2900).
-
-Two properties of the test EVM matter and are handled explicitly. First, calls from the test body start
-cold, so each of `open` and `finalize` is priced as its own cold call (conservative). Second, the test EVM
-credits the capped refund to the call that earned it, so a raw `gasleft()` difference around a call that
-clears slots is **net**; the fixtures add the credit (`lastFrameGas().gasRefunded`) back to get gross
-(`test_theFixturesAddBackTheRefundCreditSoGrossIsMeasured` calibrates this against a control with no
-refund). Earlier fixtures measured net gas and so saw deletions cheaper than the EVM's 5000.
-
-For each fixture:
-
-```
-history = exact price of every write to a history slot (what the rectangle covers)
-rest*   = gross - history - (operational writes, exact) + 28 * 22100
-```
-
-`rest*` keeps every SLOAD, the event and finalize in `G_rest`, and re-prices the operational writes
-(at most 26 in `open`, 2 in `finalize`) at the 22100 worst case whatever their state. Every fixture
-asserts `ceil(1.5 * rest*) <= G_rest(a, p)`, `ceil(1.5 * rest*) <= G_rest(K_max)`, and
-`history <= rectangle(a, p)` (with the
-write-count premises: non-zero history writes at most `524*a + 4`, all history writes at most
-`524*(a + p) + 4`, a non-zero write at most 22100, a write of zero at most 5000), and the end-to-end
-`gross <= rectangle + G_rest(K_max)`.
-
-Shapes, all with 64 members and 128-byte node IDs (variant 2: lengths 1 to 64), at `K_max` in
-`{1, 2, 4, 8, 16}`: **replace** (full ring deleted, `K` entries inserted, `a = p = K`), **mixed** (a
-full ring loses `K - 1` entries, the surviving tip is closed, `K - 1` inserted), **insert** (a ring of one
-open tail gains `K - 1`, `p = 0`), **prune** (`K - 1` deleted, `a = 0`), and
-**unchanged** (`a = p = 0`, full-ring and tail-only baselines).
-
-### Measured `rest*` (worst node-ID variant, variant 1)
-
-| `K_max` | replace (`a=p=K`) | mixed (`a=p=K-1`) | insert (`a=K-1`) | prune (`p=K-1`) | unchanged (`a=p=0`) | frozen `G_rest(K_max)` |
-|---|---|---|---|---|---|---|
-| 1 | 1 482 921 | n/a | n/a | n/a | 723 713 | 2 238 000 |
-| 2 | 2 233 622 | 1 490 882 | 1 363 236 | 851 362 | 730 037 | 3 379 500 |
-| 4 | 3 732 587 | 2 990 290 | 2 607 343 | 1 106 663 | 730 046 | 5 662 500 |
-| 8 | 6 730 442 | 5 988 145 | 5 094 623 | 1 617 238 | 730 037 | 10 228 500 |
-| 16 | 12 720 398 | 11 978 881 | 10 064 191 | 2 638 406 | 730 037 | 19 360 500 |
-
-Coefficient construction over all 52 measured fixtures (all shapes, K values and node-ID variants),
-rounding **up** to the next 1000 gas before applying the safety factor:
-
-1. `B = roundUp1000(max(rest* where a = p = 0)) = 731 000` (maximum 730 046, unchanged at K = 4).
-2. `D = roundUp1000(max((rest* - B) / p where a = 0, p > 0)) = 128 000`
-   (maximum 127 160.4, prune at K = 16).
-3. `I = roundUp1000(max((rest* - B - D*p) / a where a > 0)) = 633 000`
-   (maximum 632 236, insert at K = 2, variant 1; replacement and mixed fixtures are included).
-4. Multiply each coefficient by **1.5**: base = 1 096 500, perInsert = 949 500,
-   perDelete = 192 000; perEntry = perInsert + perDelete = 1 141 500.
-
-Thus the measured coefficients cover the worst observed remainder for each fixture, and scaling
-all three preserves at least a 1.5x margin on every fixture. The tests assert that margin for both
-`G_rest(a, p)` and `G_rest(K_max)`, alongside the structural storage-write checks. This finite-sample
-construction does not establish an upper bound for every possible input. The full per-fixture
-figures (gross, history SSTORE, rectangle, operational SSTORE, SLOAD) are printed by
-`forge test --match-path test/SealRegistryB1Gas.t.sol -vv`.
-
-**Limits of this evidence.** These are gross-gas measurements under forge's test EVM with a 1.5x
-safety factor, not a proven upper bound for all inputs. Genesis admits only `1 <= K_max <= 16`, the
-largest K exercised by the maximal actual-call fixtures. The sampled K values are 1, 2, 4, 8 and 16;
-the margin also serves as a conservative allowance for intermediate admitted K values, without a
-claim of proof. A larger budget cannot bypass this cap; raising it requires new maximal fixtures and
-re-measurement. Live history is never truncated.
-
-**ureth PR 4 must re-measure under the real client** (same envelope, real database, x86-64 and arm64)
-and may lower or raise the constants before activation. A runtime, compiler-profile or entry-bound
-change also requires re-measurement. The structural history rectangle and the allowance of 28
-operational writes at 22100 remain independent of the measured remainder.
-
-`test_deletionRefundsDoNotFundTheCall` shows the gross rule on the maximal replacement: the call earns a
-non-zero refund, a budget equal to gross minus the maximum refund fails with no state change, and a
-gross budget succeeds. `test_aBudgetShortOfTheNeededGasDiscardsTheWholeCandidate` shows an
-out-of-gas candidate leaves no partial deletion or insertion.
+The affine allowance is fitted to these three points with the 1.5x margin the test enforces; it is a measurement of this runtime under forge's test
+EVM, not an instruction-level proof or a claim about the final client: the ureth system-integration work re-measures. The B = 2 maximal import
+(two full-width epochs) costs 6.9M gross, which is why the system call has its own reservation rather than the 7M ordinary budget.

@@ -2,33 +2,52 @@
 // License not yet chosen: contract licensing is an explicit owner decision (bft-core #1), not a default.
 pragma solidity 0.8.37;
 
-// B1 #62 pruned authenticated registry history (design: briefs/b1-design-v4.md, "A'"). Shared by
-// the SealRegistry runtime and the genesis builder so that both apply identical shape rules.
+// B1 permanent registry (design: briefs/b1-any-age-by-signatures.md, contract: briefs/b1-any-age-contract.md section 1). Every installed
+// validator epoch is kept forever: no window, no ring, no pruning, no deletion. Shared by the SealRegistry runtime and the genesis builder
+// so that both apply identical shape rules. The state machine mirrors bft-core b1state.Registry.Apply, one error per Go sentinel.
 
-/// The parent queue, count or tail is not a well-formed live set (an impossible admitted state, or an
-/// update that would leave no open tail).
+/// The stored cursors or tip are not a well-formed permanent registry (an impossible admitted state), or an update that would leave no
+/// open tip.
 error B1StateInvalid();
-/// The update's prior tip epoch is not the stored tail epoch.
+/// The update's prior tip epoch is not the imported tip I.
 error PriorTipMismatch();
-/// oldTipEnd is present without new entries, absent with them, or non-canonically zero.
+/// oldTipEnd is present without new entries, absent with them, or not the first new entry's start.
 error OldTipEndMismatch();
 /// An interval is empty, or an end/hasEnd pair is non-canonical.
 error InvalidInterval();
-/// More new entries than the ring has slots (K_max = W_cert + 1).
-error TooManyEntries();
-/// The survivors plus the new entries exceed K_max.
-error RingFull();
-/// Epochs are not consecutive, or an end is not the next start.
+/// An append is not the successor of the imported tip (ErrAppendGap).
+error AppendGap();
+/// Epochs inside the update are not consecutive, or an end is not the next start.
 error NonContiguousEpochs();
-/// A new entry would be expired at insertion (closed with end <= L).
-error ExpiredEntry();
-/// An entry starts after the origin round, or the first new entry leaves a gap at L.
+/// A new entry is a genesis body, or its epoch would overflow (ErrHistory / ErrOverflow).
+error BadAppend();
+/// An installed entry cannot change: a replay differs in an immutable field (ErrImmutable).
+error ImmutableEntry();
+/// The successor's start does not exceed the tip's start (ErrAppendStartNotIncreasing).
+error AppendStartNotIncreasing();
+/// The successor's start would close the usable epoch at or below the origin round (ErrAppendClosesUsableOrigin).
+error AppendClosesUsableOrigin();
+/// An entry starts after the origin round, or ends after it.
 error StartAfterOrigin();
-/// The final open tail does not name the block's origin epoch.
+/// The final open tip does not name the block's origin epoch.
 error OriginEpochMismatch();
 /// A new epoch is already present in storage.
 error EntryAlreadyPresent();
-/// An entry has no members or more than 64.
+/// The usable origin epoch moves backwards (ErrOriginEpochRegression).
+error OriginEpochRegression();
+/// The origin round moves backwards (ErrOriginRoundRegression).
+error OriginRoundRegression();
+/// The usable origin epoch is beyond the imported tip (ErrOriginBeyondImportedTip).
+error OriginBeyondImportedTip();
+/// The first usable origin epoch precedes the genesis epoch (ErrFirstOriginBeforeGenesis).
+error FirstOriginBeforeGenesis();
+/// The origin round precedes the usable epoch's start (ErrOriginBeforeStart).
+error OriginBeforeStart();
+/// The origin round is at or past the usable epoch's end (ErrOriginAtOrAfterEnd).
+error OriginAtOrAfterEnd();
+/// While a usable origin exists the usable epoch is the imported tip after every update (ErrImportedUsableMismatch).
+error ImportedUsableMismatch();
+/// An entry has no members or more than 16.
 error BadMemberCount();
 /// A node ID is empty, longer than 128 bytes or has non-zero padding.
 error BadNodeID();
@@ -74,29 +93,25 @@ struct B1Update {
 library B1Layout {
     uint256 internal constant ENTRY_FIELDS = 11;
     uint256 internal constant MEMBER_FIELDS = 8;
-    uint256 internal constant MAX_MEMBERS = 64;
+    uint256 internal constant MAX_MEMBERS = 16; // N_admit = N_verify = 16 (contract section 4): a populated entry above it is impossible state
     uint256 internal constant MAX_NODE_ID = 128;
 
     // Fixed words, F(name) = keccak256(UTF8("unicity.seal-registry/" || name)).
     bytes32 internal constant F_NETWORK = keccak256("unicity.seal-registry/b1.network");
-    bytes32 internal constant F_W_CERT = keccak256("unicity.seal-registry/b1.wCert");
+    bytes32 internal constant F_FORMAT = keccak256("unicity.seal-registry/b1.format");
     bytes32 internal constant F_PROFILE_HASH = keccak256("unicity.seal-registry/b1.profileHash");
     bytes32 internal constant F_INITIALIZED = keccak256("unicity.seal-registry/b1.initialized");
-    bytes32 internal constant F_HEAD = keccak256("unicity.seal-registry/b1.head");
-    bytes32 internal constant F_COUNT = keccak256("unicity.seal-registry/b1.count");
-    bytes32 internal constant F_QUEUE = keccak256("unicity.seal-registry/b1.queue");
+    /// g: the first epoch admitted in this deployment (zero is a valid, occupied epoch).
+    bytes32 internal constant F_GENESIS_EPOCH = keccak256("unicity.seal-registry/b1.genesisEpoch");
+    /// I: the greatest contiguously installed epoch, the durable import cursor.
+    bytes32 internal constant F_IMPORTED_TIP =
+        keccak256("unicity.seal-registry/b1.importedTipEpoch");
+    /// 0 before the first usable root origin, 1 thereafter.
+    bytes32 internal constant F_ORIGIN_READY = keccak256("unicity.seal-registry/b1.originReady");
     bytes32 internal constant F_ENTRY = keccak256("unicity.seal-registry/b1.entry");
     bytes32 internal constant F_MEMBER = keccak256("unicity.seal-registry/b1.member");
-
-    /// Q(i) = keccak256(abi.encode(F("b1.queue"), uint256(i))): the epoch stored at ring index i.
-    function queueSlot(uint256 i) internal pure returns (bytes32 slot) {
-        bytes32 f = F_QUEUE;
-        assembly ("memory-safe") {
-            mstore(0x00, f) // scratch space: no allocation, so no memory growth over a long update
-            mstore(0x20, i)
-            slot := keccak256(0x00, 0x40)
-        }
-    }
+    /// The registry format word: 2 is the permanent layout.
+    uint256 internal constant FORMAT = 2;
 
     /// E(e,f) = keccak256(abi.encode(F("b1.entry"), uint256(e), uint256(f))), f = 0..10:
     /// present, bodyKind, bodyID, activationCommitID, start, end, hasEnd, signingScheme,

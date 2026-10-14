@@ -28,8 +28,8 @@ abstract contract SealRegistryBase is Test {
 
     uint256 internal constant FIELD_COUNT = 36;
 
-    // The fixture profile: W_cert = 3 gives K_max = 4 live intervals.
-    uint64 internal constant W_CERT = 3;
+    // The fixture profile: B = 2 epochs imported per block (the permanent registry has no window).
+    uint64 internal constant MAX_EPOCHS = 2;
     uint16 internal constant NETWORK = 7;
     bytes32 internal constant PROFILE_HASH = keccak256("fixture execution profile");
     /// Genesis entry: root genesis epoch ROOT_EPOCH, open, starting at root round 1.
@@ -76,17 +76,13 @@ abstract contract SealRegistryBase is Test {
 
     /// @dev Never deployed on chain: the genesis builder runs the runtime's entry checks off chain.
     B1GenesisBuilder internal builder;
-    /// @dev W_cert of the installed profile; a subclass may change it before super.setUp().
-    uint64 internal wCertFixture = W_CERT;
+    /// @dev B of the installed profile (gas envelope only; not a registry word).
+    uint64 internal maxEpochsFixture = MAX_EPOCHS;
 
     function setUp() public virtual {
         builder = new B1GenesisBuilder();
         vm.etch(A_SR, type(SealRegistry).runtimeCode);
         installGenesis();
-    }
-
-    function kMax() internal view returns (uint256) {
-        return uint256(wCertFixture) + 1;
     }
 
     /// @dev Installs the genesis allocation the genesis builder produces: six operational words and
@@ -107,16 +103,16 @@ abstract contract SealRegistryBase is Test {
             rootEpoch: ROOT_EPOCH,
             genesisUcTime: GENESIS_UC_TIME,
             network: NETWORK,
-            wCert: wCertFixture,
-            deltaEv: wCertFixture > 10 ? wCertFixture : 10,
-            deltaHold: (wCertFixture > 10 ? wCertFixture : 10) + 10,
+            maxEpochsPerUpdate: maxEpochsFixture,
+            deltaEv: 10,
+            deltaHold: 20,
             profileHash: PROFILE_HASH,
             gSys: 0,
             gRest: 0,
             entry: genesisEntry()
         });
-        p.gRest = builder.gRestBound(kMax());
-        p.gSys = builder.minGSys(kMax(), p.gRest);
+        p.gRest = builder.gRestBound(maxEpochsFixture);
+        p.gSys = builder.minGSys(maxEpochsFixture, p.gRest);
     }
 
     function genesisEntry() internal pure returns (B1Entry memory) {
@@ -161,7 +157,7 @@ abstract contract SealRegistryBase is Test {
     {
         en = B1Entry({
             epoch: epoch,
-            bodyKind: 1,
+            bodyKind: 2,
             bodyID: keccak256(abi.encode("body", epoch)),
             activationCommitID: keccak256(abi.encode("activation", epoch)),
             start: start,
@@ -177,10 +173,6 @@ abstract contract SealRegistryBase is Test {
         for (uint256 j = 0; j < ms.length; j++) {
             t += ms[j].weight;
         }
-    }
-
-    function qSlot(uint256 i) internal pure returns (bytes32) {
-        return keccak256(abi.encode(keccak256("unicity.seal-registry/b1.queue"), i));
     }
 
     function eSlot(uint256 e, uint256 f) internal pure returns (bytes32) {
@@ -207,23 +199,14 @@ abstract contract SealRegistryBase is Test {
         return vm.load(A_SR, mSlot(e, j, f));
     }
 
-    function queueAt(uint256 i) internal view returns (uint256) {
-        return uint256(vm.load(A_SR, qSlot(i)));
-    }
-
-    /// @dev Epochs in queue order, head first.
-    function liveEpochs() internal view returns (uint256[] memory es) {
-        uint256 head = b1Word("b1.head");
-        uint256 count = b1Word("b1.count");
-        es = new uint256[](count);
-        for (uint256 i = 0; i < count; i++) {
-            es[i] = queueAt((head + i) % (b1Word("b1.wCert") + 1));
-        }
-    }
-
+    /// @dev I: the imported tip, the greatest contiguously installed epoch.
     function tipEpoch() internal view returns (uint64) {
-        uint256[] memory es = liveEpochs();
-        return uint64(es[es.length - 1]);
+        return uint64(b1Word("b1.importedTipEpoch"));
+    }
+
+    /// @dev g: the genesis epoch.
+    function genesisEpoch() internal view returns (uint64) {
+        return uint64(b1Word("b1.genesisEpoch"));
     }
 
     /// @dev Requires every one of the 11 + 8m words of an entry to equal the independent expectation,
@@ -275,16 +258,14 @@ abstract contract SealRegistryBase is Test {
         d = keccak256(
             abi.encode(
                 b1Word("b1.network"),
-                b1Word("b1.wCert"),
+                b1Word("b1.format"),
                 b1Word("b1.profileHash"),
                 b1Word("b1.initialized"),
-                b1Word("b1.head"),
-                b1Word("b1.count")
+                b1Word("b1.genesisEpoch"),
+                b1Word("b1.importedTipEpoch"),
+                b1Word("b1.originReady")
             )
         );
-        for (uint256 i = 0; i < kMax() + 2; i++) {
-            d = keccak256(abi.encode(d, queueAt(i)));
-        }
         for (uint256 e = 0; e < TRACK_EPOCHS; e++) {
             for (uint256 f = 0; f < 11; f++) {
                 d = keccak256(abi.encode(d, ent(e, f)));
@@ -352,12 +333,13 @@ abstract contract SealRegistryBase is Test {
     function b1DigestLight() internal view returns (bytes32 d) {
         d = keccak256(
             abi.encode(
-                b1Word("b1.head"), b1Word("b1.count"), b1Word("b1.initialized"), b1Word("b1.wCert")
+                b1Word("b1.format"),
+                b1Word("b1.initialized"),
+                b1Word("b1.genesisEpoch"),
+                b1Word("b1.importedTipEpoch"),
+                b1Word("b1.originReady")
             )
         );
-        for (uint256 i = 0; i < kMax() + 2; i++) {
-            d = keccak256(abi.encode(d, queueAt(i)));
-        }
         for (uint256 e = 0; e < TRACK_EPOCHS; e++) {
             for (uint256 f = 0; f < 11; f++) {
                 d = keccak256(abi.encode(d, ent(e, f)));

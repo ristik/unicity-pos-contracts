@@ -30,8 +30,15 @@ contract SealRegistryArtifactTest is SealRegistryBase {
                 vm.parseJsonBytes32(json, string.concat(path, ".key")), slotKey(names[i]), names[i]
             );
         }
-        string[6] memory fixedNames =
-            ["b1.network", "b1.wCert", "b1.profileHash", "b1.initialized", "b1.head", "b1.count"];
+        string[7] memory fixedNames = [
+            "b1.network",
+            "b1.format",
+            "b1.profileHash",
+            "b1.initialized",
+            "b1.genesisEpoch",
+            "b1.importedTipEpoch",
+            "b1.originReady"
+        ];
         for (uint256 i = 0; i < fixedNames.length; i++) {
             string memory path = string.concat(".slotKeys[", vm.toString(FIELD_COUNT + i), "]");
             assertEq(vm.parseJsonString(json, string.concat(path, ".name")), fixedNames[i]);
@@ -42,34 +49,27 @@ contract SealRegistryArtifactTest is SealRegistryBase {
             );
         }
         // No layoutVersion word survives in the single fresh layout.
-        string memory last = string.concat(".slotKeys[", vm.toString(FIELD_COUNT + 5), "]");
-        string memory beyond = string.concat(".slotKeys[", vm.toString(FIELD_COUNT + 6), "]");
+        string memory last = string.concat(".slotKeys[", vm.toString(FIELD_COUNT + 6), "]");
+        string memory beyond = string.concat(".slotKeys[", vm.toString(FIELD_COUNT + 7), "]");
         assertTrue(vm.keyExists(json, last), "last slot key");
         assertFalse(vm.keyExists(json, beyond), "no extra slot key");
     }
 
     function test_artifactDescribesTheB1LayoutAndBounds() public view {
         string memory json = vm.readFile(ARTIFACT);
-        assertEq(vm.parseJsonBytes32(json, ".b1Layout.queue.prefix.key"), fixedSlot("b1.queue"));
         assertEq(vm.parseJsonBytes32(json, ".b1Layout.entry.prefix.key"), fixedSlot("b1.entry"));
         assertEq(vm.parseJsonBytes32(json, ".b1Layout.member.prefix.key"), fixedSlot("b1.member"));
         assertEq(vm.parseJsonStringArray(json, ".b1Layout.entry.fields").length, 11);
         assertEq(vm.parseJsonStringArray(json, ".b1Layout.member.fields").length, 8);
-        assertEq(vm.parseJsonUint(json, ".b1Layout.bounds.maxMembers"), 64);
+        assertEq(vm.parseJsonUint(json, ".b1Layout.bounds.maxMembers"), 16);
         assertEq(vm.parseJsonUint(json, ".b1Layout.bounds.maxNodeIDBytes"), 128);
-        assertEq(vm.parseJsonUint(json, ".b1Layout.bounds.maxEntryWords"), 11 + 8 * 64);
-        assertEq(vm.parseJsonUint(json, ".b1Layout.bounds.maxMeasuredK"), builder.MAX_MEASURED_K());
+        assertEq(vm.parseJsonUint(json, ".b1Layout.bounds.maxEntryWords"), 11 + 8 * 16);
+        assertEq(vm.parseJsonUint(json, ".b1Layout.bounds.maxMeasuredB"), builder.MAX_MEASURED_B());
         assertEq(vm.parseJsonUint(json, ".gasProfile.gRestBound.safetyFactor.numerator"), 3);
         assertEq(vm.parseJsonUint(json, ".gasProfile.gRestBound.safetyFactor.denominator"), 2);
         assertEq(vm.parseJsonUint(json, ".gasProfile.gRestBound.base"), builder.G_REST_BASE());
         assertEq(
-            vm.parseJsonUint(json, ".gasProfile.gRestBound.perInsert"), builder.G_REST_PER_INSERT()
-        );
-        assertEq(
-            vm.parseJsonUint(json, ".gasProfile.gRestBound.perDelete"), builder.G_REST_PER_DELETE()
-        );
-        assertEq(
-            vm.parseJsonUint(json, ".gasProfile.gRestBound.perEntry"), builder.G_REST_PER_ENTRY()
+            vm.parseJsonUint(json, ".gasProfile.gRestBound.perEpoch"), builder.G_REST_PER_EPOCH()
         );
         assertEq(vm.parseJsonUint(json, ".gasProfile.gRestBound.operationalWrites.count"), 28);
         assertEq(
@@ -88,11 +88,11 @@ contract SealRegistryArtifactTest is SealRegistryBase {
             "records.ucTime",
             "phase",
             "b1.network",
-            "b1.wCert",
+            "b1.format",
             "b1.profileHash",
             "b1.initialized",
-            "b1.count",
-            "b1.queue[0]",
+            "b1.genesisEpoch",
+            "b1.importedTipEpoch",
             "b1.entry(genesis epoch)",
             "b1.member(genesis epoch, j)"
         ];
