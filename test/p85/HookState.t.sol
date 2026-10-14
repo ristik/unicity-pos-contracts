@@ -142,7 +142,7 @@ contract HookStateElectTest is HookStateBase {
     address internal constant SYS = address(0xff00000000000000000000000000000000000001);
     /// @dev The identity of the root origin the ureth test world carries (`RootInputV2::origin_identity`); the Rust test asserts it.
     bytes32 internal constant ORIGIN =
-        0x3c62f1e36e798991901768bcb0eeadbf5baa29866fd1d603ba3a5c4af99c3db8;
+        0xd729022b965467fa5a874d59d91e3ec3bca9182d4f126411ddf441e93e5f06dd;
 
     function _electionParams() internal pure override returns (ElectionParams memory) {
         return ElectionParams({

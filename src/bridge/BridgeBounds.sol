@@ -9,11 +9,11 @@ pragma solidity 0.8.37;
 ///         with the budget. Nothing else in this repository states them as literals.
 library BridgeBounds {
     // ---- profile parameters (profile-v3.json `limits`) ----------------------------------------
-    /// @dev Distinct UC anchors of one redemption (one per distinct complete UC): a parser ceiling; the
-    ///      gate below admits or refuses each bundle. Two anchors fit at every cap; four fit only with small
-    ///      certificates (each maximum-size UC costs 1,768,798, so four of them cost 7.07M alone); five can
-    ///      never fit, even with the cheapest possible certificates (5 x 1,245,476 plus the reserve is over 7M).
-    uint256 internal constant MAX_ANCHORS = 4;
+    /// @dev Distinct UC anchors of one redemption (one per distinct complete UC): a parser ceiling, B1's own claim ceiling; the
+    ///      gate below admits or refuses each bundle. After the repricing of the certificate call (owner-decisions section 22:
+    ///      `UC_BASE` 92,700) a maximum-size anchor costs 617,798, the cheapest 94,476: with every other cap at its maximum five maximum-size anchors fit and six do not, and
+    ///      eight of the cheapest fit with room, so the ceiling, no longer the gate, is what stops a ninth.
+    uint256 internal constant MAX_ANCHORS = 8;
     /// @dev Exported kernel leaves of one redemption (mint plus transfers plus the final burn).
     uint256 internal constant MAX_LEAVES = 16;
     uint256 internal constant MAX_ANCHOR_UC_BYTES = 8 * 1024;
@@ -37,10 +37,13 @@ library BridgeBounds {
 
     uint256 internal constant INTRINSIC_BASE = 21_000;
     uint256 internal constant PER_BYTE = 16;
+    /// @dev The composing verifier's own execution per envelope byte (decode, scans, hashing, memory): 50 to 75 gas measured with the
+    ///      natives mocked, priced at 80. The certificate call used to dominate the gate and hide it inside `GAS_RESERVE`.
+    uint256 internal constant EXEC_PER_BYTE = 80;
     uint256 internal constant B2_BASE = 26_000;
     uint256 internal constant B2_PER_BYTE = 20;
     uint256 internal constant B2_PER_LEAF = 14_000;
-    uint256 internal constant UC_BASE = 1_243_700;
+    uint256 internal constant UC_BASE = 92_700;
     uint256 internal constant UC_PER_SIGNATURE = 6_000;
     uint256 internal constant PER_STEP = 250;
     uint256 internal constant RSMT_BASE = 2_000;
@@ -49,9 +52,9 @@ library BridgeBounds {
     /// @dev RSMT_MEMBER_V1 request without siblings.
     uint256 internal constant RSMT_REQUEST_FIXED = 136;
 
-    /// @dev `G_intrinsic = 21000 + 16*len(envelope)`.
+    /// @dev `G_intrinsic = 21000 + 96*len(envelope)` (16 calldata + 80 verifier execution).
     function intrinsicGas(uint256 envelopeBytes) internal pure returns (uint256) {
-        return INTRINSIC_BASE + PER_BYTE * envelopeBytes;
+        return INTRINSIC_BASE + (PER_BYTE + EXEC_PER_BYTE) * envelopeBytes;
     }
 
     /// @dev `len(abi.encode(uint8 op, bytes cfg, bytes payload))`.

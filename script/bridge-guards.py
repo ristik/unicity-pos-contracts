@@ -159,7 +159,7 @@ GUARDS = [
     g("T-gate-ucGas", T, "plan.ucGas[j] = BridgeBounds.ucGas(a.shard.length, a.uc.length, sigs, steps);", "plan.ucGas[j] = 0;", "test_gas_everyNativeCallIsForwardedExactlyItsCharge", TT),
     g("T-gate-leafGas", T, "plan.leafGas[i] = BridgeBounds.rsmtGas(pop);", "plan.leafGas[i] = 0;", "test_gas_everyNativeCallIsForwardedExactlyItsCharge", TT),
     g("T-gate-kernelGas", T, "BridgeBounds.KERNEL_MAX_LEAVES\n            )\n        );", "BridgeBounds.MAX_LEAVES\n            )\n        );", "test_gas_everyNativeCallIsForwardedExactlyItsCharge", TT),
-    g("BB-ucBase", BB, "UC_BASE = 1_243_700;", "UC_BASE = 1_243_699;", "test_gate_everyGoldenComponentEqualsTheOracleGate|test_gate_worstAdmittedBundleFitsTheBudget", TT),
+    g("BB-ucBase", BB, "UC_BASE = 92_700;", "UC_BASE = 92_699;", "test_gate_everyGoldenComponentEqualsTheOracleGate|test_gate_worstAdmittedBundleFitsTheBudget", TT),
     g("BB-rsmtPerSibling", BB, "+ PER_STEP * (1 + siblings);", "+ PER_STEP * siblings;", "test_gate_everyGoldenComponentEqualsTheOracleGate|test_gate_worstAdmittedBundleFitsTheBudget", TT),
     g("BB-b2PerLeaf", BB, "B2_PER_LEAF = 14_000;", "B2_PER_LEAF = 13_999;", "test_gate_everyGoldenComponentEqualsTheOracleGate", TT),
     g("BB-intrinsic", BB, "return INTRINSIC_BASE + PER_BYTE * envelopeBytes;", "return INTRINSIC_BASE + PER_BYTE * envelopeBytes + 1;", "test_gate_everyGoldenComponentEqualsTheOracleGate", TT),

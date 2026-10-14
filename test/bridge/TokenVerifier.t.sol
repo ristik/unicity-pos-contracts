@@ -1581,11 +1581,11 @@ contract TokenVerifierTest is BridgeBase {
         _gateOf("return", _returnScenario());
     }
 
-    /// @dev An oracle-parity pin of ONE composition, not a statement about the parser ceiling: the worst bundle
-    ///      of TWO maximum-size anchors at every other cap fits the budget to the unit the oracle computes
-    ///      (bft-core `TestWorstAdmittedBundleFitsBudget`: 6,976,692 of 7,000,000). Beyond two the gate decides,
-    ///      not this test: see the maximum-size assertions below and `test_gate_fiveAnchorsNeverFit...`.
-    function test_gate_twoMaximumAnchorBundleAtEveryCapFitsTheBudgetToTheOracleUnit() public pure {
+    /// @dev An oracle-parity pin of ONE composition: the worst bundle of TWO maximum-size anchors at every other cap prices to
+    ///      9,917,572 (bft-core `TestGateDecidesEachBundle`), over the 7,000,000 budget: after the repricing of the certificate call
+    ///      (owner-decisions section 22) and the 80-per-byte execution term, a maximum 65,536-byte envelope alone costs 6.3M, so the
+    ///      gate refuses it. Realistic bundles are admitted (see the eight-anchor tests).
+    function test_gate_twoMaximumAnchorBundleAtEveryCapIsPricedOutToTheOracleUnit() public pure {
         uint256 total = BridgeBounds.intrinsicGas(BridgeBounds.MAX_ENVELOPE_BYTES)
             + BridgeBounds.b2Gas(
                 BridgeBounds.kernelRequestBytes(
@@ -1600,19 +1600,8 @@ contract TokenVerifierTest is BridgeBase {
                 1 + BridgeBounds.MAX_UNICITY_STEPS
             ) + BridgeBounds.MAX_LEAVES * BridgeBounds.rsmtGas(BridgeBounds.MAX_RSMT_SIBLINGS)
             + BridgeBounds.GAS_RESERVE;
-        assertEq(total, 6_976_692);
-        assertLe(total, BridgeBounds.TX_GAS_BUDGET);
-        // the gate refuses a third maximum-size certificate (the parser ceiling is four, so the gate is what decides)
-        assertGt(
-            total
-                + BridgeBounds.ucGas(
-                    1,
-                    BridgeBounds.MAX_ANCHOR_UC_BYTES,
-                    BridgeBounds.MAX_SIGNATURES,
-                    1 + BridgeBounds.MAX_UNICITY_STEPS
-                ),
-            BridgeBounds.TX_GAS_BUDGET
-        );
+        assertEq(total, 9_917_572);
+        assertGt(total, BridgeBounds.TX_GAS_BUDGET, "the maximum envelope is priced out");
     }
 
     /// @dev `n` leaves (mock kernel result), each certified by its own anchor: distinct UCs alternating
@@ -1703,17 +1692,16 @@ contract TokenVerifierTest is BridgeBase {
         }
     }
 
-    /// @dev Four DN-B-shape anchors pass with four leaves and are priced out by sixteen leaves with
-    ///      32-sibling paths and an 8 KiB history (the oracle's `compose-anchors-max-dnb-load-over-budget`).
-    function test_gate_fourDnbShapeAnchorsWithSixteenDeepLeavesAreBudgetExceeded() public {
+    /// @dev After the repricing the DN-B-shape bundle at the anchor ceiling no longer reaches the gate: eight anchors, sixteen
+    ///      leaves with 32-sibling paths and an 8 KiB history are admitted and run (the oracle no longer has an over-budget
+    ///      case of this shape; the heavy case below is the one the gate prices out).
+    function test_gate_eightDnbShapeAnchorsWithSixteenDeepLeavesAreAdmitted() public {
         Scenario memory s = _perLeafAnchors(BridgeBounds.MAX_ANCHORS, false);
-        (uint256 i0, uint256 b2, uint256 uc, uint256 rs) = _gateParts(s);
-        assertLe(i0 + b2 + uc + rs + BridgeBounds.GAS_RESERVE, BridgeBounds.TX_GAS_BUDGET);
         uint256 n = BridgeBounds.MAX_LEAVES;
         Leaf[] memory ls = new Leaf[](n);
         LeafProof[] memory ps = new LeafProof[](n);
         for (uint256 i = 0; i < n; ++i) {
-            uint256 ai = i < 4 ? i : 2 + (i % 2); // later leaves reuse the anchor of their own shard
+            uint256 ai = i < BridgeBounds.MAX_ANCHORS ? i : BridgeBounds.MAX_ANCHORS - 2 + (i % 2); // later leaves reuse an anchor of their own shard
             ls[i] = Leaf({
                 sid: _sidInRow(keccak256(abi.encode("sid", i)), uint8(s.anchors[ai].shard[0]) >> 7),
                 txHash: keccak256(abi.encode("tx", i)),
@@ -1727,12 +1715,13 @@ contract TokenVerifierTest is BridgeBase {
         s.result.leaves = ls;
         s.paths = ps;
         s.history = new bytes(8 * 1024);
-        (i0, b2, uc, rs) = _gateParts(s);
-        assertGt(i0 + b2 + uc + rs + BridgeBounds.GAS_RESERVE, BridgeBounds.TX_GAS_BUDGET);
-        _rejects(s, abi.encodeWithSelector(BudgetExceeded.selector));
+        (uint256 i0, uint256 b2, uint256 uc, uint256 rs) = _gateParts(s);
+        assertLe(i0 + b2 + uc + rs + BridgeBounds.GAS_RESERVE, BridgeBounds.TX_GAS_BUDGET);
+        KernelResult memory got = _run(s);
+        assertEq(got.leaves.length, n);
     }
 
-    /// @dev Four DN-B-shape anchors with 16 maximum-length sibling paths, each UC padded by `add` bytes.
+    /// @dev Eight DN-B-shape anchors (the ceiling) with 8 maximum-length sibling paths, each UC padded by `add` bytes.
     function _edgeBase() internal view returns (Scenario memory s) {
         s = _perLeafAnchors(BridgeBounds.MAX_ANCHORS, false);
         for (uint256 i = 0; i < s.paths.length; ++i) {
@@ -1741,7 +1730,14 @@ contract TokenVerifierTest is BridgeBase {
         }
     }
 
-    function _pad(Scenario memory s, bytes[4] memory ucs, uint256 add)
+    function _ucsOf(Scenario memory s) internal pure returns (bytes[] memory ucs) {
+        ucs = new bytes[](s.anchors.length);
+        for (uint256 j = 0; j < ucs.length; ++j) {
+            ucs[j] = s.anchors[j].uc;
+        }
+    }
+
+    function _pad(Scenario memory s, bytes[] memory ucs, uint256 add)
         internal
         pure
         returns (uint256 total)
@@ -1763,68 +1759,80 @@ contract TokenVerifierTest is BridgeBase {
         public
     {
         Scenario memory s = _edgeBase();
-        bytes[4] memory ucs = [s.anchors[0].uc, s.anchors[1].uc, s.anchors[2].uc, s.anchors[3].uc];
+        bytes[] memory ucs = _ucsOf(s);
         uint256 total = _pad(s, ucs, 0);
         assertLe(total, BridgeBounds.TX_GAS_BUDGET, "start inside the gate");
-        // each padding byte costs 16 (the UC request) + 16 (the envelope) per anchor; settle by stepping
-        uint256 add = (BridgeBounds.TX_GAS_BUDGET - total) / 128;
+        // each padding byte costs 16 (the UC request) + 96 (the envelope) per anchor; settle by stepping
+        uint256 add = (BridgeBounds.TX_GAS_BUDGET - total) / (112 * BridgeBounds.MAX_ANCHORS);
         while (_pad(s, ucs, add) > BridgeBounds.TX_GAS_BUDGET) --add;
         while (_pad(s, ucs, add + 1) <= BridgeBounds.TX_GAS_BUDGET) ++add;
         total = _pad(s, ucs, add);
         uint256 over = _pad(s, ucs, add + 1);
         assertLe(total, BridgeBounds.TX_GAS_BUDGET);
         assertGt(over, BridgeBounds.TX_GAS_BUDGET);
-        assertLt(over - total, 256, "the refused bundle is one UC byte per anchor larger");
+        assertLt(
+            over - total,
+            BridgeBounds.MAX_ANCHORS * 32
+                * (BridgeBounds.PER_BYTE + BridgeBounds.EXEC_PER_BYTE + 1),
+            "the refused bundle is one ABI word of certificate padding per anchor larger"
+        );
         _pad(s, ucs, add);
         _arm(s);
         uint256 before = gasleft();
         KernelResult memory got = v.verifyReturn(s.cfgB, _proof(s));
         uint256 used = before - gasleft();
         assertEq(got.leaves.length, BridgeBounds.MAX_ANCHORS);
-        assertLt(used, 750_000, "verifier overhead at the edge stays inside the reserve");
+        assertLt(
+            used,
+            BridgeBounds.GAS_RESERVE - 100_000 + BridgeBounds.EXEC_PER_BYTE * _proof(s).length,
+            "verifier overhead at the edge stays inside the reserve and the execution term"
+        );
         emit log_named_uint("gate total, accepted edge", total);
         emit log_named_uint("gate total, first refused", over);
-        emit log_named_uint("verifier overhead gas, 4 anchors at the edge", used);
+        emit log_named_uint("verifier overhead gas, eight anchors at the edge", used);
         _pad(s, ucs, add + 1);
         vm.expectCall(B1Calls.UC_VERIFIER, bytes(""), 0);
         vm.expectCall(B1Calls.RSMT_VERIFIER, bytes(""), 0);
         _rejects(s, abi.encodeWithSelector(BudgetExceeded.selector));
     }
 
-    /// @dev Four maximum-size certificates cost 7.07M on their own, and five anchors cannot fit even with the
-    ///      cheapest certificate there is (zero bytes, signatures and steps): the parser ceiling of four is
-    ///      the gate's own consequence for the second, not a separate rule.
-    function test_gate_fourMaximumCertificatesAloneExceedTheBudgetAndFiveNeverFit() public pure {
+    /// @dev After the repricing (`UC_BASE` 92,700) a maximum-size certificate costs 617,798 and the cheapest 94,476: eight
+    ///      maximum-size certificates alone (4.94M) and eight of the cheapest with the reserve (1.76M) both fit the budget, so
+    ///      the anchor ceiling of eight is a parser limit; what the gate prices out is the sum of all terms (see the heavy test).
+    function test_gate_certificateCostsAfterTheRepricing() public pure {
         uint256 maxUc = BridgeBounds.ucGas(
             1,
             BridgeBounds.MAX_ANCHOR_UC_BYTES,
             BridgeBounds.MAX_SIGNATURES,
             1 + BridgeBounds.MAX_UNICITY_STEPS
         );
-        assertEq(maxUc, 1_768_798);
-        assertGt(4 * maxUc, BridgeBounds.TX_GAS_BUDGET, "four maximum certificates alone");
+        assertEq(maxUc, 617_798);
         uint256 minUc = BridgeBounds.ucGas(1, 0, 0, 0);
-        assertGt(
-            5 * minUc + BridgeBounds.GAS_RESERVE,
+        assertEq(minUc, 94_476);
+        assertLe(
+            BridgeBounds.MAX_ANCHORS * maxUc,
             BridgeBounds.TX_GAS_BUDGET,
-            "five anchors with the cheapest possible certificate and nothing else"
+            "eight maximum certificates alone"
         );
-        assertLe(4 * minUc + BridgeBounds.GAS_RESERVE, BridgeBounds.TX_GAS_BUDGET, "four can fit");
+        assertLe(
+            BridgeBounds.MAX_ANCHORS * minUc + BridgeBounds.GAS_RESERVE,
+            BridgeBounds.TX_GAS_BUDGET,
+            "eight of the cheapest certificates and the reserve"
+        );
     }
 
-    /// @dev The union of the worst shapes the gate still admits: FOUR anchors, SIXTEEN leaves with as many siblings
-    ///      each as the gate admits (it prices 32 out at four anchors, see
-    ///      `test_gate_fourDnbShapeAnchorsWithSixteenDeepLeavesAreBudgetExceeded`), then the largest history it admits at
+    /// @dev The union of the worst shapes the gate still admits: EIGHT maximum-signature anchors, SIXTEEN leaves with as many
+    ///      siblings each as the gate admits, then the largest history it admits at
     ///      that load, then the largest certificate padding. The verifier's own work there, with the natives mocked,
     ///      must stay under the reserve minus the vault's own accounting (about 60k: two new-slot SSTOREs, a fresh
     ///      `claimable`, the event and `cfgBytes()`).
     function test_gas_unionWorstAdmittedBundleVerifierOverheadFitsTheReserve() public {
-        Scenario memory s = _perLeafAnchors(BridgeBounds.MAX_ANCHORS, false);
+        Scenario memory s = _perLeafAnchors(BridgeBounds.MAX_ANCHORS, true);
         uint256 n = BridgeBounds.MAX_LEAVES;
         Leaf[] memory ls = new Leaf[](n);
         LeafProof[] memory ps = new LeafProof[](n);
         for (uint256 i = 0; i < n; ++i) {
-            uint256 ai = i < 4 ? i : 2 + (i % 2); // later leaves reuse the anchor of their own shard
+            uint256 ai = i < BridgeBounds.MAX_ANCHORS ? i : BridgeBounds.MAX_ANCHORS - 2 + (i % 2); // later leaves reuse an anchor of their own shard
             ls[i] = Leaf({
                 sid: _sidInRow(keccak256(abi.encode("sid", i)), uint8(s.anchors[ai].shard[0]) >> 7),
                 txHash: keccak256(abi.encode("tx", i)),
@@ -1851,7 +1859,7 @@ contract TokenVerifierTest is BridgeBase {
             assertGt(depth, 0, "some depth is admitted");
         }
         (uint256 i0, uint256 b2, uint256 uc, uint256 rs) = _gateParts(s);
-        bytes[4] memory ucs = [s.anchors[0].uc, s.anchors[1].uc, s.anchors[2].uc, s.anchors[3].uc];
+        bytes[] memory ucs = _ucsOf(s);
         // the largest history the gate admits at this load (bisection: the gate total is increasing in the history)
         uint256 lo = 0;
         uint256 hi = BridgeBounds.MAX_SEMANTIC_BYTES;
@@ -1878,7 +1886,7 @@ contract TokenVerifierTest is BridgeBase {
         KernelResult memory got = v.verifyReturn(s.cfgB, proof);
         uint256 used = before - gasleft();
         assertEq(got.leaves.length, n);
-        emit log_named_uint("siblings per leaf admitted at four anchors and sixteen leaves", depth);
+        emit log_named_uint("siblings per leaf admitted at eight anchors and sixteen leaves", depth);
         emit log_named_uint("history bytes admitted at that load", lo);
         emit log_named_uint("certificate padding bytes per anchor admitted", add);
         emit log_named_uint("gate total", total);
@@ -1886,19 +1894,23 @@ contract TokenVerifierTest is BridgeBase {
         emit log_named_uint("verifier overhead gas, the union shape", used);
         assertLt(
             used + 100_000,
-            BridgeBounds.GAS_RESERVE,
-            "verifier overhead plus the vault's own accounting stays inside the reserve"
+            BridgeBounds.GAS_RESERVE + BridgeBounds.EXEC_PER_BYTE * proof.length,
+            "verifier overhead plus the vault's own accounting stays inside the reserve and the execution term"
         );
     }
 
-    function test_gate_fourAnchorsOfMaximumSignaturesAreBudgetExceeded() public {
+    /// @dev Eight anchors of maximum signatures and maximum certificate bytes are priced out by the gate before any native call
+    ///      (the oracle's `compose-anchors-max-heavy-over-budget` is the structurally admitted form of this shape); the same
+    ///      bundle with two anchors passes.
+    function test_gate_eightAnchorsOfMaximumSignaturesAndBytesAreBudgetExceeded() public {
         Scenario memory s = _perLeafAnchors(BridgeBounds.MAX_ANCHORS, true);
-        (uint256 i0, uint256 b2, uint256 uc, uint256 rs) = _gateParts(s);
-        assertGt(i0 + b2 + uc + rs + BridgeBounds.GAS_RESERVE, BridgeBounds.TX_GAS_BUDGET);
+        bytes[] memory ucs = _ucsOf(s);
+        uint256 over = _pad(s, ucs, BridgeBounds.MAX_ANCHOR_UC_BYTES - ucs[0].length);
+        assertGt(over, BridgeBounds.TX_GAS_BUDGET);
         _rejects(s, abi.encodeWithSelector(BudgetExceeded.selector));
         // ... and the same bundle with two anchors passes the gate.
         Scenario memory two = _perLeafAnchors(2, true);
-        (i0, b2, uc, rs) = _gateParts(two);
+        (uint256 i0, uint256 b2, uint256 uc, uint256 rs) = _gateParts(two);
         assertLe(i0 + b2 + uc + rs + BridgeBounds.GAS_RESERVE, BridgeBounds.TX_GAS_BUDGET);
     }
 
@@ -1964,59 +1976,9 @@ contract TokenVerifierTest is BridgeBase {
         assertTrue(_sameResult(_call(s), s.result));
     }
 
-    /// @dev The Solidity work around the native calls (envelope decode and canonical re-encode, scans,
-    ///      kernel parse, request building) of a bundle at every cap, with the natives mocked at no cost,
-    ///      against the fixed reserve of the gate. The reserve also covers the vault's own accounting and
-    ///      the 63/64 headroom, so the verifier alone must stay well under it.
-    function test_gas_worstBundleVerifierOverheadFitsTheReserve() public {
-        Scenario memory s = _returnScenario();
-        uint256 n = BridgeBounds.MAX_LEAVES;
-        Leaf[] memory ls = new Leaf[](n);
-        LeafProof[] memory ps = new LeafProof[](n);
-        for (uint256 i = 0; i < n; ++i) {
-            ps[i].anchorIndex = s.paths[i % 3].anchorIndex;
-            ps[i].bitmap = bytes32((uint256(1) << BridgeBounds.MAX_RSMT_SIBLINGS) - 1);
-            ps[i].siblings = new bytes32[](BridgeBounds.MAX_RSMT_SIBLINGS);
-            for (uint256 k = 0; k < ps[i].siblings.length; ++k) {
-                ps[i].siblings[k] = keccak256(abi.encode(i, k));
-            }
-            ls[i] = Leaf({
-                sid: _sidInRow(
-                    keccak256(abi.encode("sid", i)),
-                    uint8(s.anchors[ps[i].anchorIndex].shard[0]) >> 7
-                ),
-                txHash: keccak256(abi.encode("tx", i)),
-                referenceTime: uint64(1_700_000_000 + i),
-                leafValue: keccak256(abi.encode("v", i))
-            });
-        }
-        s.result.leaves = ls;
-        s.paths = ps;
-        s.history = new bytes(BridgeBounds.MAX_SEMANTIC_BYTES);
-        for (uint256 j = 0; j < 2; ++j) {
-            // the certificate padded to its bound (the scan reads only what it prices)
-            s.anchors[j].uc = bytes.concat(
-                s.anchors[j].uc,
-                new bytes(BridgeBounds.MAX_ANCHOR_UC_BYTES - s.anchors[j].uc.length)
-            );
-            s.anchors[j].inputRecord = _irFor(s.anchors[j], 1_700_000_064);
-            s.anchors[j].expectedIRHash = sha256(s.anchors[j].inputRecord);
-        }
-        bytes memory proof = _proof(s);
-        assertLe(
-            proof.length, BridgeBounds.MAX_ENVELOPE_BYTES, "the bundle is inside the envelope bound"
-        );
-        _arm(s);
-        uint256 before = gasleft();
-        KernelResult memory got = v.verifyReturn(s.cfgB, proof);
-        uint256 used = before - gasleft();
-        assertEq(got.leaves.length, n);
-        emit log_named_uint("envelope bytes", proof.length);
-        emit log_named_uint("verifier overhead gas at the bounds", used);
-        assertLt(
-            used, 750_000, "the verifier's own work leaves the reserve for the vault and headroom"
-        );
-    }
+    // The former `test_gas_worstBundleVerifierOverheadFitsTheReserve` (a bundle at every cap) is gone: after the repricing the gate
+    // prices that bundle out (9.9M, see `test_gate_twoMaximumAnchorBundleAtEveryCapIsPricedOutToTheOracleUnit`), and the union test
+    // above measures the verifier's overhead on the largest bundle the gate admits.
 
     function test_gate_bitmapPopcountMustEqualTheSiblingCount() public {
         Scenario memory s = _returnScenario();
