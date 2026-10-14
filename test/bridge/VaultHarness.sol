@@ -136,9 +136,9 @@ abstract contract VaultHarness is Test {
     bytes32 internal constant EXEC_GENESIS = keccak256("exec-genesis");
     uint16 internal constant NETWORK = 3;
     uint32 internal constant EVM_PARTITION = 7;
-    // A v3 policy of depth 0: partition 11, the empty-prefix shard `80`, configuration hash below.
+    // The protocol-4 policy: ["UNICITY_BR_AGG_PARTITION", 2, 11], written byte by byte.
     bytes internal constant POLICY =
-        hex"8556554e49434954595f42525f4147475f53484152444544010b00818241805820c20ce7724f24578d66aebec43c08ef934f89bb4841b8756a0deca9af3c2104fc";
+        hex"835818554e49434954595f42525f4147475f504152544954494f4e020b";
 
     address internal constant ALICE = address(0xA11CE);
     address internal constant BOB = address(0xB0B);
