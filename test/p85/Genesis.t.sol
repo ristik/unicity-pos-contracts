@@ -185,6 +185,28 @@ contract GenesisTest is P85Base {
         fresh.initialize(bytes32(0), m);
     }
 
+    /// @dev The committee ceiling is 16 (bft-core `ElectMaxCommittee`, the registry's member ceiling): initialisation refuses nMax 17 directly, not
+    /// only through a bytecode fixture, and accepts 16.
+    function test_electionRefusesACommitteeCeilingAboveSixteen() public {
+        ElectionPolicy fresh = new ElectionPolicy(address(this));
+        Manifest memory m;
+        m.election = address(fresh);
+        m.custody = address(custody);
+        m.evidence = address(evidence);
+        m.roots = address(roots);
+        m.selection = address(new SelectionEngine());
+        m.limits = Limits({vMax: 128, lMax: 8, rMax: 4, maxBatch: 32});
+        m.reader = address(new EligibilityReader(address(custody), address(evidence)));
+        m.electionParams = _electionParams();
+        m.electionParams.nTarget = 16;
+        m.electionParams.nMax = 17; // the only thing wrong with this manifest (16 is accepted below)
+        vm.expectRevert(ElectionPolicy.InvalidParams.selector);
+        fresh.initialize(bytes32(0), m);
+        m.electionParams.nMax = 16;
+        fresh.initialize(bytes32(0), m);
+        assertEq(fresh.vMax(), 128);
+    }
+
     function test_evidenceInitializeRejectsForeignManifest() public {
         Evidence fresh = new Evidence(address(this));
         Manifest memory m;
