@@ -1,18 +1,18 @@
 {
   "corpus": {
     "repository": "https://github.com/ristik/native-bridge-plugins",
-    "commit": "a60648e95d62b95c405c015b1cb2d5fbd691b6ec",
+    "commit": "72cec0d4f0f6a03511b2818367cba1321d8a6bc5",
     "directory": "protocol/vectors",
-    "manifestSha256": "d9cc3b9fe8d99c58161d41a34dc24bbfba8841a5f8fe8b3ec237933201d2296c",
+    "manifestSha256": "68ec099ec4ff3e668d61629f8152769b48948899eb95ab1985cac19a2f97a352",
     "trustDocumentSha256": "e5454ae4fe566b05dab8c1b15c88a05356b8816b1cd66a2b7adcce184af27fb5"
   },
   "oracle": {
     "repository": "https://github.com/ristik/bft-core",
-    "commit": "1f3317341eee423f0ad585e4b2b865b4ca9425de"
+    "commit": "a96f221397bdcb66531263404e844f15c04a23d1"
   },
   "golden": {
     "file": "test/bridge/golden.json",
-    "sha256": "63aa62fd1c0e12cdc70ff4e75e1cc0e38169dd906c20b297047e5d9c2107b16c",
+    "sha256": "cf6aff52a293c2b279d36eefa566018df0dd5e926b5776f96ea39e4f15d54c41",
     "sharedPaths": [
       "/cfg/aggregatorPolicyHash",
       "/cfg/aid",

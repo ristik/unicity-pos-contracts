@@ -2290,12 +2290,7 @@ contract TokenVerifierTest is BridgeBase, UcBuilder {
             );
             (uint256 total,, uint256 rsmt) = _gateOfScenario(s);
             assertEq(rsmt, vm.parseJsonUint(G, string.concat(g, ".rsmt")), "leaves");
-            // the golden gate predates G_items: its total is the oracle's until dev4 reseals with J
-            assertEq(
-                total - BridgeBounds.ITEM_GAS * _items(s),
-                vm.parseJsonUint(G, string.concat(g, ".total")),
-                "total"
-            );
+            assertEq(total, vm.parseJsonUint(G, string.concat(g, ".total")), "total");
             assertEq(n.p, vm.parseJsonUint(G, string.concat(g, ".grouping.p")), "P");
             assertEq(n.k, vm.parseJsonUint(G, string.concat(g, ".grouping.k")), "K");
             assertEq(n.e, vm.parseJsonUint(G, string.concat(g, ".grouping.e")), "E");
