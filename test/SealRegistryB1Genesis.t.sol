@@ -80,6 +80,73 @@ contract SealRegistryB1GenesisTest is SealRegistryBase {
         assertEq(keccak256(all), GENESIS_STORAGE_DIGEST);
     }
 
+    /// The fixture's inputs in literal form, so an independent (Go) genesis builder can be cross-checked against GENESIS_STORAGE_DIGEST.
+    function test_fixtureInputsAreTheDocumentedLiterals() public view {
+        B1GenesisParams memory p = genesisParams();
+        assertEq(
+            p.genesisCommitment, 0x071a4f34498689e1f26353434c92f763ddaaba8de9cc634aa68af6e1bf65eab8
+        );
+        assertEq(
+            p.shardConfHash, 0x3a2c73649214e56d5e98d1c2d06cff56e7a5d67037a25bcf0e43fcaff8987a6b
+        );
+        assertEq(p.shardEpoch, 0);
+        assertEq(p.rootEpoch, 1);
+        assertEq(p.genesisUcTime, 1000);
+        assertEq(p.network, 7);
+        assertEq(p.maxEpochsPerUpdate, 2);
+        assertEq(p.profileHash, 0x700b9d23b26cd34c0cdbafc95436a4bd085926f0970d14b197f814c925987f72);
+        assertEq(p.entry.epoch, 1);
+        assertEq(p.entry.bodyKind, 1);
+        assertEq(p.entry.bodyID, 0x74944c6da153f53b24224feacc12207f6c9f73d54eb046ef9817005ba669a384);
+        assertEq(p.entry.start, 1);
+        assertEq(p.entry.signingScheme, 1);
+        assertEq(
+            p.entry.signingConfigHash,
+            0x529739d91c443bfba01ba958c8407c594e7f497e59fd64d488cbf3562720a6e9
+        );
+        assertEq(p.entry.members.length, 3);
+        assertEq(
+            p.entry.members[0].nodeID[0],
+            0x76a0000000000000000000000000000000000000000000000000000000000000
+        );
+        assertEq(
+            p.entry.members[1].nodeID[0],
+            0x76a0010000000000000000000000000000000000000000000000000000000000
+        );
+        assertEq(
+            p.entry.members[2].nodeID[0],
+            0x76a0020000000000000000000000000000000000000000000000000000000000
+        );
+        assertEq(
+            p.entry.members[0].key[0],
+            0x025b7067386bf280672dbb7ec59314d845b016d752a64f1fc4950d030c9376f8
+        );
+        assertEq(
+            p.entry.members[0].key[1],
+            0xa700000000000000000000000000000000000000000000000000000000000000
+        );
+        assertEq(
+            p.entry.members[1].key[0],
+            0x03a75ad2ba33d3aceda65572a8914690c50c53e895b5fa1f78fe7a70b7331cb1
+        );
+        assertEq(
+            p.entry.members[1].key[1],
+            0x7200000000000000000000000000000000000000000000000000000000000000
+        );
+        assertEq(
+            p.entry.members[2].key[0],
+            0x0243b2fc005e94d2ba2c11d7c530920bcc39d1d911a3a342fd3e734824853d9f
+        );
+        assertEq(
+            p.entry.members[2].key[1],
+            0x7e00000000000000000000000000000000000000000000000000000000000000
+        );
+        for (uint256 j = 0; j < 3; j++) {
+            assertEq(p.entry.members[j].nodeIDLength, 3);
+            assertEq(p.entry.members[j].weight, 1 + j);
+        }
+    }
+
     bytes32 internal constant GENESIS_STORAGE_DIGEST =
         0x8c9f35d7df00fd660f826cb340b4adc651c90cf0d6a6ff4ee9ab9d9f36e26c76;
 
