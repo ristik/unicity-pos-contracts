@@ -1,8 +1,7 @@
 // SPDX-License-Identifier: MIT
 pragma solidity 0.8.37;
 
-import {BridgeBase} from "./BridgeBase.sol";
-import {UcBuilder} from "./UcBuilder.sol";
+import {TopologyFixtures} from "./TopologyFixtures.sol";
 import {TokenVerifier} from "../../src/bridge/TokenVerifier.sol";
 import {Cbor} from "../../src/bridge/Cbor.sol";
 import {B1Calls} from "../../src/bridge/B1Calls.sol";
@@ -16,7 +15,7 @@ import "../../src/bridge/BridgeErrors.sol";
 ///         components are the golden bundles of the protocol-4 Go oracle (bft-core bridgeprofile #610: real UCs, real kernel results),
 ///         regenerated with script/bridge-golden. The batch precompile (0x0100), the RSMT call (0x0102) and the 0x0104 kernel are TEST DOUBLES that answer only the exact expected request bytes
 ///         (`vm.mockCall` over reverting code); they are not the native code.
-contract TokenVerifierTest is BridgeBase, UcBuilder {
+contract TokenVerifierTest is TopologyFixtures {
     TokenVerifier internal v;
     bytes internal cfgB;
 
@@ -1854,61 +1853,6 @@ contract TokenVerifierTest is BridgeBase, UcBuilder {
     // ---------------------------------------------------------------------------------------------
     // Any-age: topology, leaf-to-anchor coverage, the Solidity preflight, the gate and the batch call
     // ---------------------------------------------------------------------------------------------
-
-    /// @dev The native shard id of the k-th shard of depth d: the d bits of k, the terminator bit 1, zero padding.
-    function _shardId(uint256 d, uint256 k) internal pure returns (bytes memory out) {
-        uint256 nbits = d + 1;
-        uint256 nbytes = (nbits + 7) / 8;
-        uint256 bitsv = ((k << 1) | 1) << (8 * nbytes - nbits);
-        out = new bytes(nbytes);
-        for (uint256 i = 0; i < nbytes; ++i) {
-            out[nbytes - 1 - i] = bytes1(uint8(bitsv >> (8 * i)));
-        }
-    }
-
-    /// @dev A state ID whose first d bits are the shard's prefix and whose other bits come from `salt`.
-    function _sidIn(bytes memory shard, uint256 salt) internal pure returns (bytes32 sid) {
-        uint256 d = CertGroups.shardDepth(shard);
-        sid = keccak256(abi.encode("sid", salt));
-        uint256 whole = d / 8;
-        bytes memory raw = abi.encodePacked(sid);
-        for (uint256 i = 0; i < whole; ++i) {
-            raw[i] = shard[i];
-        }
-        if (d % 8 != 0) {
-            uint8 keep = uint8(0xff << (8 - (d % 8)));
-            raw[whole] = bytes1((uint8(raw[whole]) & ~keep) | (uint8(shard[whole]) & keep));
-        }
-        sid = bytes32(raw);
-    }
-
-    /// @dev A structurally valid, distinct synthetic UC in the shard (its shard certificate carries exactly the derived depth of siblings)
-    ///      with a given IR in its input-record slot and `sigs` signatures; the native verdicts about it are the batch double's.
-    function _synthUc(
-        bytes memory shard,
-        uint256 epoch,
-        uint256 sigs,
-        uint8 seed,
-        bytes memory irSlot
-    ) internal pure returns (bytes memory) {
-        return _ucWith(shard, CertGroups.shardDepth(shard), 2, irSlot, _seal(epoch, sigs, seed));
-    }
-
-    function _synthAnchor(bytes memory shard, uint256 i, uint256 sigs, bytes memory irSlot)
-        internal
-        pure
-        returns (Anchor memory a)
-    {
-        a = Anchor({
-            partition: 11,
-            shard: shard,
-            shardConfHash: keccak256(abi.encode("conf", shard)),
-            expectedStateRoot: STATE,
-            expectedIRHash: sha256(_ok()),
-            uc: _synthUc(shard, 10 + i, sigs, uint8(i + 1), irSlot),
-            inputRecord: _ok()
-        });
-    }
 
     /// @dev A return bundle over the given shards: one distinct synthetic anchor per shard (first-use order), one leaf per anchor with a
     ///      state ID in that shard, the golden Cfg, policy and kernel result shape, every native answer a double.
