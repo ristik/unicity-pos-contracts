@@ -2158,6 +2158,22 @@ contract TokenVerifierTest is BridgeBase, UcBuilder {
         assertLe(size, 24_576);
     }
 
+    /// The gate's constants (80 per byte, 1,000 per item, the reserve) were measured with the size-first profile (arch's ruling of 2026-10-14):
+    /// the verifier must be built with `optimizer_runs = 1`, as `foundry.toml` restricts `src/bridge/**`. A build under another profile
+    /// would silently invalidate the measured allowance.
+    function test_theVerifierIsBuiltWithTheMeasuredProfile() public view {
+        string memory art = vm.readFile("out/TokenVerifier.sol/TokenVerifier.json");
+        assertEq(vm.parseJsonUint(art, ".metadata.settings.optimizer.runs"), 1, "optimizer runs");
+        assertTrue(vm.parseJsonBool(art, ".metadata.settings.optimizer.enabled"), "optimizer");
+        assertTrue(vm.parseJsonBool(art, ".metadata.settings.viaIR"), "via IR");
+        assertEq(vm.parseJsonString(art, ".metadata.settings.evmVersion"), "cancun", "evm");
+        assertEq(
+            keccak256(vm.parseJsonBytes(art, ".deployedBytecode.object")),
+            address(v).codehash,
+            "the artifact is the deployed code"
+        );
+    }
+
     // ---- the batch call: outcomes, shapes, forwarded gas ----------------------------------------------
 
     function _batchRejects(bytes memory out, bytes memory err) internal {
@@ -2428,7 +2444,7 @@ contract TokenVerifierTest is BridgeBase, UcBuilder {
         emit log_named_uint("  gate total", total);
         emit log_named_uint("  natives priced (batch + leaves + kernel)", natives);
         emit log_named_uint("  verifier execution measured (natives mocked)", used);
-        emit log_named_uint("  allowance 80*B_env + reserve", allowance);
+        emit log_named_uint("  allowance 80*B_env + 1000*J + reserve", allowance);
         emit log_named_int("  margin", int256(allowance) - int256(used));
     }
 
