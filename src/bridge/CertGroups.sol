@@ -34,7 +34,10 @@ library CertGroups {
     uint256 internal constant MAX_UNICITY_STEPS = 32; // per claim
     uint256 internal constant MAX_RAW_STEPS = 4_608; // over all occurrences, before deduplication
     uint256 internal constant MAX_NESTING = 16;
-    uint256 internal constant MAX_ITEMS = 32_768; // over all occurrences, before deduplication
+    /// @dev The bridge's cumulative CBOR item budget for everything Solidity traverses (contract §4, arch's ruling of 2026-10-14): UC occurrences here,
+    ///      and the policy and IR openings the verifier counts against the same budget. The native batch keeps its own 32,768; this is the stricter
+    ///      bridge admission limit, so a dense request is refused with BudgetExceeded before any native call.
+    uint256 internal constant MAX_ITEMS = 4_096;
     uint256 internal constant CLAIM_FIXED = 106; // partition 4 + shardLen 2 + three hashes 96 + ucLen 4
 
     // ---- the frozen price schedule (contract §5) ----
@@ -62,6 +65,7 @@ library CertGroups {
         uint256 q;
         uint256 a;
         uint256 p;
+        uint256 items; // CBOR items traversed over all occurrences, before deduplication: the verifier subtracts them from its shared budget
     }
 
     /// @dev What the scan reads of one occurrence.
@@ -77,6 +81,7 @@ library CertGroups {
 
     /// @dev Cumulative budgets over all occurrences of one request.
     struct Budget {
+        uint256 limit; // items this scan may still use in total (MAX_ITEMS less what the caller already spent)
         uint256 items;
         uint256 steps;
         uint256[] stack; // the nesting stack of the skip, allocated once
@@ -95,12 +100,18 @@ library CertGroups {
 
     /// @notice Scan and group the claims of one batch.
     function measure(Anchor[] memory anchors) internal pure returns (Counts memory) {
-        return measure(anchors, type(uint256).max);
+        return measure(anchors, type(uint256).max, MAX_ITEMS);
+    }
+
+    /// @dev With the items the caller has already spent on other CBOR (the policy, the IR openings) taken from the shared budget.
+    function measure(Anchor[] memory anchors, uint256 spent) internal pure returns (Counts memory) {
+        if (spent > MAX_ITEMS) revert BudgetExceeded();
+        return measure(anchors, type(uint256).max, MAX_ITEMS - spent);
     }
 
     /// @dev `indexMask` is ANDed into the index digests. Production passes all ones; the tests pass 0 to force every
     ///      digest to collide, which must change no count.
-    function measure(Anchor[] memory anchors, uint256 indexMask)
+    function measure(Anchor[] memory anchors, uint256 indexMask, uint256 itemLimit)
         internal
         pure
         returns (Counts memory n)
@@ -110,6 +121,7 @@ library CertGroups {
         n.k = k;
         n.c = 4;
         Budget memory budget;
+        budget.limit = itemLimit;
         budget.stack = new uint256[](MAX_NESTING + 1);
         Occurrence[] memory occ = new Occurrence[](k);
         for (uint256 i = 0; i < k; ++i) {
@@ -135,6 +147,7 @@ library CertGroups {
             }
         }
         if (n.q > MAX_TOTAL_SIGS) revert BudgetExceeded();
+        n.items = budget.items;
     }
 
     // -----------------------------------------------------------------------------------------
@@ -306,8 +319,13 @@ library CertGroups {
         if (d > MAX_SHARD_DEPTH) revert UCScanRejected();
     }
 
+    /// @dev A declared container whose immediate children alone exceed what is left is refused before any of them is walked.
+    function _fits(Budget memory bud, uint256 children) private pure {
+        if (children > bud.limit - bud.items) revert BudgetExceeded();
+    }
+
     function _item(Budget memory bud) private pure {
-        if (++bud.items > MAX_ITEMS) revert BudgetExceeded();
+        if (++bud.items > bud.limit) revert BudgetExceeded();
     }
 
     /// @dev `tag(t, array(n))`; returns the position of the first element. Counts the two heads as items.
@@ -348,6 +366,7 @@ library CertGroups {
         uint8 major;
         (major, n, next) = _head(b, pos);
         if (major != want || n > b.length) revert UCScanRejected();
+        _fits(bud, major == 5 ? 2 * n : n);
     }
 
     function _skipN(bytes memory b, uint256 pos, uint256 n, Budget memory bud)
@@ -359,7 +378,7 @@ library CertGroups {
         for (uint256 i = 0; i < n; ++i) {
             // the common element is a 32-byte string (a hash): 0x58 0x20 and 32 bytes
             if (pos + 34 <= len && uint8(b[pos]) == 0x58 && uint8(b[pos + 1]) == 0x20) {
-                if (++bud.items > MAX_ITEMS) revert BudgetExceeded();
+                if (++bud.items > bud.limit) revert BudgetExceeded();
                 pos += 34;
             } else {
                 pos = _skip(b, pos, bud);
@@ -402,7 +421,7 @@ library CertGroups {
     ///      a head, so the loop is bounded by the input length.
     function _skip(bytes memory b, uint256 pos, Budget memory bud) private pure returns (uint256) {
         (uint8 major, uint256 arg, uint256 next) = _head(b, pos);
-        if (++bud.items > MAX_ITEMS) revert BudgetExceeded();
+        if (++bud.items > bud.limit) revert BudgetExceeded();
         if (major == 2 || major == 3) {
             if (arg > b.length - next) revert UCScanRejected();
             return next + arg;
@@ -415,6 +434,7 @@ library CertGroups {
             if (major == 4 || major == 5) {
                 if (arg > b.length) revert UCScanRejected();
                 kids = major == 5 ? 2 * arg : arg;
+                _fits(bud, kids);
             } else if (major == 6) {
                 kids = 1;
             }
@@ -431,7 +451,7 @@ library CertGroups {
             }
             // the next item inside the open container
             (major, arg, next) = _head(b, pos);
-            if (++bud.items > MAX_ITEMS) revert BudgetExceeded();
+            if (++bud.items > bud.limit) revert BudgetExceeded();
             if (major == 2 || major == 3) {
                 if (arg > b.length - next) revert UCScanRejected();
                 next += arg;

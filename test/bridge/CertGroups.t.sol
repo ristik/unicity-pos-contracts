@@ -17,7 +17,15 @@ contract CertGroupsHarness {
         pure
         returns (CertGroups.Counts memory)
     {
-        return CertGroups.measure(a, mask);
+        return CertGroups.measure(a, mask, CertGroups.MAX_ITEMS);
+    }
+
+    function measureAfter(Anchor[] memory a, uint256 spent)
+        external
+        pure
+        returns (CertGroups.Counts memory)
+    {
+        return CertGroups.measure(a, spent);
     }
 
     function shardDepth(bytes memory s) external pure returns (uint256) {
@@ -154,6 +162,7 @@ contract CertGroupsTest is Test {
         assertEq(n.a, 1);
         assertEq(n.p, 1 + 3);
         assertEq(n.c, 4 + _claimBytes(a[0]));
+        assertGt(n.items, 20);
         // 93,000 = 60,000 + 1,100 + 29,900 + 2,000 before bytes, signatures and paths
         assertEq(CertGroups.batchGas(n), 93_000 + 16 * n.c + 6_000 * 5 + 250 * 4);
     }
@@ -211,7 +220,8 @@ contract CertGroupsTest is Test {
         assertEq(n.e, 2);
         assertEq(n.s, 3);
         // one more epoch at equal C,K,Q,A,P costs exactly 29,900
-        CertGroups.Counts memory m = CertGroups.Counts(n.k, n.c, n.e + 1, n.s, n.q, n.a, n.p); // a copy, not an alias
+        CertGroups.Counts memory m =
+            CertGroups.Counts(n.k, n.c, n.e + 1, n.s, n.q, n.a, n.p, n.items); // a copy, not an alias
         assertEq(CertGroups.batchGas(m) - CertGroups.batchGas(n), 29_900);
     }
 
@@ -412,17 +422,110 @@ contract CertGroupsTest is Test {
         }
     }
 
-    function test_theItemBudgetIsCumulativeOverOccurrencesBeforeDeduplication() public {
-        // an input record of 20,000 one-byte items: one occurrence is within 32,768 items, two are not,
-        // even when the two are the same claim
-        bytes memory ir = bytes.concat(Cbor.head(4, 20_000), _fill(20_000, 0x00));
-        bytes memory uc = _ucWith(hex"c0", 1, 0, ir, _seal(4, 1, 0xaa));
-        _c(_one(uc));
-        Anchor[] memory a = new Anchor[](2);
-        a[0] = _claim(hex"c0", uc, bytes32(uint256(1)));
-        a[1] = a[0];
+    // ---- the bridge's cumulative Solidity item budget: 4,096 (arch's ruling) ----------------------------------
+
+    function _denseUc(uint256 irItems) internal pure returns (bytes memory) {
+        return _ucWith(
+            hex"c0",
+            1,
+            0,
+            bytes.concat(Cbor.head(4, irItems), _fill(irItems, 0x00)),
+            _seal(4, 1, 0xaa)
+        );
+    }
+
+    /// the item count of a UC whose input record is a single item, so a dense record of k items adds exactly k
+    function _baseItems() internal view returns (uint256) {
+        return _c(_one(_uc(hex"c0", 1, 0, 4, 1, 0xaa))).items;
+    }
+
+    function test_theSolidityItemBudgetIs4096_exactlyAllowedAndOneMoreRefused() public {
+        uint256 base = _baseItems();
+        CertGroups.Counts memory n = _c(_one(_denseUc(4096 - base)));
+        assertEq(n.items, 4096, "exactly the budget is allowed by this cap alone");
+        vm.expectRevert(BudgetExceeded.selector);
+        h.measure(_one(_denseUc(4096 - base + 1)));
+    }
+
+    function test_theBudgetIsCumulativeOverAnchors_andOccurrencesAreCountedBeforeReuse() public {
+        uint256 base = _baseItems();
+        uint256 each = 2048 - base; // two of these are exactly 4096
+        bytes memory uc = _denseUc(each);
+        Anchor[] memory two = new Anchor[](2);
+        two[0] = _claim(hex"c0", uc, bytes32(uint256(1)));
+        two[1] = _claim(hex"c0", uc, bytes32(uint256(2)));
+        assertEq(_c(two).items, 4096);
+        // an exact duplicate is the same claim for pricing but a second traversal for the budget
+        Anchor[] memory dup = new Anchor[](2);
+        dup[0] = two[0];
+        dup[1] = two[0];
+        CertGroups.Counts memory d = _c(dup);
+        assertEq(d.a, 1);
+        assertEq(d.items, 4096);
+        // one item more in the second anchor: over, though each anchor alone is far below the cap
+        Anchor[] memory over = new Anchor[](2);
+        over[0] = two[0];
+        over[1] = _claim(hex"c0", _denseUc(each + 1), bytes32(uint256(2)));
+        vm.expectRevert(BudgetExceeded.selector);
+        h.measure(over);
+        // three anchors that each use a third
+        Anchor[] memory three = new Anchor[](3);
+        bytes memory third = _denseUc(1400 - base);
+        for (uint256 i = 0; i < 3; ++i) {
+            three[i] = _claim(hex"c0", third, bytes32(i));
+        }
+        vm.expectRevert(BudgetExceeded.selector); // 3 x 1,400 = 4,200
+        h.measure(three);
+    }
+
+    function test_theBudgetIsSharedWithWhatTheCallerAlreadySpent() public {
+        Anchor[] memory a = _one(_uc(hex"c0", 1, 0, 4, 1, 0xaa));
+        uint256 items = _c(a).items;
+        assertEq(h.measureAfter(a, 4096 - items).items, items, "just fits");
+        vm.expectRevert(BudgetExceeded.selector);
+        h.measureAfter(a, 4096 - items + 1);
+        vm.expectRevert(BudgetExceeded.selector);
+        h.measureAfter(a, 4097);
+    }
+
+    function test_aDenseContainerIsRefusedByItsDeclaredLength_beforeItIsWalked() public {
+        // 12,000 declared children cannot fit: refused at the head. The gas shows no walk happened.
+        bytes memory uc = _denseUc(12_000);
+        Anchor[] memory a = _one(uc);
+        uint256 before = gasleft();
         vm.expectRevert(BudgetExceeded.selector);
         h.measure(a);
+        assertLt(
+            before - gasleft(),
+            1_500_000,
+            "refused without walking 12,000 items (which costs about 11M)"
+        );
+        // and a body that declares fewer children than it walks is caught by the running count, not trusted
+        bytes memory nested = bytes.concat(Cbor.head(4, 1), Cbor.head(4, 3000), _fill(3000, 0x00));
+        Anchor[] memory b = _one(
+            _ucWith(hex"c0", 1, 0, bytes.concat(Cbor.head(4, 2), nested, nested), _seal(4, 1, 0xaa))
+        );
+        vm.expectRevert(BudgetExceeded.selector);
+        h.measure(b);
+    }
+
+    function test_normalSixteenAnchorTokensAreFarBelowTheBudget() public view {
+        CertGroups.Counts memory typical = _c(_sixteenSimple(hex"e0", 2, 16));
+        assertLt(typical.items, 2048);
+        console.log("16 anchors, depth 3, 16 signatures: CBOR items", typical.items);
+        CertGroups.Counts memory shallow = _c(_sixteenSimple(hex"c0", 1, 4));
+        console.log("16 anchors, depth 1, 4 signatures: CBOR items", shallow.items);
+    }
+
+    function _sixteenSimple(bytes memory shard, uint256 siblings, uint256 sigs)
+        internal
+        pure
+        returns (Anchor[] memory a)
+    {
+        a = new Anchor[](16);
+        for (uint256 i = 0; i < 16; ++i) {
+            a[i] = _claim(shard, _uc(shard, siblings, 2, 4 + i, sigs, uint8(i)), bytes32(i));
+        }
     }
 
     function test_claimCountAndShardLengthBounds() public {
@@ -508,12 +611,27 @@ contract CertGroupsGasTest is CertGroupsTest {
         );
     }
 
-    function test_gas_sixteenAnchors_deepShard_256Siblings() public view {
+    function test_gas_eightAnchors_deepShard_256Siblings() public view {
         bytes memory deep = new bytes(33);
         deep[32] = 0x80;
+        Anchor[] memory a = new Anchor[](8);
+        for (uint256 i = 0; i < 8; ++i) {
+            a[i] = _claim(deep, _uc(deep, 256, 32, 4 + i, 16, uint8(i)), bytes32(i));
+        }
         _report(
-            "16 anchors, depth 256, 16 sigs, sixteen distinct seals", _sixteen(deep, 256, 16, true)
+            "8 anchors, depth 256, 16 sigs, eight distinct seals (the deepest the bridge's 2,048 steps admit)",
+            a
         );
+    }
+
+    /// The most the bridge's item budget lets the scan walk: exactly 4,096 items in one claim.
+    function test_gas_theItemBudgetFilled() public view {
+        uint256 base = _c(_one(_uc(hex"c0", 1, 0, 4, 1, 0xaa))).items;
+        Anchor[] memory a = _one(_denseUc(4096 - base));
+        uint256 before = gasleft();
+        CertGroups.Counts memory n = CertGroups.measure(a);
+        console.log("one claim filling the 4,096 item budget");
+        console.log("  solidity gas %d for %d items", before - gasleft(), n.items);
     }
 
     function test_gas_sixteenExactDuplicates_ofOneMaximalClaim() public view {
@@ -542,15 +660,5 @@ contract CertGroupsGasTest is CertGroupsTest {
         before = gasleft();
         n = CertGroups.measure(a);
         console.log("  the same with the real digests: %d", before - gasleft());
-    }
-
-    /// Item-dense input: one UC whose input record is 12,000 one-byte items (inside the 32,768 item budget and the 24 KiB UC bound).
-    function test_gas_itemDenseClaim() public view {
-        bytes memory ir = bytes.concat(Cbor.head(4, 12_000), _fill(12_000, 0x00));
-        Anchor[] memory a = _one(_ucWith(hex"c0", 1, 0, ir, _seal(4, 1, 0xaa)));
-        uint256 before = gasleft();
-        CertGroups.measure(a);
-        console.log("one claim, 12,000 one-byte items");
-        console.log("  solidity gas %d", before - gasleft());
     }
 }
