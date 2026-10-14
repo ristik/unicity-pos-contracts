@@ -129,7 +129,10 @@ contract ElectionGasTest is P85Flow {
 
     function _measureElection(uint256 v, uint256 l, uint256 c, uint256 ceiling) internal {
         uint256 used = _elect(v, l, c);
-        emit log_named_uint(string.concat("plain V", vm.toString(v), " L", vm.toString(l), " C", vm.toString(c)), used);
+        emit log_named_uint(
+            string.concat("plain V", vm.toString(v), " L", vm.toString(l), " C", vm.toString(c)),
+            used
+        );
         assertLt(used, ceiling);
     }
 
