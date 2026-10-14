@@ -1,63 +1,73 @@
 // SPDX-License-Identifier: MIT
 pragma solidity 0.8.37;
 
-/// @notice The named bounds and the shared gas gate of the profile-v3 composing verifier. This file is
-///         the one place the contract names them: the oracle (bft-core `bridgeprofile` `limits.go`,
-///         `gas.go`), the plug-ins and `native-bridge-plugins` `protocol/profile-v3.json` `limits` carry
-///         the same numbers. They bound the parsers; the gate below decides each bundle against the
-///         7,000,000 ordinary transaction capacity; a later profile version raises them together
-///         with the budget. Nothing else in this repository states them as literals.
+import {CertGroups} from "./CertGroups.sol";
+
+/// @notice The named bounds and the shared gas gate of the any-age composing verifier (bridge protocol 4,
+///         briefs/b1-any-age-contract.md sections 4 and 5). This file is the one place the contract names them: the oracle (bft-core
+///         `bridgeprofile`), the plug-ins and `native-bridge-plugins` carry the same numbers. They bound the parsers; the gate below
+///         decides each bundle against the 7,000,000 ordinary transaction capacity; a later profile version changes them together
+///         with the budget. The native batch's price is `CertGroups.batchGas` (one formula for the Solidity gate and the precompile).
 library BridgeBounds {
-    // ---- profile parameters (profile-v3.json `limits`) ----------------------------------------
-    /// @dev Distinct UC anchors of one redemption (one per distinct complete UC): a parser ceiling, B1's own claim ceiling; the
-    ///      gate below admits or refuses each bundle. After the repricing of the certificate call (owner-decisions section 22:
-    ///      `UC_BASE` 92,700) a maximum-size anchor costs 617,798, the cheapest 94,476: with every other cap at its maximum five maximum-size anchors fit and six do not, and
-    ///      eight of the cheapest fit with room, so the ceiling, no longer the gate, is what stops a ninth.
-    uint256 internal constant MAX_ANCHORS = 8;
-    /// @dev Exported kernel leaves of one redemption (mint plus transfers plus the final burn).
+    // ---- profile parameters ---------------------------------------------------------------------
+    /// @dev Distinct UC anchors of one redemption (one per distinct complete UC), and at most the leaves: B1's claim ceiling (K <= 16).
+    uint256 internal constant MAX_ANCHORS = 16;
+    /// @dev Visited transaction/leaf occurrences L across the whole supported recursive verification (mint, transfers, burn and
+    ///      embedded dependencies), counted before any deduplication.
     uint256 internal constant MAX_LEAVES = 16;
     uint256 internal constant MAX_ANCHOR_UC_BYTES = 8 * 1024;
     uint256 internal constant MAX_RSMT_SIBLINGS = 32;
     uint256 internal constant MAX_SEMANTIC_BYTES = 16 * 1024;
     uint256 internal constant MAX_ENVELOPE_BYTES = 64 * 1024;
-    /// @dev Cumulative path steps over all anchors and leaf paths (oracle `MaxPathSteps`). It cannot
-    ///      bind: `MAX_ANCHORS * (1 + MAX_UNICITY_STEPS) + MAX_LEAVES * MAX_RSMT_SIBLINGS <= MAX_PATH_STEPS`.
+    /// @dev Cumulative path work: certificate steps (shard-tree siblings plus unicity-tree steps) over the DISTINCT anchors plus RSMT
+    ///      siblings over all required leaf occurrences.
     uint256 internal constant MAX_PATH_STEPS = 2048;
-    /// @dev B1's own sublimits that the gate prices: unicity path steps and seal signatures.
-    uint256 internal constant MAX_UNICITY_STEPS = 32;
-    uint256 internal constant MAX_SIGNATURES = 64;
+    /// @dev The Solidity CBOR preflight budget: items across all UCs and the other CBOR objects Solidity traverses (Cfg, policy, IR
+    ///      openings), counted per occurrence before reuse. Stricter than the native batch's 32,768 on purpose: a dense request is
+    ///      refused with BudgetExceeded before any native call (arch's ruling of 2026-10-14).
+    uint256 internal constant MAX_SOLIDITY_ITEMS = CertGroups.MAX_ITEMS;
+    /// @dev Items of the fixed-shape objects the verifier opens itself: Cfg (array head and 16 fields), the policy (array head and 3
+    ///      fields) and each anchor's InputRecord opening (tag, array head and 10 fields).
+    uint256 internal constant CFG_ITEMS = 17;
+    uint256 internal constant POLICY_ITEMS = 4;
+    uint256 internal constant IR_ITEMS = 12;
     /// @dev The kernel's own leaf output bound (ureth `MaxTransfers` 64 plus the mint); it sizes the
     ///      returndata buffer only. A result above `MAX_LEAVES` is `BudgetExceeded`.
     uint256 internal constant KERNEL_MAX_LEAVES = 65;
 
-    // ---- gate ---------------------------------------------------------------------------------
+    // ---- gate -----------------------------------------------------------------------------------
     /// @dev DN-B ordinary transaction capacity (`maxGas` minus system gas).
     uint256 internal constant TX_GAS_BUDGET = 7_000_000;
     uint256 internal constant GAS_RESERVE = 1_000_000;
 
     uint256 internal constant INTRINSIC_BASE = 21_000;
     uint256 internal constant PER_BYTE = 16;
-    /// @dev The composing verifier's own execution per envelope byte (decode, scans, hashing, memory): 50 to 75 gas measured with the
-    ///      natives mocked, priced at 80. The certificate call used to dominate the gate and hide it inside `GAS_RESERVE`.
+    /// @dev The composing verifier's own execution per envelope byte (decode, scans, hashing, memory), priced at 80 and conditional on the
+    ///      full-composition measurement before the profile is pinned.
     uint256 internal constant EXEC_PER_BYTE = 80;
     uint256 internal constant B2_BASE = 26_000;
     uint256 internal constant B2_PER_BYTE = 20;
     uint256 internal constant B2_PER_LEAF = 14_000;
-    uint256 internal constant UC_BASE = 92_700;
-    uint256 internal constant UC_PER_SIGNATURE = 6_000;
     uint256 internal constant PER_STEP = 250;
     uint256 internal constant RSMT_BASE = 2_000;
-    /// @dev UC_V1 request without shard and UC: header 4, partition 4, shard length 2, three words, UC length 4.
-    uint256 internal constant UC_REQUEST_FIXED = 110;
     /// @dev RSMT_MEMBER_V1 request without siblings.
     uint256 internal constant RSMT_REQUEST_FIXED = 136;
+    /// @dev The canonical two-bytes-argument call: selector 4, two offsets and two lengths 128.
+    uint256 internal constant CALL_FIXED = 4 + 128;
 
-    /// @dev `G_intrinsic = 21000 + 96*len(envelope)` (16 calldata + 80 verifier execution).
-    function intrinsicGas(uint256 envelopeBytes) internal pure returns (uint256) {
-        return INTRINSIC_BASE + (PER_BYTE + EXEC_PER_BYTE) * envelopeBytes;
+    /// @dev `D_max = 4 + 128 + pad32(B_cfg) + pad32(B_env)`: the calldata of the canonical `TokenVerifier` call, an allowance larger than
+    ///      the one-bytes-argument vault redeem call.
+    function maxCalldata(uint256 cfgBytes, uint256 envelopeBytes) internal pure returns (uint256) {
+        return CALL_FIXED + _pad32(cfgBytes) + _pad32(envelopeBytes);
     }
 
-    /// @dev `len(abi.encode(uint8 op, bytes cfg, bytes payload))`.
+    /// @dev `21000 + 16*D_max + 80*B_env`.
+    function intrinsicGas(uint256 cfgBytes, uint256 envelopeBytes) internal pure returns (uint256) {
+        return INTRINSIC_BASE + PER_BYTE * maxCalldata(cfgBytes, envelopeBytes) + EXEC_PER_BYTE
+            * envelopeBytes;
+    }
+
+    /// @dev `B_kernel = 160 + pad32(B_cfg) + pad32(B_history)`, i.e. `len(abi.encode(uint8 op, bytes cfg, bytes payload))`.
     function kernelRequestBytes(uint256 cfgBytes, uint256 payloadBytes)
         internal
         pure
@@ -66,22 +76,12 @@ library BridgeBounds {
         return 96 + 32 + _pad32(cfgBytes) + 32 + _pad32(payloadBytes);
     }
 
-    /// @dev `G_B2 = 26000 + 20*B_sem + 14000*L`.
+    /// @dev `G_kernel = 26000 + 20*B_kernel + 14000*L`.
     function b2Gas(uint256 requestBytes, uint256 leaves) internal pure returns (uint256) {
         return B2_BASE + B2_PER_BYTE * requestBytes + B2_PER_LEAF * leaves;
     }
 
-    /// @dev `G_UC = 1243700 + 16*B_a + 6000*S_a + 250*P_a` with `B_a = 110 + len(shard) + len(uc)`.
-    function ucGas(uint256 shardBytes, uint256 ucBytes, uint256 signatures, uint256 steps)
-        internal
-        pure
-        returns (uint256)
-    {
-        return UC_BASE + PER_BYTE * (UC_REQUEST_FIXED + shardBytes + ucBytes) + UC_PER_SIGNATURE
-            * signatures + PER_STEP * steps;
-    }
-
-    /// @dev `G_RSMT = 2000 + 16*(136 + 32*s) + 250*(1 + s)`.
+    /// @dev `G_leaf(i) = 2000 + 16*(136 + 32*p_i) + 250*(1 + p_i)`.
     function rsmtGas(uint256 siblings) internal pure returns (uint256) {
         return
             RSMT_BASE + PER_BYTE * (RSMT_REQUEST_FIXED + 32 * siblings) + PER_STEP * (1 + siblings);

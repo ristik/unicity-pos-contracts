@@ -260,46 +260,46 @@ library CertGroups {
         bytes memory uc = a.uc;
         uint256 d = shardDepth(a.shard);
         uint256 pos = _tagged(uc, 0, TAG_UC, 7, bud);
-        pos = _skip(uc, pos, bud); // version
-        pos = _skip(uc, pos, bud); // input record
-        pos = _skip(uc, pos, bud); // technical record hash
-        pos = _skip(uc, pos, bud); // shard configuration hash
+        pos = _skip(uc, pos, bud, 2); // version
+        pos = _skip(uc, pos, bud, 2); // input record
+        pos = _skip(uc, pos, bud, 2); // technical record hash
+        pos = _skip(uc, pos, bud, 2); // shard configuration hash
 
         pos = _tagged(uc, pos, TAG_SHARD_TREE, 3, bud);
-        pos = _skip(uc, pos, bud); // version
+        pos = _skip(uc, pos, bud, 4); // version
         pos = _shardEquals(uc, pos, a.shard, bud);
         uint256 siblings;
         (siblings, pos) = _count(uc, pos, 4, bud);
         if (siblings != d) revert UCScanRejected();
-        pos = _skipN(uc, pos, siblings, bud);
+        pos = _skipN(uc, pos, siblings, bud, 5);
 
         pos = _tagged(uc, pos, TAG_UNICITY_TREE, 3, bud);
-        pos = _skip(uc, pos, bud); // version
-        pos = _skip(uc, pos, bud); // partition
+        pos = _skip(uc, pos, bud, 4); // version
+        pos = _skip(uc, pos, bud, 4); // partition
         uint256 steps;
         (steps, pos) = _count(uc, pos, 4, bud);
         if (steps > MAX_UNICITY_STEPS) revert BudgetExceeded();
-        pos = _skipN(uc, pos, steps, bud);
+        pos = _skipN(uc, pos, steps, bud, 5);
         o.steps = siblings + steps;
         bud.steps += o.steps;
         if (bud.steps > MAX_RAW_STEPS) revert BudgetExceeded();
 
         o.sealStart = pos;
         pos = _tagged(uc, pos, TAG_SEAL, 8, bud);
-        pos = _skip(uc, pos, bud); // version
-        pos = _skip(uc, pos, bud); // network
-        pos = _skip(uc, pos, bud); // root round
+        pos = _skip(uc, pos, bud, 4); // version
+        pos = _skip(uc, pos, bud, 4); // network
+        pos = _skip(uc, pos, bud, 4); // root round
         (uint8 major, uint256 epoch, uint256 next) = _head(uc, pos);
         if (major != 0 || epoch > type(uint64).max) revert UCScanRejected();
         _item(bud);
         o.epoch = epoch;
         pos = next;
-        pos = _skip(uc, pos, bud); // timestamp
-        pos = _skip(uc, pos, bud); // previous hash
-        pos = _skip(uc, pos, bud); // hash
+        pos = _skip(uc, pos, bud, 4); // timestamp
+        pos = _skip(uc, pos, bud, 4); // previous hash
+        pos = _skip(uc, pos, bud, 4); // hash
         (o.sigs, pos) = _count(uc, pos, 5, bud);
         if (o.sigs > MAX_SIGS_PER_SEAL) revert BudgetExceeded();
-        pos = _skipN(uc, pos, 2 * o.sigs, bud);
+        pos = _skipN(uc, pos, 2 * o.sigs, bud, 5);
         if (pos != uc.length) revert UCScanRejected();
         o.sealLen = pos - o.sealStart;
     }
@@ -311,7 +311,7 @@ library CertGroups {
         if (len == 0 || len > MAX_SHARD_BYTES) revert UCScanRejected();
         uint8 last = uint8(shard[len - 1]);
         if (last == 0) revert UCScanRejected();
-        uint256 tz;
+        uint256 tz = 0;
         while ((last >> tz) & 1 == 0) {
             ++tz;
         }
@@ -369,7 +369,7 @@ library CertGroups {
         _fits(bud, major == 5 ? 2 * n : n);
     }
 
-    function _skipN(bytes memory b, uint256 pos, uint256 n, Budget memory bud)
+    function _skipN(bytes memory b, uint256 pos, uint256 n, Budget memory bud, uint256 base)
         private
         pure
         returns (uint256)
@@ -381,7 +381,7 @@ library CertGroups {
                 if (++bud.items > bud.limit) revert BudgetExceeded();
                 pos += 34;
             } else {
-                pos = _skip(b, pos, bud);
+                pos = _skip(b, pos, bud, base);
             }
         }
         return pos;
@@ -399,7 +399,8 @@ library CertGroups {
         assembly ("memory-safe") {
             first := byte(0, mload(add(add(b, 32), pos)))
         }
-        major = uint8(first >> 5);
+        // forge-lint: disable-next-line(unsafe-typecast)
+        major = uint8(first >> 5); // first is one byte: the major type is 0..7
         uint256 ai = first & 0x1f;
         next = pos + 1;
         if (ai < 24) return (major, ai, next);
@@ -419,7 +420,11 @@ library CertGroups {
     /// @dev Skips one complete item with nesting bounded by MAX_NESTING and the cumulative item budget. A leaf is
     ///      skipped without touching the nesting stack, which is allocated once per request. Every iteration consumes
     ///      a head, so the loop is bounded by the input length.
-    function _skip(bytes memory b, uint256 pos, Budget memory bud) private pure returns (uint256) {
+    function _skip(bytes memory b, uint256 pos, Budget memory bud, uint256 base)
+        private
+        pure
+        returns (uint256)
+    {
         (uint8 major, uint256 arg, uint256 next) = _head(b, pos);
         if (++bud.items > bud.limit) revert BudgetExceeded();
         if (major == 2 || major == 3) {
@@ -428,9 +433,9 @@ library CertGroups {
         }
         if (major < 2 || major == 7) return next;
         uint256[] memory left = bud.stack;
-        uint256 depth;
+        uint256 depth = base; // containers that already enclose this item count against the nesting bound (native: from the UC root)
         while (true) {
-            uint256 kids;
+            uint256 kids = 0;
             if (major == 4 || major == 5) {
                 if (arg > b.length) revert UCScanRejected();
                 kids = major == 5 ? 2 * arg : arg;
@@ -443,11 +448,11 @@ library CertGroups {
                 if (++depth > MAX_NESTING) revert BudgetExceeded();
                 left[depth] = kids;
             } else {
-                while (depth != 0) {
+                while (depth != base) {
                     if (--left[depth] != 0) break;
                     --depth;
                 }
-                if (depth == 0) return pos;
+                if (depth == base) return pos;
             }
             // the next item inside the open container
             (major, arg, next) = _head(b, pos);

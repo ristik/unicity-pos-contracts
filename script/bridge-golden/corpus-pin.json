@@ -1,18 +1,18 @@
 {
   "corpus": {
     "repository": "https://github.com/ristik/native-bridge-plugins",
-    "commit": "3c0f21a584e20082a8031aebfa00ffb9a49b6ae9",
+    "commit": "0a919335e01705134eb829d6218019b83a2616e7",
     "directory": "protocol/vectors",
-    "manifestSha256": "74284438a5ad141a857f5b899ce131a9f2b2fb77ff73c0e88919ddc50f74b583",
+    "manifestSha256": "d9cc3b9fe8d99c58161d41a34dc24bbfba8841a5f8fe8b3ec237933201d2296c",
     "trustDocumentSha256": "e5454ae4fe566b05dab8c1b15c88a05356b8816b1cd66a2b7adcce184af27fb5"
   },
   "oracle": {
     "repository": "https://github.com/ristik/bft-core",
-    "commit": "f2b23b3f9316055da536731c25d51a88c6b061a6"
+    "commit": "1f3317341eee423f0ad585e4b2b865b4ca9425de"
   },
   "golden": {
     "file": "test/bridge/golden.json",
-    "sha256": "16d04a023fe8dab503abc7747de3871eb91d8dde467390036ef9ecd5c1973406",
+    "sha256": "63aa62fd1c0e12cdc70ff4e75e1cc0e38169dd906c20b297047e5d9c2107b16c",
     "sharedPaths": [
       "/cfg/aggregatorPolicyHash",
       "/cfg/aid",
@@ -57,15 +57,11 @@
       "/invalidOutput",
       "/mint/envelope/anchors/0/conf",
       "/mint/envelope/members/0/bitmap",
-      "/mint/envelope/members/0/siblings/1",
-      "/mint/envelope/members/0/txHashResult",
+      "/mint/envelope/members/0/siblings/0",
       "/mint/result/cfg",
       "/mint/result/nullifier",
       "/mint/result/salt",
       "/mint/result/tokenId",
-      "/policy/bytes",
-      "/policy/confs/0",
-      "/policy/confs/1",
       "/policy/hash",
       "/prepare/result/cfg",
       "/prepare/result/nullifier",
@@ -74,13 +70,10 @@
       "/return/envelope/anchors/0/conf",
       "/return/envelope/anchors/1/conf",
       "/return/envelope/members/0/bitmap",
-      "/return/envelope/members/0/siblings/1",
-      "/return/envelope/members/0/txHashResult",
       "/return/envelope/members/1/bitmap",
-      "/return/envelope/members/1/txHashResult",
+      "/return/envelope/members/1/siblings/1",
       "/return/envelope/members/2/bitmap",
       "/return/envelope/members/2/siblings/0",
-      "/return/envelope/members/2/txHashResult",
       "/return/result/cfg",
       "/return/result/salt",
       "/return/result/tokenId",

@@ -2,19 +2,21 @@
 pragma solidity 0.8.37;
 
 import {BridgeBase} from "./BridgeBase.sol";
+import {UcBuilder} from "./UcBuilder.sol";
 import {TokenVerifier} from "../../src/bridge/TokenVerifier.sol";
 import {Cbor} from "../../src/bridge/Cbor.sol";
 import {B1Calls} from "../../src/bridge/B1Calls.sol";
 import {BridgeBounds} from "../../src/bridge/BridgeBounds.sol";
-import {UcScan} from "../../src/bridge/UcScan.sol";
+import {CertGroups} from "../../src/bridge/CertGroups.sol";
 import {BridgeProfile} from "../../src/bridge/BridgeProfile.sol";
 import {Anchor, Cfg, KernelResult, Leaf, LeafProof, Policy} from "../../src/bridge/BridgeTypes.sol";
 import "../../src/bridge/BridgeErrors.sol";
 
-/// @notice Composing-verifier tests against the golden bytes of the merged Go oracle (bft-core
-///         bridgeprofile, #418). The B1 precompiles and the 0x0104 kernel are TEST DOUBLES that answer
-///         only the exact expected request bytes (`vm.mockCall` over reverting code); they are not the native code.
-contract TokenVerifierTest is BridgeBase {
+/// @notice Composing-verifier tests of bridge protocol 4 (any-age verification). The anchors, leaves, history, Cfg, policy and gate
+///         components are the golden bundles of the protocol-4 Go oracle (bft-core bridgeprofile #610: real UCs, real kernel results),
+///         regenerated with script/bridge-golden. The batch precompile (0x0100), the RSMT call (0x0102) and the 0x0104 kernel are TEST DOUBLES that answer only the exact expected request bytes
+///         (`vm.mockCall` over reverting code); they are not the native code.
+contract TokenVerifierTest is BridgeBase, UcBuilder {
     TokenVerifier internal v;
     bytes internal cfgB;
 
@@ -86,8 +88,8 @@ contract TokenVerifierTest is BridgeBase {
             _prog(B1Calls.KERNEL, _kernelInput(s.op, s.cfgB, s.history), kout);
         }
         if (s.anchors.length != 0) {
-            for (uint256 j = 0; j < s.anchors.length && skip != B1Calls.UC_VERIFIER; ++j) {
-                _prog(B1Calls.UC_VERIFIER, _expectedUC(s.anchors[j]), TRUE_OUT);
+            if (skip != B1Calls.CERT_BATCH) {
+                _prog(B1Calls.CERT_BATCH, _expectedBatch(s.anchors), BATCH_TRUE);
             }
             for (uint256 i = 0; i < s.result.leaves.length && i < s.paths.length; ++i) {
                 if (skip == B1Calls.RSMT_VERIFIER) break;
@@ -180,6 +182,39 @@ contract TokenVerifierTest is BridgeBase {
         assertEq(keccak256(abi.encode(c)), keccak256(abi.encode(_goldenCfg())));
     }
 
+    function test_golden_policyBytesAndHash() public view {
+        Policy memory p = Policy({partition: uint32(vm.parseJsonUint(G, ".policy.partition"))});
+        assertEq(p.partition, 11);
+        assertEq(BridgeProfile.encodePolicy(p), _b(".policy.bytes"));
+        assertEq(
+            BridgeProfile.encodePolicy(p),
+            _policyV2(11),
+            "the independent byte-by-byte builder agrees"
+        );
+        assertEq(sha256(_b(".policy.bytes")), _b32(".policy.hash"));
+        assertEq(_b32(".policy.hash"), _goldenCfg().aggregatorPolicyHash);
+        assertEq(BridgeProfile.decodePolicy(_b(".policy.bytes")).partition, 11);
+    }
+
+    function test_golden_envelopeAbiLayout() public view {
+        Scenario memory s = _returnScenario();
+        assertEq(_proof(s), _b(".return.envelope.bytes"));
+        assertEq(s.paths.length, 3);
+        Scenario memory m = _mintScenario();
+        assertEq(_proof(m), _b(".mint.envelope.bytes"));
+        assertEq(m.paths.length, 1);
+    }
+
+    function test_golden_batchRequestsMatchTheOracle() public view {
+        Scenario memory s = _returnScenario();
+        bytes memory want = _b(".return.envelope.batch.request");
+        assertEq(B1Calls.batchRequest(s.anchors), want);
+        assertEq(_expectedBatch(s.anchors), want);
+        assertEq(_b(".return.envelope.batch.result"), BATCH_TRUE);
+        Scenario memory m = _mintScenario();
+        assertEq(B1Calls.batchRequest(m.anchors), _b(".mint.envelope.batch.request"));
+    }
+
     function test_golden_typeAndAssetDerivations() public view {
         Cfg memory c = _goldenCfg();
         assertEq(
@@ -223,25 +258,6 @@ contract TokenVerifierTest is BridgeBase {
         }
     }
 
-    function test_golden_policyBytesAndHash() public view {
-        Policy memory p = Policy({
-            partition: uint32(vm.parseJsonUint(G, ".policy.partition")),
-            depth: uint8(vm.parseJsonUint(G, ".policy.depth")),
-            shardConfHashes: vm.parseJsonBytes32Array(G, ".policy.confs")
-        });
-        assertEq(p.depth, 1, "the DN-B topology: shards 40 and c0");
-        assertEq(BridgeProfile.encodePolicy(p), _b(".policy.bytes"));
-        assertEq(sha256(_b(".policy.bytes")), _b32(".policy.hash"));
-        assertEq(_b32(".policy.hash"), _goldenCfg().aggregatorPolicyHash);
-        Policy memory d = BridgeProfile.decodePolicy(_b(".policy.bytes"));
-        assertEq(d.partition, 11);
-        assertEq(d.depth, p.depth);
-        assertEq(keccak256(abi.encode(d.shardConfHashes)), keccak256(abi.encode(p.shardConfHashes)));
-        assertEq(BridgeProfile.shardId(1, 0), bytes1(0x40));
-        assertEq(BridgeProfile.shardId(1, 1), bytes1(0xc0));
-        assertEq(BridgeProfile.shardId(0, 0), bytes1(0x80));
-    }
-
     function test_golden_preparePayloadAndKernelInputs() public view {
         assertEq(
             BridgeProfile.preparePayload(
@@ -276,38 +292,13 @@ contract TokenVerifierTest is BridgeBase {
         assertEq(_kernelOut(false, z), _b(".invalidOutput"));
     }
 
-    function test_golden_envelopeAbiLayout() public view {
-        Scenario memory s = _returnScenario();
-        assertEq(_proof(s), _b(".return.envelope.bytes"));
-        assertEq(s.paths.length, 3);
-        Scenario memory m = _mintScenario();
-        assertEq(_proof(m), _b(".mint.envelope.bytes"));
-        assertEq(m.paths.length, 1);
-    }
-
-    function test_golden_b1RequestsMatchTheB1Manifest() public view {
-        // UC: cert.single.ok from bft-core b1ref/testdata/b1-vectors-aprime.json (#416, b1gen).
-        bytes memory req = vm.parseJsonBytes(B1V, '["cert.single.ok"].request');
-        Anchor memory a;
-        a.partition = uint32(bytes4(_slice(req, 4, 4)));
-        uint256 shardLen = uint16(bytes2(_slice(req, 8, 2)));
-        a.shard = _slice(req, 10, shardLen);
-        uint256 p = 10 + shardLen;
-        a.shardConfHash = bytes32(_slice(req, p, 32));
-        a.expectedStateRoot = bytes32(_slice(req, p + 32, 32));
-        a.expectedIRHash = bytes32(_slice(req, p + 64, 32));
-        uint256 ucLen = uint32(bytes4(_slice(req, p + 96, 4)));
-        a.uc = _slice(req, p + 100, ucLen);
-        assertEq(p + 100 + ucLen, req.length, "request fully consumed");
-        assertEq(B1Calls.ucRequest(a), req);
-        assertEq(_expectedUC(a), req);
-    }
-
     function test_golden_rsmtRequestsMatchTheB1Manifest() public view {
+        string memory b1v = vm.readFile(B1V_PATH);
         string[4] memory ids =
             ["rsmt.single-leaf.ok", "rsmt.small.ok", "rsmt.small.leaf0.ok", "rsmt.small.leaf8.ok"];
         for (uint256 i = 0; i < ids.length; ++i) {
-            bytes memory req = vm.parseJsonBytes(B1V, string.concat('["', ids[i], '"].request'));
+            bytes memory req =
+                vm.parseJsonBytes(b1v, string.concat('.vectors["', ids[i], '"].request'));
             bytes32 root = bytes32(_slice(req, 4, 32));
             bytes32 key = bytes32(_slice(req, 36, 32));
             uint256 vlen = uint32(bytes4(_slice(req, 68, 4)));
@@ -346,7 +337,7 @@ contract TokenVerifierTest is BridgeBase {
 
     function test_verifyMint_golden() public {
         Scenario memory s = _mintScenario();
-        vm.expectCall(B1Calls.UC_VERIFIER, _expectedUC(s.anchors[0]), 1);
+        vm.expectCall(B1Calls.CERT_BATCH, _expectedBatch(s.anchors), 1);
         vm.expectCall(B1Calls.RSMT_VERIFIER, hex"01000001", 1);
         assertTrue(_sameResult(_run(s), s.result));
     }
@@ -355,9 +346,7 @@ contract TokenVerifierTest is BridgeBase {
         Scenario memory s = _returnScenario();
         _arm(s);
         assertEq(s.anchors.length, 2, "the DN-B topology puts the leaves under two UCs");
-        for (uint256 j = 0; j < 2; ++j) {
-            vm.expectCall(B1Calls.UC_VERIFIER, _expectedUC(s.anchors[j]), 1);
-        }
+        vm.expectCall(B1Calls.CERT_BATCH, _expectedBatch(s.anchors), 1); // ONE batch call for the whole table
         for (uint256 i = 0; i < 3; ++i) {
             bytes memory req = _expectedRSMT(
                 s.anchors[s.paths[i].anchorIndex].expectedStateRoot,
@@ -768,59 +757,6 @@ contract TokenVerifierTest is BridgeBase {
     // Policy carrier
     // ---------------------------------------------------------------------------------------------
 
-    function _withPolicyBody(Scenario memory s, bytes memory body) internal view {
-        Cfg memory c = _goldenCfg();
-        c.aggregatorPolicyHash = sha256(body);
-        s.cfgB = _cfgBytes(c);
-        s.policyBody = body;
-        // the kernel result must carry the new cfg hash
-        s.result.cfg = sha256(s.cfgB);
-    }
-
-    /// @dev A hand-written body (no use of the library under test): array of five, domain, version,
-    ///      partition, depth, rows.
-    function _rawPolicy(
-        bytes memory domain,
-        bytes memory version,
-        bytes memory partition,
-        bytes memory depth,
-        bytes memory rows
-    ) internal pure returns (bytes memory) {
-        return bytes.concat(hex"85", hex"56", domain, version, partition, depth, rows);
-    }
-
-    function _row(bytes memory shard, bytes32 conf) internal pure returns (bytes memory) {
-        return bytes.concat(hex"82", shard, hex"5820", conf);
-    }
-
-    function _goldenRows() internal view returns (bytes memory) {
-        bytes32[] memory confs = vm.parseJsonBytes32Array(G, ".policy.confs");
-        return bytes.concat(hex"82", _row(hex"4140", confs[0]), _row(hex"41c0", confs[1]));
-    }
-
-    function test_policy_handWrittenBodyEqualsGolden() public view {
-        assertEq(
-            _rawPolicy("UNICITY_BR_AGG_SHARDED", hex"01", hex"0b", hex"01", _goldenRows()),
-            _b(".policy.bytes")
-        );
-    }
-
-    function test_policy_depthZeroOneRow() public pure {
-        bytes32 conf = keccak256("one");
-        bytes memory body = _rawPolicy(
-            "UNICITY_BR_AGG_SHARDED",
-            hex"01",
-            hex"0b",
-            hex"00",
-            bytes.concat(hex"81", _row(hex"4180", conf))
-        );
-        Policy memory p = BridgeProfile.decodePolicy(body);
-        assertEq(p.depth, 0);
-        assertEq(p.shardConfHashes.length, 1);
-        assertEq(p.shardConfHashes[0], conf);
-        assertEq(BridgeProfile.encodePolicy(p), body);
-    }
-
     function test_policy_hashMismatch() public {
         Scenario memory s = _returnScenario();
         bytes memory body = _copy(s.policyBody);
@@ -831,6 +767,82 @@ contract TokenVerifierTest is BridgeBase {
             abi.encodeWithSelector(
                 PolicyHashMismatch.selector, _goldenCfg().aggregatorPolicyHash, sha256(body)
             )
+        );
+    }
+
+    /// @dev The scenario with another policy body: the Cfg pins its SHA-256 (so only strict decoding can refuse it) and the kernel
+    ///      result names the new Cfg's hash.
+    function _withPolicyBody(Scenario memory s, bytes memory body) internal view {
+        Cfg memory c = _goldenCfg();
+        c.aggregatorPolicyHash = sha256(body);
+        s.cfgB = BridgeProfile.encodeCfg(c);
+        s.policyBody = body;
+        s.result.cfg = BridgeProfile.cfgHash(s.cfgB);
+    }
+
+    /// @dev A policy body assembled from raw parts: array(3), the 24-byte domain as a byte string, the version item, the partition item.
+    function _rawPolicy(bytes memory domain, bytes memory version, bytes memory partition)
+        internal
+        pure
+        returns (bytes memory)
+    {
+        return bytes.concat(hex"83", hex"5818", domain, version, partition);
+    }
+
+    function _rejectsPolicy(bytes memory body, bytes memory err) internal {
+        Scenario memory s = _returnScenario();
+        _withPolicyBody(s, body);
+        _rejects(s, err);
+    }
+
+    function test_policy_theIndependentBuilderIsTheCanonicalBody() public pure {
+        assertEq(_rawPolicy("UNICITY_BR_AGG_PARTITION", hex"02", hex"0b"), _policyV2(11));
+        assertEq(_policyV2(11), hex"835818554e49434954595f42525f4147475f504152544954494f4e020b");
+    }
+
+    function test_policy_nonShortestPartitionWithMatchingHash() public {
+        _rejectsPolicy(
+            _rawPolicy("UNICITY_BR_AGG_PARTITION", hex"02", hex"180b"),
+            abi.encodeWithSelector(PolicyMalformed.selector)
+        );
+    }
+
+    function test_policy_wrongDomainWithMatchingHash() public {
+        _rejectsPolicy(
+            _rawPolicy("UNICITY_BR_AGG_PARTITIOX", hex"02", hex"0b"),
+            abi.encodeWithSelector(PolicyMalformed.selector)
+        );
+        // the protocol-3 sharded domain, even at the right length, is no policy of this protocol
+        _rejectsPolicy(
+            _rawPolicy("UNICITY_BR_AGG_SHARDED\x00\x00", hex"02", hex"0b"),
+            abi.encodeWithSelector(PolicyMalformed.selector)
+        );
+    }
+
+    function test_policy_versionsOtherThanTwoAreRefused() public {
+        // version 1 passes the reader's bound and fails the canonical comparison; version 3 is above the reader's bound
+        _rejectsPolicy(
+            _rawPolicy("UNICITY_BR_AGG_PARTITION", hex"01", hex"0b"),
+            abi.encodeWithSelector(PolicyMalformed.selector)
+        );
+        _rejectsPolicy(
+            _rawPolicy("UNICITY_BR_AGG_PARTITION", hex"03", hex"0b"),
+            abi.encodeWithSelector(CborMalformed.selector)
+        );
+    }
+
+    function test_policy_partitionZero() public {
+        _rejectsPolicy(
+            _rawPolicy("UNICITY_BR_AGG_PARTITION", hex"02", hex"00"),
+            abi.encodeWithSelector(PolicyMalformed.selector)
+        );
+    }
+
+    function test_policy_aLegacyShardedBodyIsRefused() public {
+        // the protocol-3 body: five items with a depth and a row table
+        _rejectsPolicy(
+            hex"8556554e49434954595f42525f4147475f53484152444544010b0081824180582000000000000000000000000000000000000000000000000000000000000000ff",
+            abi.encodeWithSelector(CborMalformed.selector)
         );
     }
 
@@ -856,85 +868,6 @@ contract TokenVerifierTest is BridgeBase {
         Scenario memory s = _returnScenario();
         _withPolicyBody(s, bytes.concat(s.policyBody, hex"00"));
         _rejects(s, abi.encodeWithSelector(PolicyMalformed.selector));
-    }
-
-    function _rejectsBody(bytes memory body, bytes memory err) internal {
-        Scenario memory s = _returnScenario();
-        _withPolicyBody(s, body);
-        _rejects(s, err);
-    }
-
-    function test_policy_emptyShardStringWithMatchingHash() public {
-        bytes32[] memory c = vm.parseJsonBytes32Array(G, ".policy.confs");
-        // shard `40` (empty bstr) instead of `41 40`
-        bytes memory rows = bytes.concat(hex"82", _row(hex"40", c[0]), _row(hex"41c0", c[1]));
-        _rejectsBody(
-            _rawPolicy("UNICITY_BR_AGG_SHARDED", hex"01", hex"0b", hex"01", rows),
-            abi.encodeWithSelector(CborMalformed.selector)
-        );
-    }
-
-    function test_policy_nonShortestPartitionWithMatchingHash() public {
-        _rejectsBody(
-            _rawPolicy("UNICITY_BR_AGG_SHARDED", hex"01", hex"180b", hex"01", _goldenRows()),
-            abi.encodeWithSelector(PolicyMalformed.selector)
-        );
-    }
-
-    function test_policy_wrongDomainWithMatchingHash() public {
-        _rejectsBody(
-            _rawPolicy("UNICITY_BR_AGG_SHARDEX", hex"01", hex"0b", hex"01", _goldenRows()),
-            abi.encodeWithSelector(PolicyMalformed.selector)
-        );
-    }
-
-    function test_policy_versionTwo() public {
-        _rejectsBody(
-            _rawPolicy("UNICITY_BR_AGG_SHARDED", hex"02", hex"0b", hex"01", _goldenRows()),
-            abi.encodeWithSelector(CborMalformed.selector)
-        );
-    }
-
-    function test_policy_depthTwo() public {
-        _rejectsBody(
-            _rawPolicy("UNICITY_BR_AGG_SHARDED", hex"01", hex"0b", hex"02", _goldenRows()),
-            abi.encodeWithSelector(CborMalformed.selector)
-        );
-    }
-
-    function test_policy_partitionZero() public {
-        _rejectsBody(
-            _rawPolicy("UNICITY_BR_AGG_SHARDED", hex"01", hex"00", hex"01", _goldenRows()),
-            abi.encodeWithSelector(PolicyMalformed.selector)
-        );
-    }
-
-    function test_policy_rowCountDoesNotMatchDepth() public {
-        bytes32[] memory c = vm.parseJsonBytes32Array(G, ".policy.confs");
-        _rejectsBody(
-            _rawPolicy(
-                "UNICITY_BR_AGG_SHARDED",
-                hex"01",
-                hex"0b",
-                hex"01",
-                bytes.concat(hex"81", _row(hex"4140", c[0]))
-            ),
-            abi.encodeWithSelector(PolicyMalformed.selector)
-        );
-    }
-
-    function test_policy_shardsOutOfOrderOrNotTheTopology() public {
-        bytes32[] memory c = vm.parseJsonBytes32Array(G, ".policy.confs");
-        _rejectsBody(
-            _rawPolicy(
-                "UNICITY_BR_AGG_SHARDED",
-                hex"01",
-                hex"0b",
-                hex"01",
-                bytes.concat(hex"82", _row(hex"41c0", c[0]), _row(hex"4140", c[1]))
-            ),
-            abi.encodeWithSelector(PolicyMalformed.selector)
-        );
     }
 
     function test_policy_partitionEqualToEvmPartition() public {
@@ -977,43 +910,6 @@ contract TokenVerifierTest is BridgeBase {
         _rejects(s, abi.encodeWithSelector(PolicyAnchorDuplicate.selector, 1));
     }
 
-    function test_policy_unrelatedRootCertifiedPartition() public {
-        Scenario memory s = _returnScenario();
-        s.anchors[0].partition = 12; // a valid UC for some other partition would not be refused by B1
-        _rejects(s, abi.encodeWithSelector(PolicyTupleMismatch.selector));
-    }
-
-    function test_policy_changedConfiguration() public {
-        Scenario memory s = _returnScenario();
-        s.anchors[0].shardConfHash = bytes32(uint256(s.anchors[0].shardConfHash) ^ 1);
-        _rejects(s, abi.encodeWithSelector(PolicyTupleMismatch.selector));
-    }
-
-    function test_policy_changedConfigurationOfTheSecondAnchor() public {
-        Scenario memory s = _returnScenario();
-        s.anchors[1].shardConfHash = bytes32(uint256(s.anchors[1].shardConfHash) ^ 1);
-        _rejects(s, abi.encodeWithSelector(PolicyTupleMismatch.selector));
-    }
-
-    function test_policy_shardOfAnotherTopology() public {
-        Scenario memory s = _returnScenario();
-        s.anchors[0].shard = hex"80";
-        _rejects(s, abi.encodeWithSelector(PolicyTupleMismatch.selector));
-    }
-
-    function test_policy_shardOfAnotherTopologyEvenWithARowsConfiguration() public {
-        // `80` is not a row of the depth-1 policy; carrying row 0's configuration must not admit it.
-        Scenario memory s = _returnScenario();
-        bytes32[] memory confs = vm.parseJsonBytes32Array(G, ".policy.confs");
-        for (uint256 r = 0; r < confs.length; ++r) {
-            // one anchor, so that no other anchor's row can refuse the table by accident
-            s = _oneAnchorReturn();
-            s.anchors[0].shard = hex"80";
-            s.anchors[0].shardConfHash = confs[r];
-            _rejects(s, abi.encodeWithSelector(PolicyTupleMismatch.selector));
-        }
-    }
-
     function testFuzz_popcountIsTheNumberOfSetBits(uint256 x) public pure {
         uint256 n;
         for (uint256 y = x; y != 0; y &= y - 1) {
@@ -1022,35 +918,6 @@ contract TokenVerifierTest is BridgeBase {
         assertEq(BridgeBounds.popcount(x), n);
         assertEq(BridgeBounds.popcount(type(uint256).max), 256);
         assertEq(BridgeBounds.popcount(0), 0);
-    }
-
-    function test_bounds_cumulativeStepsCannotBind() public pure {
-        assertLe(
-            BridgeBounds.MAX_ANCHORS * (1 + BridgeBounds.MAX_UNICITY_STEPS)
-                + BridgeBounds.MAX_LEAVES * BridgeBounds.MAX_RSMT_SIBLINGS,
-            BridgeBounds.MAX_PATH_STEPS
-        );
-    }
-
-    function test_policy_emptyShardBytes() public {
-        Scenario memory s = _returnScenario();
-        s.anchors[0].shard = "";
-        _rejects(s, abi.encodeWithSelector(PolicyTupleMismatch.selector));
-    }
-
-    function test_policy_longerShard() public {
-        Scenario memory s = _returnScenario();
-        s.anchors[0].shard = hex"4000";
-        _rejects(s, abi.encodeWithSelector(PolicyTupleMismatch.selector));
-    }
-
-    function test_policy_callerTableCannotChooseAdmission() public {
-        // A fully self-consistent anchor for another partition and configuration, with a matching
-        // UC double, is refused because the opened policy decides admission.
-        Scenario memory s = _returnScenario();
-        s.anchors[0].partition = 99;
-        s.anchors[0].shardConfHash = keccak256("other");
-        _rejects(s, abi.encodeWithSelector(PolicyTupleMismatch.selector));
     }
 
     function test_policy_leafCountMismatch() public {
@@ -1107,16 +974,7 @@ contract TokenVerifierTest is BridgeBase {
                 row0 == 1 ? sid | bytes32(uint256(1) << 255) : sid & ~bytes32(uint256(1) << 255);
             s.paths[i].anchorIndex = 0;
         }
-        Anchor memory a0 = s.anchors[0];
-        s.anchors[1] = Anchor({
-            partition: a0.partition,
-            shard: a0.shard,
-            shardConfHash: a0.shardConfHash,
-            expectedStateRoot: a0.expectedStateRoot,
-            expectedIRHash: a0.expectedIRHash,
-            uc: bytes.concat(a0.uc, hex"00"),
-            inputRecord: a0.inputRecord
-        });
+        // the second golden anchor stays as it is (a valid UC of the other shard) and no leaf names it: it is unused
     }
 
     /// @dev The return relation under one anchor: every leaf in the first anchor's shard. The
@@ -1408,61 +1266,11 @@ contract TokenVerifierTest is BridgeBase {
         internal
     {
         _arm(s);
-        if (target == B1Calls.UC_VERIFIER) {
-            _prog(target, _expectedUC(s.anchors[0]), out);
+        if (target == B1Calls.CERT_BATCH) {
+            _prog(target, _expectedBatch(s.anchors), out);
         }
         vm.expectRevert(err);
         v.verifyReturn(s.cfgB, _proof(s));
-    }
-
-    function test_b1_ucFalse() public {
-        Scenario memory s = _returnScenario();
-        _b1Rejects(s, B1Calls.UC_VERIFIER, FALSE_OUT, abi.encodeWithSelector(UCRejected.selector));
-    }
-
-    function test_b1_ucFalseDoesNotReachRsmt() public {
-        Scenario memory s = _returnScenario();
-        _arm(s);
-        _prog(B1Calls.UC_VERIFIER, _expectedUC(s.anchors[0]), FALSE_OUT);
-        vm.expectCall(B1Calls.RSMT_VERIFIER, hex"01000001", 0);
-        vm.expectRevert(abi.encodeWithSelector(UCRejected.selector));
-        v.verifyReturn(cfgB, _proof(s));
-    }
-
-    function test_b1_ucMalformedHaltIsFailureNotFalse() public {
-        Scenario memory s = _returnScenario();
-        _arm(s);
-        _progRevert(B1Calls.UC_VERIFIER, _expectedUC(s.anchors[0]));
-        vm.expectRevert(abi.encodeWithSelector(PrecompileFailed.selector, B1Calls.UC_VERIFIER));
-        v.verifyReturn(cfgB, _proof(s));
-    }
-
-    function test_b1_ucBadReturnShapes() public {
-        Scenario memory s = _returnScenario();
-        bytes[6] memory bad = [
-            bytes(""),
-            abi.encode(uint256(1)),
-            bytes.concat(TRUE_OUT, bytes32(0)),
-            abi.encode(uint256(2), true),
-            abi.encode(uint256(1), uint256(2)),
-            abi.encode(uint256(0), true)
-        ];
-        for (uint256 i = 0; i < bad.length; ++i) {
-            _b1Rejects(
-                s,
-                B1Calls.UC_VERIFIER,
-                bad[i],
-                abi.encodeWithSelector(PrecompileBadReturn.selector, B1Calls.UC_VERIFIER)
-            );
-        }
-    }
-
-    function test_b1_inactiveUcAddressIsBadReturn() public {
-        Scenario memory s = _returnScenario();
-        _armExcept(s, B1Calls.UC_VERIFIER);
-        vm.etch(B1Calls.UC_VERIFIER, "");
-        vm.expectRevert(abi.encodeWithSelector(PrecompileBadReturn.selector, B1Calls.UC_VERIFIER));
-        v.verifyReturn(cfgB, _proof(s));
     }
 
     function test_b1_inactiveRsmtAddressIsBadReturn() public {
@@ -1538,443 +1346,7 @@ contract TokenVerifierTest is BridgeBase {
         v.verifyReturn(cfgB, _proof(s));
     }
 
-    function test_b1_ucOverCapIsBudget() public {
-        Scenario memory s = _returnScenario();
-        s.anchors[0].uc = new bytes(8 * 1024 + 1);
-        _rejects(s, abi.encodeWithSelector(BudgetExceeded.selector));
-    }
-
     // ---- gas gate and forwarded gas --------------------------------------------------------------
-
-    function _gateOf(string memory op, Scenario memory s)
-        internal
-        view
-        returns (uint256 intrinsic, uint256 b2, uint256 uc, uint256 rsmt)
-    {
-        intrinsic = BridgeBounds.intrinsicGas(_proof(s).length);
-        b2 = BridgeBounds.b2Gas(
-            BridgeBounds.kernelRequestBytes(s.cfgB.length, s.history.length), s.result.leaves.length
-        );
-        for (uint256 j = 0; j < s.anchors.length; ++j) {
-            (uint256 sigs, uint256 steps) = UcScan.scan(s.anchors[j].uc, s.anchors[j].shard, 1);
-            uc += BridgeBounds.ucGas(s.anchors[j].shard.length, s.anchors[j].uc.length, sigs, steps);
-        }
-        for (uint256 i = 0; i < s.paths.length; ++i) {
-            rsmt += BridgeBounds.rsmtGas(s.paths[i].siblings.length);
-        }
-        // The oracle's own gate for the same envelope (golden `gate`).
-        string memory g = string.concat(".", op, ".envelope.gate");
-        assertEq(intrinsic, vm.parseJsonUint(G, string.concat(g, ".intrinsic")), "intrinsic");
-        assertEq(b2, vm.parseJsonUint(G, string.concat(g, ".b2")), "b2");
-        assertEq(uc, vm.parseJsonUint(G, string.concat(g, ".uc")), "uc");
-        assertEq(rsmt, vm.parseJsonUint(G, string.concat(g, ".rsmt")), "rsmt");
-        assertEq(
-            intrinsic + b2 + uc + rsmt + BridgeBounds.GAS_RESERVE,
-            vm.parseJsonUint(G, string.concat(g, ".total")),
-            "total"
-        );
-        assertEq(vm.parseJsonUint(G, string.concat(g, ".budget")), BridgeBounds.TX_GAS_BUDGET);
-    }
-
-    function test_gate_everyGoldenComponentEqualsTheOracleGate() public view {
-        _gateOf("mint", _mintScenario());
-        _gateOf("return", _returnScenario());
-    }
-
-    /// @dev An oracle-parity pin of ONE composition: the worst bundle of TWO maximum-size anchors at every other cap prices to
-    ///      9,917,572 (bft-core `TestGateDecidesEachBundle`), over the 7,000,000 budget: after the repricing of the certificate call
-    ///      (owner-decisions section 22) and the 80-per-byte execution term, a maximum 65,536-byte envelope alone costs 6.3M, so the
-    ///      gate refuses it. Realistic bundles are admitted (see the eight-anchor tests).
-    function test_gate_twoMaximumAnchorBundleAtEveryCapIsPricedOutToTheOracleUnit() public pure {
-        uint256 total = BridgeBounds.intrinsicGas(BridgeBounds.MAX_ENVELOPE_BYTES)
-            + BridgeBounds.b2Gas(
-                BridgeBounds.kernelRequestBytes(
-                    BridgeBounds.MAX_SEMANTIC_BYTES, BridgeBounds.MAX_SEMANTIC_BYTES
-                ),
-                BridgeBounds.MAX_LEAVES
-            ) + 2
-            * BridgeBounds.ucGas(
-                1,
-                BridgeBounds.MAX_ANCHOR_UC_BYTES,
-                BridgeBounds.MAX_SIGNATURES,
-                1 + BridgeBounds.MAX_UNICITY_STEPS
-            ) + BridgeBounds.MAX_LEAVES * BridgeBounds.rsmtGas(BridgeBounds.MAX_RSMT_SIBLINGS)
-            + BridgeBounds.GAS_RESERVE;
-        assertEq(total, 9_917_572);
-        assertGt(total, BridgeBounds.TX_GAS_BUDGET, "the maximum envelope is priced out");
-    }
-
-    /// @dev `n` leaves (mock kernel result), each certified by its own anchor: distinct UCs alternating
-    ///      between the two shards, in first-use order. Normal certificates have the DN-B committee's four
-    ///      signatures and one shard sibling (811 bytes in the oracle's `compose-anchors-max-dnb`; the scan reads
-    ///      only the shape); heavy ones carry 64 signatures and 32 unicity steps.
-    function _perLeafAnchors(uint256 n, bool heavy) internal view returns (Scenario memory s) {
-        s = _returnScenario();
-        Anchor[] memory as_ = new Anchor[](n);
-        Leaf[] memory ls = new Leaf[](n);
-        LeafProof[] memory ps = new LeafProof[](n);
-        for (uint256 i = 0; i < n; ++i) {
-            Anchor memory base = _goldenAnchors("return")[i % 2];
-            bytes memory uc =
-                heavy ? _craftedUc(base.shard, 32, 64, i) : _craftedUc(base.shard, 1, 4, i);
-            as_[i] = Anchor({
-                partition: base.partition,
-                shard: base.shard,
-                shardConfHash: base.shardConfHash,
-                expectedStateRoot: base.expectedStateRoot,
-                expectedIRHash: base.expectedIRHash,
-                uc: uc,
-                inputRecord: base.inputRecord
-            });
-            as_[i].inputRecord = _irFor(as_[i], 1_700_000_064);
-            as_[i].expectedIRHash = sha256(as_[i].inputRecord);
-            ls[i] = Leaf({
-                sid: _sidInRow(keccak256(abi.encode("sid", i)), uint8(base.shard[0]) >> 7),
-                txHash: keccak256(abi.encode("tx", i)),
-                referenceTime: uint64(1_700_000_000 + i),
-                leafValue: keccak256(abi.encode("v", i))
-            });
-            ps[i].anchorIndex = uint16(i);
-        }
-        s.anchors = as_;
-        s.result.leaves = ls;
-        s.paths = ps;
-    }
-
-    /// @dev A structurally valid certificate (the scan reads only its shape): `steps` unicity steps and
-    ///      `sigs` seal entries, one shard sibling, padded so that the declared count fits and each `salt`
-    ///      is a distinct byte string.
-    function _craftedUc(bytes memory shard, uint256 steps, uint256 sigs, uint256 salt)
-        internal
-        pure
-        returns (bytes memory)
-    {
-        bytes memory sib = Cbor.head(4, 1);
-        sib = bytes.concat(sib, hex"00");
-        bytes memory st = Cbor.head(4, steps);
-        for (uint256 i = 0; i < steps; ++i) {
-            st = bytes.concat(st, hex"00");
-        }
-        return bytes.concat(
-            hex"d99859",
-            hex"87",
-            hex"01",
-            hex"00",
-            hex"40",
-            hex"40",
-            hex"d9985b",
-            hex"83",
-            hex"01",
-            Cbor.bstr(shard),
-            sib,
-            hex"d9985c",
-            hex"83",
-            hex"01",
-            hex"0b",
-            st,
-            hex"d9985d",
-            hex"88",
-            hex"01",
-            hex"000000000000",
-            Cbor.head(5, sigs),
-            new bytes(sigs + 1),
-            bytes1(uint8(salt + 1))
-        );
-    }
-
-    function test_gate_threeAndFourDnbShapeAnchorsAreAdmittedWhenTheGatePasses() public {
-        for (uint256 n = 3; n <= BridgeBounds.MAX_ANCHORS; ++n) {
-            Scenario memory s = _perLeafAnchors(n, false);
-            KernelResult memory got = _run(s);
-            assertEq(got.leaves.length, n);
-            (uint256 i0, uint256 b2, uint256 uc, uint256 rs) = _gateParts(s);
-            assertLe(i0 + b2 + uc + rs + BridgeBounds.GAS_RESERVE, BridgeBounds.TX_GAS_BUDGET);
-        }
-    }
-
-    /// @dev After the repricing the DN-B-shape bundle at the anchor ceiling no longer reaches the gate: eight anchors, sixteen
-    ///      leaves with 32-sibling paths and an 8 KiB history are admitted and run (the oracle no longer has an over-budget
-    ///      case of this shape; the heavy case below is the one the gate prices out).
-    function test_gate_eightDnbShapeAnchorsWithSixteenDeepLeavesAreAdmitted() public {
-        Scenario memory s = _perLeafAnchors(BridgeBounds.MAX_ANCHORS, false);
-        uint256 n = BridgeBounds.MAX_LEAVES;
-        Leaf[] memory ls = new Leaf[](n);
-        LeafProof[] memory ps = new LeafProof[](n);
-        for (uint256 i = 0; i < n; ++i) {
-            uint256 ai = i < BridgeBounds.MAX_ANCHORS ? i : BridgeBounds.MAX_ANCHORS - 2 + (i % 2); // later leaves reuse an anchor of their own shard
-            ls[i] = Leaf({
-                sid: _sidInRow(keccak256(abi.encode("sid", i)), uint8(s.anchors[ai].shard[0]) >> 7),
-                txHash: keccak256(abi.encode("tx", i)),
-                referenceTime: uint64(1_700_000_000 + i),
-                leafValue: keccak256(abi.encode("v", i))
-            });
-            ps[i].anchorIndex = uint16(ai);
-            ps[i].bitmap = bytes32((uint256(1) << BridgeBounds.MAX_RSMT_SIBLINGS) - 1);
-            ps[i].siblings = new bytes32[](BridgeBounds.MAX_RSMT_SIBLINGS);
-        }
-        s.result.leaves = ls;
-        s.paths = ps;
-        s.history = new bytes(8 * 1024);
-        (uint256 i0, uint256 b2, uint256 uc, uint256 rs) = _gateParts(s);
-        assertLe(i0 + b2 + uc + rs + BridgeBounds.GAS_RESERVE, BridgeBounds.TX_GAS_BUDGET);
-        KernelResult memory got = _run(s);
-        assertEq(got.leaves.length, n);
-    }
-
-    /// @dev Eight DN-B-shape anchors (the ceiling) with 8 maximum-length sibling paths, each UC padded by `add` bytes.
-    function _edgeBase() internal view returns (Scenario memory s) {
-        s = _perLeafAnchors(BridgeBounds.MAX_ANCHORS, false);
-        for (uint256 i = 0; i < s.paths.length; ++i) {
-            s.paths[i].bitmap = bytes32((uint256(1) << BridgeBounds.MAX_RSMT_SIBLINGS) - 1);
-            s.paths[i].siblings = new bytes32[](BridgeBounds.MAX_RSMT_SIBLINGS);
-        }
-    }
-
-    function _ucsOf(Scenario memory s) internal pure returns (bytes[] memory ucs) {
-        ucs = new bytes[](s.anchors.length);
-        for (uint256 j = 0; j < ucs.length; ++j) {
-            ucs[j] = s.anchors[j].uc;
-        }
-    }
-
-    function _pad(Scenario memory s, bytes[] memory ucs, uint256 add)
-        internal
-        pure
-        returns (uint256 total)
-    {
-        for (uint256 j = 0; j < s.anchors.length; ++j) {
-            Anchor memory a = s.anchors[j];
-            a.uc = bytes.concat(ucs[j], new bytes(add));
-            a.inputRecord = _irFor(a, 1_700_000_064);
-            a.expectedIRHash = sha256(a.inputRecord);
-        }
-        (uint256 i0, uint256 b2, uint256 uc, uint256 rs) = _gateParts(s);
-        total = i0 + b2 + uc + rs + BridgeBounds.GAS_RESERVE;
-    }
-
-    /// @dev The largest padding the gate admits and the next one up: the accepted bundle runs, the refused
-    ///      one is `BudgetExceeded` with zero native UC or RSMT calls, so the check is exactly
-    ///      `total > TX_GAS_BUDGET` and precedes every native call.
-    function test_gate_boundaryAcceptsTheLastPassingPaddingAndRefusesTheNextBeforeAnyNativeCall()
-        public
-    {
-        Scenario memory s = _edgeBase();
-        bytes[] memory ucs = _ucsOf(s);
-        uint256 total = _pad(s, ucs, 0);
-        assertLe(total, BridgeBounds.TX_GAS_BUDGET, "start inside the gate");
-        // each padding byte costs 16 (the UC request) + 96 (the envelope) per anchor; settle by stepping
-        uint256 add = (BridgeBounds.TX_GAS_BUDGET - total) / (112 * BridgeBounds.MAX_ANCHORS);
-        while (_pad(s, ucs, add) > BridgeBounds.TX_GAS_BUDGET) --add;
-        while (_pad(s, ucs, add + 1) <= BridgeBounds.TX_GAS_BUDGET) ++add;
-        total = _pad(s, ucs, add);
-        uint256 over = _pad(s, ucs, add + 1);
-        assertLe(total, BridgeBounds.TX_GAS_BUDGET);
-        assertGt(over, BridgeBounds.TX_GAS_BUDGET);
-        assertLt(
-            over - total,
-            BridgeBounds.MAX_ANCHORS * 32
-                * (BridgeBounds.PER_BYTE + BridgeBounds.EXEC_PER_BYTE + 1),
-            "the refused bundle is one ABI word of certificate padding per anchor larger"
-        );
-        _pad(s, ucs, add);
-        _arm(s);
-        uint256 before = gasleft();
-        KernelResult memory got = v.verifyReturn(s.cfgB, _proof(s));
-        uint256 used = before - gasleft();
-        assertEq(got.leaves.length, BridgeBounds.MAX_ANCHORS);
-        assertLt(
-            used,
-            BridgeBounds.GAS_RESERVE - 100_000 + BridgeBounds.EXEC_PER_BYTE * _proof(s).length,
-            "verifier overhead at the edge stays inside the reserve and the execution term"
-        );
-        emit log_named_uint("gate total, accepted edge", total);
-        emit log_named_uint("gate total, first refused", over);
-        emit log_named_uint("verifier overhead gas, eight anchors at the edge", used);
-        _pad(s, ucs, add + 1);
-        vm.expectCall(B1Calls.UC_VERIFIER, bytes(""), 0);
-        vm.expectCall(B1Calls.RSMT_VERIFIER, bytes(""), 0);
-        _rejects(s, abi.encodeWithSelector(BudgetExceeded.selector));
-    }
-
-    /// @dev After the repricing (`UC_BASE` 92,700) a maximum-size certificate costs 617,798 and the cheapest 94,476: eight
-    ///      maximum-size certificates alone (4.94M) and eight of the cheapest with the reserve (1.76M) both fit the budget, so
-    ///      the anchor ceiling of eight is a parser limit; what the gate prices out is the sum of all terms (see the heavy test).
-    function test_gate_certificateCostsAfterTheRepricing() public pure {
-        uint256 maxUc = BridgeBounds.ucGas(
-            1,
-            BridgeBounds.MAX_ANCHOR_UC_BYTES,
-            BridgeBounds.MAX_SIGNATURES,
-            1 + BridgeBounds.MAX_UNICITY_STEPS
-        );
-        assertEq(maxUc, 617_798);
-        uint256 minUc = BridgeBounds.ucGas(1, 0, 0, 0);
-        assertEq(minUc, 94_476);
-        assertLe(
-            BridgeBounds.MAX_ANCHORS * maxUc,
-            BridgeBounds.TX_GAS_BUDGET,
-            "eight maximum certificates alone"
-        );
-        assertLe(
-            BridgeBounds.MAX_ANCHORS * minUc + BridgeBounds.GAS_RESERVE,
-            BridgeBounds.TX_GAS_BUDGET,
-            "eight of the cheapest certificates and the reserve"
-        );
-    }
-
-    /// @dev The union of the worst shapes the gate still admits: EIGHT maximum-signature anchors, SIXTEEN leaves with as many
-    ///      siblings each as the gate admits, then the largest history it admits at
-    ///      that load, then the largest certificate padding. The verifier's own work there, with the natives mocked,
-    ///      must stay under the reserve minus the vault's own accounting (about 60k: two new-slot SSTOREs, a fresh
-    ///      `claimable`, the event and `cfgBytes()`).
-    function test_gas_unionWorstAdmittedBundleVerifierOverheadFitsTheReserve() public {
-        Scenario memory s = _perLeafAnchors(BridgeBounds.MAX_ANCHORS, true);
-        uint256 n = BridgeBounds.MAX_LEAVES;
-        Leaf[] memory ls = new Leaf[](n);
-        LeafProof[] memory ps = new LeafProof[](n);
-        for (uint256 i = 0; i < n; ++i) {
-            uint256 ai = i < BridgeBounds.MAX_ANCHORS ? i : BridgeBounds.MAX_ANCHORS - 2 + (i % 2); // later leaves reuse an anchor of their own shard
-            ls[i] = Leaf({
-                sid: _sidInRow(keccak256(abi.encode("sid", i)), uint8(s.anchors[ai].shard[0]) >> 7),
-                txHash: keccak256(abi.encode("tx", i)),
-                referenceTime: uint64(1_700_000_000 + i),
-                leafValue: keccak256(abi.encode("v", i))
-            });
-            ps[i].anchorIndex = uint16(ai);
-        }
-        s.result.leaves = ls;
-        s.paths = ps;
-        // the deepest uniform sibling count the gate admits with the smallest history
-        s.history = new bytes(0);
-        uint256 depth = BridgeBounds.MAX_RSMT_SIBLINGS;
-        for (;; --depth) {
-            for (uint256 i = 0; i < n; ++i) {
-                ps[i].bitmap = bytes32((uint256(1) << depth) - 1);
-                ps[i].siblings = new bytes32[](depth);
-                for (uint256 k = 0; k < depth; ++k) {
-                    ps[i].siblings[k] = keccak256(abi.encode(i, k));
-                }
-            }
-            (uint256 a0, uint256 a1, uint256 a2, uint256 a3) = _gateParts(s);
-            if (a0 + a1 + a2 + a3 + BridgeBounds.GAS_RESERVE <= BridgeBounds.TX_GAS_BUDGET) break;
-            assertGt(depth, 0, "some depth is admitted");
-        }
-        (uint256 i0, uint256 b2, uint256 uc, uint256 rs) = _gateParts(s);
-        bytes[] memory ucs = _ucsOf(s);
-        // the largest history the gate admits at this load (bisection: the gate total is increasing in the history)
-        uint256 lo = 0;
-        uint256 hi = BridgeBounds.MAX_SEMANTIC_BYTES;
-        while (lo < hi) {
-            uint256 mid = (lo + hi + 1) / 2;
-            s.history = new bytes(mid);
-            (i0, b2, uc, rs) = _gateParts(s);
-            if (i0 + b2 + uc + rs + BridgeBounds.GAS_RESERVE <= BridgeBounds.TX_GAS_BUDGET) {
-                lo = mid;
-            } else {
-                hi = mid - 1;
-            }
-        }
-        s.history = new bytes(lo);
-        // then the largest certificate padding it still admits
-        uint256 add = 0;
-        while (_pad(s, ucs, add + 8) <= BridgeBounds.TX_GAS_BUDGET) add += 8;
-        uint256 total = _pad(s, ucs, add);
-        assertLe(total, BridgeBounds.TX_GAS_BUDGET);
-        bytes memory proof = _proof(s);
-        assertLe(proof.length, BridgeBounds.MAX_ENVELOPE_BYTES, "inside the envelope bound");
-        _arm(s);
-        uint256 before = gasleft();
-        KernelResult memory got = v.verifyReturn(s.cfgB, proof);
-        uint256 used = before - gasleft();
-        assertEq(got.leaves.length, n);
-        emit log_named_uint("siblings per leaf admitted at eight anchors and sixteen leaves", depth);
-        emit log_named_uint("history bytes admitted at that load", lo);
-        emit log_named_uint("certificate padding bytes per anchor admitted", add);
-        emit log_named_uint("gate total", total);
-        emit log_named_uint("envelope bytes", proof.length);
-        emit log_named_uint("verifier overhead gas, the union shape", used);
-        assertLt(
-            used + 100_000,
-            BridgeBounds.GAS_RESERVE + BridgeBounds.EXEC_PER_BYTE * proof.length,
-            "verifier overhead plus the vault's own accounting stays inside the reserve and the execution term"
-        );
-    }
-
-    /// @dev Eight anchors of maximum signatures and maximum certificate bytes are priced out by the gate before any native call
-    ///      (the oracle's `compose-anchors-max-heavy-over-budget` is the structurally admitted form of this shape); the same
-    ///      bundle with two anchors passes.
-    function test_gate_eightAnchorsOfMaximumSignaturesAndBytesAreBudgetExceeded() public {
-        Scenario memory s = _perLeafAnchors(BridgeBounds.MAX_ANCHORS, true);
-        bytes[] memory ucs = _ucsOf(s);
-        uint256 over = _pad(s, ucs, BridgeBounds.MAX_ANCHOR_UC_BYTES - ucs[0].length);
-        assertGt(over, BridgeBounds.TX_GAS_BUDGET);
-        _rejects(s, abi.encodeWithSelector(BudgetExceeded.selector));
-        // ... and the same bundle with two anchors passes the gate.
-        Scenario memory two = _perLeafAnchors(2, true);
-        (uint256 i0, uint256 b2, uint256 uc, uint256 rs) = _gateParts(two);
-        assertLe(i0 + b2 + uc + rs + BridgeBounds.GAS_RESERVE, BridgeBounds.TX_GAS_BUDGET);
-    }
-
-    function _gateParts(Scenario memory s)
-        internal
-        pure
-        returns (uint256 intrinsic, uint256 b2, uint256 uc, uint256 rsmt)
-    {
-        intrinsic = BridgeBounds.intrinsicGas(_proof(s).length);
-        b2 = BridgeBounds.b2Gas(
-            BridgeBounds.kernelRequestBytes(s.cfgB.length, s.history.length), s.result.leaves.length
-        );
-        for (uint256 j = 0; j < s.anchors.length; ++j) {
-            (uint256 sigs, uint256 steps) = UcScan.scan(s.anchors[j].uc, s.anchors[j].shard, 1);
-            uc += BridgeBounds.ucGas(s.anchors[j].shard.length, s.anchors[j].uc.length, sigs, steps);
-        }
-        for (uint256 i = 0; i < s.paths.length; ++i) {
-            rsmt += BridgeBounds.rsmtGas(s.paths[i].siblings.length);
-        }
-    }
-
-    function test_gas_everyNativeCallIsForwardedExactlyItsCharge() public {
-        Scenario memory s = _returnScenario();
-        _arm(s);
-        (,, uint256 ucTotal,) = _gateOf("return", s);
-        uint256 seen;
-        for (uint256 j = 0; j < s.anchors.length; ++j) {
-            (uint256 sigs, uint256 steps) = UcScan.scan(s.anchors[j].uc, s.anchors[j].shard, 1);
-            uint256 charge =
-                BridgeBounds.ucGas(s.anchors[j].shard.length, s.anchors[j].uc.length, sigs, steps);
-            seen += charge;
-            // forge-lint: disable-next-line(unsafe-typecast)
-            vm.expectCall(B1Calls.UC_VERIFIER, 0, uint64(charge), _expectedUC(s.anchors[j]));
-        }
-        assertEq(seen, ucTotal);
-        for (uint256 i = 0; i < s.paths.length; ++i) {
-            bytes memory req = _expectedRSMT(
-                s.anchors[s.paths[i].anchorIndex].expectedStateRoot,
-                s.result.leaves[i].sid,
-                s.result.leaves[i].leafValue,
-                s.paths[i]
-            );
-            // forge-lint: disable-next-line(unsafe-typecast)
-            vm.expectCall(
-                B1Calls.RSMT_VERIFIER,
-                0,
-                uint64(BridgeBounds.rsmtGas(s.paths[i].siblings.length)),
-                req
-            );
-        }
-        // forge-lint: disable-next-line(unsafe-typecast)
-        vm.expectCall(
-            B1Calls.KERNEL,
-            0,
-            uint64(
-                BridgeBounds.b2Gas(
-                    BridgeBounds.kernelRequestBytes(s.cfgB.length, s.history.length),
-                    BridgeBounds.KERNEL_MAX_LEAVES
-                )
-            ),
-            _b(".return.kernelInput")
-        );
-        assertTrue(_sameResult(_call(s), s.result));
-    }
 
     // The former `test_gas_worstBundleVerifierOverheadFitsTheReserve` (a bundle at every cap) is gone: after the repricing the gate
     // prices that bundle out (9.9M, see `test_gate_twoMaximumAnchorBundleAtEveryCapIsPricedOutToTheOracleUnit`), and the union test
@@ -1984,33 +1356,6 @@ contract TokenVerifierTest is BridgeBase {
         Scenario memory s = _returnScenario();
         s.paths[1].bitmap = bytes32(uint256(s.paths[1].bitmap) | 1 << 255 | 1);
         _rejects(s, abi.encodeWithSelector(PathBitmapMismatch.selector, 1));
-    }
-
-    function test_gate_ucWithAnotherTagIsRefusedBeforeAnyNativeCall() public {
-        Scenario memory s = _returnScenario();
-        s.anchors[1].uc[2] = bytes1(uint8(s.anchors[1].uc[2]) ^ 1);
-        _rejects(s, abi.encodeWithSelector(UCScanRejected.selector));
-    }
-
-    function test_gate_truncatedUcIsRefusedBeforeAnyNativeCall() public {
-        Scenario memory s = _returnScenario();
-        bytes memory uc = s.anchors[0].uc;
-        bytes memory cut = new bytes(uc.length - 40);
-        for (uint256 i = 0; i < cut.length; ++i) {
-            cut[i] = uc[i];
-        }
-        s.anchors[0].uc = cut;
-        vm.expectRevert();
-        _call(s);
-    }
-
-    function test_b1_sharedCallIsNeverUsed() public {
-        // 0x0101 (SHARED_SEAL_V1) is not used: every anchor is verified by its own 0x0100 call.
-        Scenario memory s = _returnScenario();
-        _arm(s);
-        vm.etch(B1Calls.SHARED_VERIFIER, REVERT_CODE);
-        vm.expectCall(B1Calls.SHARED_VERIFIER, hex"", 0);
-        _call(s);
     }
 
     // ---------------------------------------------------------------------------------------------
@@ -2275,52 +1620,6 @@ contract TokenVerifierTest is BridgeBase {
 
     // ---- the opening carries weight only after B1 0x0100 -----------------------------------------
 
-    function test_ir_isNotTrustedBeforeTheUcVerdict() public {
-        // Every defect below would be refused by the opening check; with a false verdict the
-        // refusal is the verdict's, so nothing about the opening decided anything before it.
-        Scenario memory s = _oneAnchorReturn();
-        bytes[3] memory bad;
-        bad[0] = hex""; // missing
-        bad[1] = _irAt(s, 1); // stale time
-        bad[2] = hex"00"; // malformed
-        for (uint256 i = 0; i < 3; ++i) {
-            Scenario memory c = _oneAnchorReturn();
-            _withIR(c, bad[i]);
-            _b1Rejects(
-                c, B1Calls.UC_VERIFIER, FALSE_OUT, abi.encodeWithSelector(UCRejected.selector)
-            );
-        }
-        // a hash that does not match the bytes is also only looked at after the verdict
-        Scenario memory h = _oneAnchorReturn();
-        h.anchors[0].inputRecord = hex"00";
-        _b1Rejects(h, B1Calls.UC_VERIFIER, FALSE_OUT, abi.encodeWithSelector(UCRejected.selector));
-    }
-
-    function test_ir_aHaltingUcCallIsNotTurnedIntoAnOpeningError() public {
-        Scenario memory s = _oneAnchorReturn();
-        _withIR(s, hex"00");
-        _arm(s);
-        _progRevert(B1Calls.UC_VERIFIER, _expectedUC(s.anchors[0]));
-        vm.expectRevert(abi.encodeWithSelector(PrecompileFailed.selector, B1Calls.UC_VERIFIER));
-        v.verifyReturn(cfgB, _proof(s));
-    }
-
-    function test_ir_theUcRequestCarriesTheAnchorsIrHashAndStateRoot() public {
-        // B1 authenticates (expectedStateRoot, expectedIRHash) as a pair: the request is built from
-        // the anchor, so an opening swapped in later cannot be paired with another hash.
-        Scenario memory s = _oneAnchorReturn();
-        _withIR(s, _irAt(s, _latest(s)));
-        _arm(s);
-        bytes memory req = _expectedUC(s.anchors[0]);
-        assertEq(
-            bytes32(_slice(req, req.length - s.anchors[0].uc.length - 4 - 32 - 0, 32)),
-            s.anchors[0].expectedIRHash,
-            "irHash sits before the UC"
-        );
-        vm.expectCall(B1Calls.UC_VERIFIER, req, 1);
-        _call(s);
-    }
-
     // ---- the binding of the opening to the authenticated pair ------------------------------------
 
     function test_ir_aTimestampLieWithTheSameHashIsBadOpening() public {
@@ -2424,42 +1723,6 @@ contract TokenVerifierTest is BridgeBase {
             vm.expectCall(B1Calls.RSMT_VERIFIER, real, 1);
         }
         _call(s);
-    }
-
-    function test_member_theReferenceB1VerdictsAreTheDoublesAnswers() public view {
-        // The doubles answer with the bytes the A' reference oracle (RefB1 for 0x0100, b1ref.Member for
-        // 0x0102) returned for these exact requests when the golden file was generated.
-        string[2] memory ops = ["mint", "return"];
-        for (uint256 k = 0; k < 2; ++k) {
-            string memory e = string.concat(".", ops[k], ".envelope");
-            Anchor[] memory as_ = _goldenAnchors(ops[k]);
-            for (uint256 j = 0; j < as_.length; ++j) {
-                string memory ap = string.concat(e, ".anchors[", vm.toString(j), "]");
-                assertEq(_expectedUC(as_[j]), _b(string.concat(ap, ".ucRequest")), "UC request");
-                assertEq(
-                    B1Calls.ucRequest(as_[j]), _b(string.concat(ap, ".ucRequest")), "UC wrapper"
-                );
-                assertEq(_b(string.concat(ap, ".ucResult")), TRUE_OUT, "UC verdict");
-            }
-            LeafProof[] memory lp = _goldenLeafProofs(ops[k]);
-            KernelResult memory r = _goldenResult(string.concat(".", ops[k], ".result"));
-            for (uint256 i = 0; i < lp.length; ++i) {
-                string memory p = string.concat(e, ".members[", vm.toString(i), "]");
-                assertEq(_b(string.concat(p, ".result")), TRUE_OUT, "member verdict");
-                assertEq(_b(string.concat(p, ".txHashResult")), FALSE_OUT, "txHash verdict");
-                assertEq(
-                    B1Calls.memberRequest(
-                        as_[lp[i].anchorIndex].expectedStateRoot,
-                        r.leaves[i].sid,
-                        abi.encodePacked(r.leaves[i].leafValue),
-                        lp[i].bitmap,
-                        lp[i].siblings
-                    ),
-                    _b(string.concat(p, ".request")),
-                    "member wrapper"
-                );
-            }
-        }
     }
 
     // ---- kernel output stride 128 ----------------------------------------------------------------
@@ -2586,6 +1849,612 @@ contract TokenVerifierTest is BridgeBase {
         } catch (bytes memory err) {
             assertTrue(_isNamedError(bytes4(err)), "named error");
         }
+    }
+
+    // ---------------------------------------------------------------------------------------------
+    // Any-age: topology, leaf-to-anchor coverage, the Solidity preflight, the gate and the batch call
+    // ---------------------------------------------------------------------------------------------
+
+    /// @dev The native shard id of the k-th shard of depth d: the d bits of k, the terminator bit 1, zero padding.
+    function _shardId(uint256 d, uint256 k) internal pure returns (bytes memory out) {
+        uint256 nbits = d + 1;
+        uint256 nbytes = (nbits + 7) / 8;
+        uint256 bitsv = ((k << 1) | 1) << (8 * nbytes - nbits);
+        out = new bytes(nbytes);
+        for (uint256 i = 0; i < nbytes; ++i) {
+            out[nbytes - 1 - i] = bytes1(uint8(bitsv >> (8 * i)));
+        }
+    }
+
+    /// @dev A state ID whose first d bits are the shard's prefix and whose other bits come from `salt`.
+    function _sidIn(bytes memory shard, uint256 salt) internal pure returns (bytes32 sid) {
+        uint256 d = CertGroups.shardDepth(shard);
+        sid = keccak256(abi.encode("sid", salt));
+        uint256 whole = d / 8;
+        bytes memory raw = abi.encodePacked(sid);
+        for (uint256 i = 0; i < whole; ++i) {
+            raw[i] = shard[i];
+        }
+        if (d % 8 != 0) {
+            uint8 keep = uint8(0xff << (8 - (d % 8)));
+            raw[whole] = bytes1((uint8(raw[whole]) & ~keep) | (uint8(shard[whole]) & keep));
+        }
+        sid = bytes32(raw);
+    }
+
+    /// @dev A structurally valid, distinct synthetic UC in the shard (its shard certificate carries exactly the derived depth of siblings)
+    ///      with a given IR in its input-record slot and `sigs` signatures; the native verdicts about it are the batch double's.
+    function _synthUc(
+        bytes memory shard,
+        uint256 epoch,
+        uint256 sigs,
+        uint8 seed,
+        bytes memory irSlot
+    ) internal pure returns (bytes memory) {
+        return _ucWith(shard, CertGroups.shardDepth(shard), 2, irSlot, _seal(epoch, sigs, seed));
+    }
+
+    function _synthAnchor(bytes memory shard, uint256 i, uint256 sigs, bytes memory irSlot)
+        internal
+        pure
+        returns (Anchor memory a)
+    {
+        a = Anchor({
+            partition: 11,
+            shard: shard,
+            shardConfHash: keccak256(abi.encode("conf", shard)),
+            expectedStateRoot: STATE,
+            expectedIRHash: sha256(_ok()),
+            uc: _synthUc(shard, 10 + i, sigs, uint8(i + 1), irSlot),
+            inputRecord: _ok()
+        });
+    }
+
+    /// @dev A return bundle over the given shards: one distinct synthetic anchor per shard (first-use order), one leaf per anchor with a
+    ///      state ID in that shard, the golden Cfg, policy and kernel result shape, every native answer a double.
+    function _topology(bytes[] memory shards) internal view returns (Scenario memory s) {
+        uint256 n = shards.length;
+        s = _returnScenario();
+        s.history = hex"aabbcc";
+        s.anchors = new Anchor[](n);
+        s.paths = new LeafProof[](n);
+        s.result.leaves = new Leaf[](n);
+        for (uint256 i = 0; i < n; ++i) {
+            s.anchors[i] = _synthAnchor(shards[i], i, 3, hex"00");
+            s.paths[i] =
+                LeafProof({anchorIndex: uint16(i), bitmap: bytes32(0), siblings: new bytes32[](0)});
+            s.result.leaves[i] = Leaf({
+                sid: _sidIn(shards[i], i),
+                txHash: keccak256(abi.encode("tx", i)),
+                referenceTime: 1_700_000_000,
+                leafValue: keccak256(abi.encode("leaf", i))
+            });
+        }
+    }
+
+    function _uniform(uint256 d) internal pure returns (bytes[] memory shards) {
+        shards = new bytes[](uint256(1) << d);
+        for (uint256 k = 0; k < shards.length; ++k) {
+            shards[k] = _shardId(d, k);
+        }
+    }
+
+    function _noNativeCalls() internal {
+        vm.expectCall(B1Calls.KERNEL, bytes(""), 0);
+        vm.expectCall(B1Calls.CERT_BATCH, bytes(""), 0);
+        vm.expectCall(B1Calls.RSMT_VERIFIER, bytes(""), 0);
+    }
+
+    function test_shardIdBuilderMatchesTheNativeEncoding() public pure {
+        // d = 0: 0x80; d = 1: 0x40 and 0xc0; d = 2: 0x20 0x60 0xa0 0xe0; d = 8 needs a second byte
+        assertEq(_shardId(0, 0), hex"80");
+        assertEq(_shardId(1, 0), hex"40");
+        assertEq(_shardId(1, 1), hex"c0");
+        assertEq(_shardId(2, 2), hex"a0");
+        assertEq(_shardId(7, 0x7f), hex"ff");
+        assertEq(_shardId(8, 0xff), hex"ff80");
+        for (uint256 d = 0; d < 9; ++d) {
+            assertEq(CertGroups.shardDepth(_shardId(d, (uint256(1) << d) - 1)), d);
+        }
+    }
+
+    // ---- topologies: 1, 2, 4, 8 and 16 uniform shards, uneven trees, a historical change -----------
+
+    function test_topology_uniformShardCountsAreVerifiedByOneBatch() public {
+        for (uint256 d = 1; d <= 4; ++d) {
+            Scenario memory s = _topology(_uniform(d));
+            assertEq(s.anchors.length, uint256(1) << d);
+            _arm(s);
+            vm.expectCall(B1Calls.CERT_BATCH, _expectedBatch(s.anchors), 1);
+            assertTrue(_sameResult(_call(s), s.result), "2, 4, 8 and 16 shards");
+        }
+    }
+
+    function test_topology_moreThanEightShardsOfAnUnevenTree() public {
+        // a complete binary tree of ten shards: 000 001 010 011 100 101 and 1100 1101 1110 1111
+        bytes[] memory shards = new bytes[](10);
+        for (uint256 k = 0; k < 6; ++k) {
+            shards[k] = _shardId(3, k);
+        }
+        for (uint256 k = 0; k < 4; ++k) {
+            shards[6 + k] = _shardId(4, 12 + k);
+        }
+        Scenario memory s = _topology(shards);
+        assertEq(s.anchors.length, 10);
+        assertTrue(_sameResult(_run(s), s.result));
+    }
+
+    function test_topology_aHistoricalChangeMixesAParentAndItsChildren() public {
+        // before the change '1' was one shard (0xc0); after it '10' and '11'. A token's history carries UCs of both.
+        bytes[] memory shards = new bytes[](4);
+        shards[0] = _shardId(1, 0);
+        shards[1] = _shardId(1, 1);
+        shards[2] = _shardId(2, 2);
+        shards[3] = _shardId(2, 3);
+        Scenario memory s = _topology(shards);
+        assertTrue(_sameResult(_run(s), s.result));
+        // a leaf in '10' may be served by the parent '1' or by the child '10': both carry its prefix
+        s.paths[2].anchorIndex = 1;
+        s.paths[1].anchorIndex = 1;
+        s.paths[3].anchorIndex = 3;
+        s.result.leaves[2].sid = _sidIn(shards[2], 2);
+        // anchors must be used in first-use order and all used: leaf 2 now names anchor 1, leaf 3 anchor 3, so anchor 2 is skipped
+        _rejects(s, abi.encodeWithSelector(PolicyLeafIndex.selector, 3, 3));
+    }
+
+    function test_topology_aLeafOutsideItsAnchorsPrefixIsRefusedAtEveryDepth() public {
+        for (uint256 d = 1; d <= 4; ++d) {
+            Scenario memory s = _topology(_uniform(d));
+            uint256 last = s.anchors.length - 1;
+            // flip the last bit of the anchor's prefix in the leaf's state ID: it now belongs to the sibling shard
+            bytes memory raw = abi.encodePacked(s.result.leaves[last].sid);
+            raw[(d - 1) / 8] = bytes1(uint8(raw[(d - 1) / 8]) ^ uint8(0x80 >> ((d - 1) % 8)));
+            s.result.leaves[last].sid = bytes32(raw);
+            _rejects(s, abi.encodeWithSelector(PolicyLeafIndex.selector, last, last));
+        }
+    }
+
+    function test_topology_theDepthComesFromTheAnchorsOwnShardNotFromAPolicy() public {
+        // one table with depths 1, 2 and 3 at once: a policy-wide depth would refuse all but one
+        bytes[] memory shards = new bytes[](3);
+        shards[0] = _shardId(1, 0);
+        shards[1] = _shardId(2, 2);
+        shards[2] = _shardId(3, 7);
+        Scenario memory s = _topology(shards);
+        assertTrue(_sameResult(_run(s), s.result));
+    }
+
+    function test_topology_anAnchorOutsideThePoliciesPartitionIsRefused() public {
+        Scenario memory s = _topology(_uniform(2));
+        s.anchors[3].partition = 12;
+        _rejects(s, abi.encodeWithSelector(PolicyTupleMismatch.selector));
+    }
+
+    function test_topology_aMalformedShardIsRefusedBeforeAnyNativeCall() public {
+        Scenario memory s = _topology(_uniform(2));
+        s.anchors[1].shard = hex"ff00"; // last byte zero: no terminator
+        _noNativeCalls();
+        vm.expectRevert(abi.encodeWithSelector(UCScanRejected.selector));
+        v.verifyReturn(s.cfgB, _proof(s));
+    }
+
+    function test_topology_deepShardsCompareWholeBytesThenTheRemainingBits() public {
+        // depths 8, 9 and 12: the prefix spans one whole byte and then 0, 1 and 4 bits of the next
+        uint256[3] memory depths = [uint256(8), 9, 12];
+        for (uint256 j = 0; j < depths.length; ++j) {
+            uint256 d = depths[j];
+            bytes[] memory shards = new bytes[](3);
+            shards[0] = _shardId(d, 0x5a5 & ((uint256(1) << d) - 1));
+            shards[1] = _shardId(d, 0xa5a & ((uint256(1) << d) - 1));
+            shards[2] = _shardId(d, 0xff3 & ((uint256(1) << d) - 1));
+            Scenario memory s = _topology(shards);
+            assertTrue(_sameResult(_run(s), s.result), "deep shards are admitted");
+            // a flipped bit in the first byte, and one in the last prefix bit, each break the coverage
+            uint256[2] memory bits = [uint256(0), d - 1];
+            for (uint256 b = 0; b < 2; ++b) {
+                Scenario memory bad = _topology(shards);
+                bytes memory raw = abi.encodePacked(bad.result.leaves[1].sid);
+                raw[bits[b] / 8] = bytes1(uint8(raw[bits[b] / 8]) ^ uint8(0x80 >> (bits[b] % 8)));
+                bad.result.leaves[1].sid = bytes32(raw);
+                _rejects(bad, abi.encodeWithSelector(PolicyLeafIndex.selector, 1, 1));
+            }
+        }
+    }
+
+    /// The cumulative path-step bound (certificate steps over the distinct anchors plus RSMT siblings) is defence in depth: every step is a
+    /// 32-byte hash (34 in a UC) of the envelope, so the 64 KiB envelope bound reaches the step bound first. The check in `_verify` stays,
+    /// and this test states why it cannot be the one that fires.
+    function test_bounds_cumulativeStepsCannotBind() public pure {
+        assertLe(BridgeBounds.MAX_ENVELOPE_BYTES / 32, BridgeBounds.MAX_PATH_STEPS); // equal, and the envelope also carries every other byte
+    }
+
+    /// Depth-200 certificates are 200 siblings of 34 bytes each: whatever the count, the bundle is either admitted and verified, or refused
+    /// by the envelope or gas bound before any batch call. It never half-runs.
+    function test_bounds_deepShardsReachTheEnvelopeBoundNotTheStepBound() public {
+        for (uint256 k = 7; k <= 8; ++k) {
+            bytes[] memory shards = new bytes[](k);
+            for (uint256 i = 0; i < k; ++i) {
+                shards[i] = new bytes(26);
+                shards[i][0] = bytes1(uint8(0x10 * (i + 1)));
+                shards[i][25] = 0x80; // 200 prefix bits, then the terminator
+            }
+            Scenario memory s = _topology(shards);
+            (uint256 gate,,) = _gateOfScenario(s);
+            if (
+                _proof(s).length <= BridgeBounds.MAX_ENVELOPE_BYTES
+                    && gate <= BridgeBounds.TX_GAS_BUDGET
+            ) {
+                assertTrue(_sameResult(_run(s), s.result), "inside both bounds");
+            } else {
+                _arm(s);
+                vm.expectRevert(abi.encodeWithSelector(BudgetExceeded.selector));
+                v.verifyReturn(s.cfgB, _proof(s));
+            }
+        }
+    }
+
+    function test_envelope_anAnchorUcOverTheByteCapIsBudget() public {
+        Scenario memory s = _returnScenario();
+        s.anchors[0].uc = new bytes(BridgeBounds.MAX_ANCHOR_UC_BYTES + 1);
+        _rejects(s, abi.encodeWithSelector(BudgetExceeded.selector));
+    }
+
+    // ---- the Solidity CBOR preflight: 4,096 items, before any native call --------------------------
+
+    function _denseSlot(uint256 k) internal pure returns (bytes memory) {
+        return bytes.concat(Cbor.head(4, k), _fill(k, 0));
+    }
+
+    /// @dev Two anchors whose input-record slots hold `k` one-byte items each.
+    function _denseTwo(uint256 k) internal view returns (Scenario memory s) {
+        bytes[] memory shards = _uniform(1);
+        s = _topology(shards);
+        for (uint256 i = 0; i < 2; ++i) {
+            s.anchors[i] = _synthAnchor(shards[i], i, 3, _denseSlot(k));
+        }
+    }
+
+    function _itemsOf(Scenario memory s) internal pure returns (uint256) {
+        return CertGroups.measure(s.anchors).items;
+    }
+
+    function test_preflight_theBudgetIsSharedWithTheCfgPolicyAndIrOpenings() public {
+        // spent before the UCs: 17 (Cfg) + 4 (policy) + 12 per anchor
+        uint256 k0 = 10;
+        uint256 base = _itemsOf(_denseTwo(k0));
+        uint256 spent =
+            BridgeBounds.CFG_ITEMS + BridgeBounds.POLICY_ITEMS + BridgeBounds.IR_ITEMS * 2;
+        // the UCs may use 4096 - spent items in total: grow each anchor's slot until exactly that is reached
+        uint256 room = BridgeBounds.MAX_SOLIDITY_ITEMS - spent;
+        uint256 extra = (room - base) / 2;
+        Scenario memory exact = _denseTwo(k0 + extra);
+        uint256 used = _itemsOf(exact);
+        assertEq(used, room - ((room - base) % 2), "within one item of the room");
+        assertTrue(_sameResult(_run(exact), exact.result), "at the budget");
+        // one more item in total than the room
+        Scenario memory over = _denseTwo(k0 + extra);
+        over.anchors[0] =
+            _synthAnchor(_uniform(1)[0], 0, 3, _denseSlot(k0 + extra + 1 + ((room - base) % 2)));
+        assertEq(_itemsOf(over), room + 1);
+        _noNativeCalls();
+        vm.expectRevert(abi.encodeWithSelector(BudgetExceeded.selector));
+        v.verifyReturn(over.cfgB, _proof(over));
+    }
+
+    function test_preflight_aDenseCertificateIsRefusedByItsDeclaredLengthBeforeAnyNativeCall()
+        public
+    {
+        Scenario memory s = _denseTwo(3000); // 3000 declared children in one slot: more than the budget has left
+        _noNativeCalls();
+        vm.expectRevert(abi.encodeWithSelector(BudgetExceeded.selector));
+        v.verifyReturn(s.cfgB, _proof(s));
+    }
+
+    /// The deployed code has to fit EIP-170 (24,576 bytes). It is close: the number is published so a change that eats the headroom is seen.
+    function test_theVerifierFitsTheContractSizeLimit() public {
+        uint256 size = address(v).code.length;
+        emit log_named_uint("TokenVerifier runtime bytes", size);
+        emit log_named_uint("headroom to EIP-170", 24_576 - size);
+        assertLe(size, 24_576);
+    }
+
+    // ---- the batch call: outcomes, shapes, forwarded gas ----------------------------------------------
+
+    function _batchRejects(bytes memory out, bytes memory err) internal {
+        Scenario memory s = _returnScenario();
+        _arm(s);
+        _prog(B1Calls.CERT_BATCH, _expectedBatch(s.anchors), out);
+        vm.expectRevert(err);
+        v.verifyReturn(s.cfgB, _proof(s));
+    }
+
+    function test_batch_falseIsRejectedAndNeverReachesRsmt() public {
+        vm.expectCall(B1Calls.RSMT_VERIFIER, bytes(""), 0);
+        _batchRejects(BATCH_FALSE, abi.encodeWithSelector(UCRejected.selector));
+    }
+
+    function test_batch_aHaltIsAFailureNotAFalse() public {
+        Scenario memory s = _returnScenario();
+        _arm(s);
+        _progRevert(B1Calls.CERT_BATCH, _expectedBatch(s.anchors));
+        vm.expectRevert(abi.encodeWithSelector(PrecompileFailed.selector, B1Calls.CERT_BATCH));
+        v.verifyReturn(s.cfgB, _proof(s));
+    }
+
+    function test_batch_everyWrongReturnShapeIsRejected() public {
+        bytes[6] memory wrong = [
+            TRUE_OUT, // the RSMT version-1 shape is not a batch verdict
+            abi.encode(uint256(3), true),
+            abi.encode(uint256(2), uint256(2)), // flag above 1
+            hex"", // an empty success, as an unregistered address answers
+            abi.encode(uint256(2)), // one word
+            bytes.concat(BATCH_TRUE, bytes32(0)) // three words
+        ];
+        for (uint256 i = 0; i < wrong.length; ++i) {
+            _batchRejects(
+                wrong[i], abi.encodeWithSelector(PrecompileBadReturn.selector, B1Calls.CERT_BATCH)
+            );
+        }
+    }
+
+    function test_batch_theInactiveAddressIsABadReturnNotAVerdict() public {
+        Scenario memory s = _returnScenario();
+        _armExcept(s, B1Calls.CERT_BATCH);
+        vm.etch(B1Calls.CERT_BATCH, "");
+        vm.expectRevert(abi.encodeWithSelector(PrecompileBadReturn.selector, B1Calls.CERT_BATCH));
+        v.verifyReturn(s.cfgB, _proof(s));
+    }
+
+    function test_batch_theSharedSealAddressIsNeverCalled() public {
+        Scenario memory s = _returnScenario();
+        _arm(s);
+        vm.expectCall(address(0x0101), bytes(""), 0);
+        _call(s);
+    }
+
+    function test_batch_onlyAfterTheVerdictDoesTheOpeningCarryWeight() public {
+        Scenario memory s = _returnScenario();
+        s.anchors[0].inputRecord = hex"00"; // a malformed opening
+        _arm(s);
+        _prog(B1Calls.CERT_BATCH, _expectedBatch(s.anchors), BATCH_FALSE);
+        vm.expectRevert(abi.encodeWithSelector(UCRejected.selector)); // the verdict is read first: not IRMalformed
+        v.verifyReturn(s.cfgB, _proof(s));
+    }
+
+    // ---- the gate: components against the oracle, the exact boundary, forwarded gas ------------------
+
+    function _spentItems(uint256 anchors) internal pure returns (uint256) {
+        return BridgeBounds.CFG_ITEMS + BridgeBounds.POLICY_ITEMS + BridgeBounds.IR_ITEMS * anchors;
+    }
+
+    function _gateOfScenario(Scenario memory s)
+        internal
+        pure
+        returns (uint256 total, uint256 batch, uint256 rsmt)
+    {
+        batch = CertGroups.batchGas(CertGroups.measure(s.anchors, _spentItems(s.anchors.length)));
+        for (uint256 i = 0; i < s.paths.length; ++i) {
+            rsmt += BridgeBounds.rsmtGas(s.paths[i].siblings.length);
+        }
+        total = BridgeBounds.intrinsicGas(s.cfgB.length, _proof(s).length)
+            + BridgeBounds.b2Gas(
+                BridgeBounds.kernelRequestBytes(s.cfgB.length, s.history.length),
+                s.result.leaves.length
+            ) + batch + rsmt + BridgeBounds.GAS_RESERVE;
+    }
+
+    function test_gate_everyGoldenComponentEqualsTheOracleGate() public view {
+        string[2] memory ops = ["mint", "return"];
+        for (uint256 o = 0; o < 2; ++o) {
+            Scenario memory s = o == 0 ? _mintScenario() : _returnScenario();
+            string memory g = string.concat(".", ops[o], ".envelope.gate");
+            CertGroups.Counts memory n =
+                CertGroups.measure(s.anchors, _spentItems(s.anchors.length));
+            assertEq(
+                BridgeBounds.intrinsicGas(s.cfgB.length, _proof(s).length),
+                vm.parseJsonUint(G, string.concat(g, ".intrinsic")),
+                "intrinsic"
+            );
+            assertEq(
+                BridgeBounds.b2Gas(
+                    BridgeBounds.kernelRequestBytes(s.cfgB.length, s.history.length),
+                    s.result.leaves.length
+                ),
+                vm.parseJsonUint(G, string.concat(g, ".b2")),
+                "kernel"
+            );
+            assertEq(
+                CertGroups.batchGas(n), vm.parseJsonUint(G, string.concat(g, ".batch")), "batch"
+            );
+            (uint256 total,, uint256 rsmt) = _gateOfScenario(s);
+            assertEq(rsmt, vm.parseJsonUint(G, string.concat(g, ".rsmt")), "leaves");
+            assertEq(total, vm.parseJsonUint(G, string.concat(g, ".total")), "total");
+            assertEq(n.p, vm.parseJsonUint(G, string.concat(g, ".grouping.p")), "P");
+            assertEq(n.k, vm.parseJsonUint(G, string.concat(g, ".grouping.k")), "K");
+            assertEq(n.e, vm.parseJsonUint(G, string.concat(g, ".grouping.e")), "E");
+            assertEq(n.s, vm.parseJsonUint(G, string.concat(g, ".grouping.s")), "S");
+            assertEq(n.q, vm.parseJsonUint(G, string.concat(g, ".grouping.q")), "Q");
+            assertEq(n.a, vm.parseJsonUint(G, string.concat(g, ".grouping.a")), "A");
+            assertEq(n.c, vm.parseJsonUint(G, string.concat(g, ".grouping.c")), "C");
+            assertEq(vm.parseJsonUint(G, string.concat(g, ".budget")), BridgeBounds.TX_GAS_BUDGET);
+            assertEq(vm.parseJsonUint(G, string.concat(g, ".reserve")), BridgeBounds.GAS_RESERVE);
+        }
+    }
+
+    function test_gas_everyNativeCallIsForwardedExactlyItsCharge() public {
+        Scenario memory s = _returnScenario();
+        _arm(s);
+        uint64 batch = uint64(vm.parseJsonUint(G, ".return.envelope.gate.batch"));
+        vm.expectCall(B1Calls.CERT_BATCH, 0, batch, _expectedBatch(s.anchors));
+        for (uint256 i = 0; i < s.result.leaves.length; ++i) {
+            bytes memory req = _expectedRSMT(
+                s.anchors[s.paths[i].anchorIndex].expectedStateRoot,
+                s.result.leaves[i].sid,
+                s.result.leaves[i].leafValue,
+                s.paths[i]
+            );
+            vm.expectCall(
+                B1Calls.RSMT_VERIFIER,
+                0,
+                uint64(BridgeBounds.rsmtGas(s.paths[i].siblings.length)),
+                req
+            );
+        }
+        vm.expectCall(
+            B1Calls.KERNEL,
+            0,
+            uint64(
+                BridgeBounds.b2Gas(
+                    BridgeBounds.kernelRequestBytes(s.cfgB.length, s.history.length),
+                    BridgeBounds.KERNEL_MAX_LEAVES
+                )
+            ),
+            _kernelInput(s.op, s.cfgB, s.history)
+        );
+        _call(s);
+    }
+
+    /// @dev The synthetic return bundle of `k` anchors of depth 1..4 with `sigs` signatures each and `pad` extra history bytes.
+    function _heavy(uint256 k, uint256 sigs, uint256 pad)
+        internal
+        view
+        returns (Scenario memory s)
+    {
+        s = _topology(_uniform(4)); // 16 anchors, then cut to k
+        Anchor[] memory as_ = new Anchor[](k);
+        LeafProof[] memory ps = new LeafProof[](k);
+        Leaf[] memory ls = new Leaf[](k);
+        for (uint256 i = 0; i < k; ++i) {
+            as_[i] = _synthAnchor(_shardId(4, i), i, sigs, hex"00");
+            ps[i] = s.paths[i];
+            ls[i] = s.result.leaves[i];
+        }
+        s.anchors = as_;
+        s.paths = ps;
+        s.result.leaves = ls;
+        s.history = new bytes(pad + 3);
+    }
+
+    function _total(Scenario memory s, uint256 pad) internal pure returns (uint256 t) {
+        s.history = new bytes(pad + 3);
+        (t,,) = _gateOfScenario(s);
+    }
+
+    function test_gate_theExactBoundaryIsDecidedByTheGateBeforeAnyBatchCall() public {
+        // the anchor count at which the bundle is under the budget with no padding and over it with the largest padding
+        uint256 k = 0;
+        for (uint256 c = 2; c <= 16 && k == 0; ++c) {
+            Scenario memory probe = _heavy(c, 16, 0);
+            if (
+                _total(probe, 0) <= BridgeBounds.TX_GAS_BUDGET
+                    && _total(probe, BridgeBounds.MAX_SEMANTIC_BYTES - 3)
+                        > BridgeBounds.TX_GAS_BUDGET
+            ) {
+                k = c;
+            }
+        }
+        assertGt(k, 1, "some anchor count straddles the budget");
+        Scenario memory s = _heavy(k, 16, 0);
+        uint256 lo = 0;
+        uint256 hi = BridgeBounds.MAX_SEMANTIC_BYTES - 3;
+        while (lo < hi) {
+            uint256 mid = (lo + hi + 1) / 2;
+            if (_total(s, mid) <= BridgeBounds.TX_GAS_BUDGET) lo = mid;
+            else hi = mid - 1;
+        }
+        assertLe(_total(s, lo), BridgeBounds.TX_GAS_BUDGET);
+        assertGt(_total(s, lo + 1), BridgeBounds.TX_GAS_BUDGET);
+        s.history = new bytes(lo + 3);
+        assertTrue(_sameResult(_run(s), s.result), "the last passing padding is admitted");
+        s.history = new bytes(lo + 4);
+        _arm(s);
+        vm.expectCall(B1Calls.CERT_BATCH, bytes(""), 0);
+        vm.expectCall(B1Calls.RSMT_VERIFIER, bytes(""), 0);
+        vm.expectRevert(abi.encodeWithSelector(BudgetExceeded.selector));
+        v.verifyReturn(s.cfgB, _proof(s));
+    }
+
+    function test_gate_sixteenSignatureAnchorsAtTheCapAreAdmittedOrPricedOutNeverHalfRun() public {
+        for (uint256 k = 2; k <= 16; ++k) {
+            Scenario memory s = _heavy(k, 16, 0);
+            (uint256 t,,) = _gateOfScenario(s);
+            _arm(s);
+            if (t <= BridgeBounds.TX_GAS_BUDGET) {
+                assertTrue(_sameResult(_call(s), s.result));
+            } else {
+                vm.expectRevert(abi.encodeWithSelector(BudgetExceeded.selector));
+                v.verifyReturn(s.cfgB, _proof(s));
+            }
+        }
+    }
+
+    // ---- margin: the composing verifier's own execution against 80 per envelope byte plus the reserve --
+
+    function _measure(string memory label, Scenario memory s)
+        internal
+        returns (uint256 used, uint256 allowance)
+    {
+        _arm(s);
+        bytes memory proof = _proof(s);
+        uint256 g0 = gasleft();
+        if (s.op == 1) v.verifyMint(s.cfgB, proof);
+        else v.verifyReturn(s.cfgB, proof);
+        used = g0 - gasleft();
+        (uint256 total, uint256 batch, uint256 rsmt) = _gateOfScenario(s);
+        // everything the gate prices as native work is charged to the natives, which the doubles do not spend; what is left of the gate
+        // after them, minus the calldata the transaction itself pays for, is the composing verifier's allowance
+        uint256 natives = batch + rsmt
+            + BridgeBounds.b2Gas(
+                BridgeBounds.kernelRequestBytes(s.cfgB.length, s.history.length),
+                s.result.leaves.length
+            );
+        allowance = total - natives - BridgeBounds.INTRINSIC_BASE - BridgeBounds.PER_BYTE
+            * BridgeBounds.maxCalldata(s.cfgB.length, proof.length);
+        emit log_named_string("composition", label);
+        emit log_named_uint("  envelope bytes", proof.length);
+        emit log_named_uint("  anchors", s.anchors.length);
+        emit log_named_uint("  leaves", s.result.leaves.length);
+        emit log_named_uint("  gate total", total);
+        emit log_named_uint("  natives priced (batch + leaves + kernel)", natives);
+        emit log_named_uint("  verifier execution measured (natives mocked)", used);
+        emit log_named_uint("  allowance 80*B_env + reserve", allowance);
+        emit log_named_int("  margin", int256(allowance) - int256(used));
+    }
+
+    function test_margin_goldenBundlesAndSyntheticTopologies() public {
+        (uint256 u1, uint256 a1) = _measure("golden mint (1 anchor)", _mintScenario());
+        (uint256 u2, uint256 a2) = _measure("golden return (2 anchors, depth 1)", _returnScenario());
+        (uint256 u3, uint256 a3) = _measure("4 shards", _topology(_uniform(2)));
+        (uint256 u4, uint256 a4) = _measure("8 shards", _topology(_uniform(3)));
+        (uint256 u5, uint256 a5) = _measure("16 shards", _topology(_uniform(4)));
+        assertLe(u1, a1);
+        assertLe(u2, a2);
+        assertLe(u3, a3);
+        assertLe(u4, a4);
+        assertLe(u5, a5);
+        // the heaviest signature-bound shape the gate admits: the most 16-signature anchors that fit the budget
+        uint256 k = 2;
+        for (uint256 c = 2; c <= 16; ++c) {
+            (uint256 t,,) = _gateOfScenario(_heavy(c, 16, 0));
+            if (t <= BridgeBounds.TX_GAS_BUDGET) k = c;
+        }
+        (uint256 u6, uint256 a6) =
+            _measure("the most 16-signature anchors the gate admits", _heavy(k, 16, 0));
+        assertLe(u6, a6);
+        // the compact dense shape arch asked to see published: two anchors that fill the whole 4,096 item budget. Its allowance is small
+        // (few bytes), its scan is not: the margin may be negative, which is a finding, not a failure of the fixture.
+        Scenario memory dense = _denseTwo(1);
+        uint256 room = BridgeBounds.MAX_SOLIDITY_ITEMS - _spentItems(2);
+        uint256 per = (room - _itemsOf(dense)) / 2 + 1;
+        dense = _denseTwo(per);
+        emit log_named_uint("dense: items traversed by the UC scan", _itemsOf(dense));
+        emit log_named_uint(
+            "dense: items in total (with Cfg, policy, IR openings)",
+            _itemsOf(dense) + _spentItems(2)
+        );
+        (uint256 u7, uint256 a7) =
+            _measure("two dense anchors filling the 4,096 item budget", dense);
+        emit log_named_uint("dense: used / allowance (permille)", u7 * 1000 / a7);
     }
 
     function runReturn(bytes memory c, bytes memory proof)

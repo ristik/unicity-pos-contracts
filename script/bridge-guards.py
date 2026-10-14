@@ -30,7 +30,7 @@ P = "src/bridge/BridgeProfile.sol"
 C = "src/bridge/Cbor.sol"
 B = "src/bridge/B1Calls.sol"
 BB = "src/bridge/BridgeBounds.sol"
-U = "src/bridge/UcScan.sol"
+CG = "src/bridge/CertGroups.sol"
 I = "src/bridge/InputRecord.sol"
 
 VT = "test/bridge/BridgeVault.t.sol"
@@ -38,7 +38,7 @@ VI = "test/bridge/BridgeVaultIntegration.t.sol"
 TT = "test/bridge/TokenVerifier.t.sol"
 BT = "test/bridge/B1Calls.t.sol"
 IT = "test/bridge/InputRecord.t.sol"
-UT = "test/bridge/UcScan.t.sol"
+CGT = "test/bridge/CertGroups.t.sol"
 
 
 def g(id, file, old, new, tests, path, occ=1):
@@ -62,7 +62,6 @@ GUARDS = [
     g("V-ctor-codeHashEmpty", V, "|| codeHash == keccak256(\"\")", "|| false", "test_constructor_verifierWithoutCode", VT),
     g("V-ctor-codeHashPin", V, "|| codeHash != d.tokenVerifierCodeHash", "|| false", "test_constructor_verifierCodeHashPin", VT),
     g("V-ctor-policyPartition", V, "if (p.partition == d.evmPartition) revert PolicyPartitionIsEvm();", "if (false) revert PolicyPartitionIsEvm();", "test_constructor_policyPartitionIsEvmPartition", VT),
-    g("V-ctor-policyDecode", V, "Policy memory p = BridgeProfile.decodePolicy(d.policyBody);", "Policy memory p = Policy({partition: 11, depth: 0, shardConfHashes: new bytes32[](1)});", "test_constructor_policyMalformed", VT),
     g("V-ctor-identity", V, "deriveType(d.network, d.rootGenesis, d.executionGenesis, chainId)", "deriveType(d.network, d.executionGenesis, d.executionGenesis, chainId)", "test_constructor_configuration|test_constructor_identifiersMatchTheOracleFamily", VT),
     g("V-ctor-identityChain", V, "deriveAsset(d.network, d.rootGenesis, d.executionGenesis, chainId)", "deriveAsset(d.network, d.rootGenesis, d.executionGenesis, 1)", "test_constructor_everyIdentityComponentChangesBothIdentifiers|test_constructor_identifiersMatchTheOracleFamily", VT),
     # ---- vault: lock --------------------------------------------------------------------------
@@ -129,7 +128,6 @@ GUARDS = [
     g("T-env-leavesCount", T, "if (n > b.length) revert EnvelopeFraming();", "", "test_envelope_countLargerThanTheDataIsFramingNotBudget", TT, 2),
     g("T-env-leavesCap", T, "if (n > BridgeBounds.MAX_LEAVES) revert BudgetExceeded();", "", "test_envelope_tooManyLeafProofsIsBudget", TT),
     g("T-env-siblings", T, "if (siblings > BridgeBounds.MAX_RSMT_SIBLINGS) revert BudgetExceeded();", "", "test_envelope_cumulativePathStepsIsBudget|test_envelope_cumulativeAcrossPaths", TT),
-    g("T-env-ucCap", T, "pos = _framedBytes(b, pos, BridgeBounds.MAX_ANCHOR_UC_BYTES);", "pos = _framedBytes(b, pos, type(uint256).max);", "test_b1_ucOverCapIsBudget", TT),
     g("T-env-wordRange", T, "if (off + 32 > b.length) revert EnvelopeFraming();", "", "test_envelope_tooShortRejected|test_envelope_offsetAtTheEndIsFraming|test_envelope_aReadPastTheEndAfterAValidHeadIsFraming", TT),
     g("T-env-wordU64", T, "if (v > type(uint64).max) revert EnvelopeFraming();", "", "test_envelope_hugeWordIsFraming|test_envelope_aHugeLengthWordIsFramingNotAnArithmeticPanic", TT),
     # ---- verifier: policy ---------------------------------------------------------------------
@@ -137,41 +135,20 @@ GUARDS = [
     g("T-pol-hash", T, "if (h != c.aggregatorPolicyHash) revert PolicyHashMismatch(c.aggregatorPolicyHash, h);", "", "test_policy_hashMismatch|test_policy_missingBody", TT),
     g("T-pol-evm", T, "if (p.partition == c.evmPartition) revert PolicyPartitionIsEvm();", "", "test_policy_partitionEqualToEvmPartition", TT),
     g("T-pol-anchorCount", T, "if (anchorCount == 0) revert PolicyAnchorCount(anchorCount);", "", "test_policy_anchorCountZero", TT),
-    g("T-pol-tupleFound", T, "row == type(uint256).max || a.partition", "false || a.partition", "test_policy_shardOfAnotherTopologyEvenWithARowsConfiguration", TT),
-    g("T-pol-tuplePartition", T, "|| a.partition != pol.partition", "|| false", "test_policy_unrelatedRootCertifiedPartition", TT),
-    g("T-pol-tupleConf", T, "|| a.shardConfHash != pol.shardConfHashes[row]", "|| false", "test_policy_changedConfiguration|test_policy_changedConfigurationOfTheSecondAnchor", TT),
-    g("T-pol-tupleShardLen", T, "a.shard.length == 1 &&", "true &&", "test_policy_emptyShardBytes|test_policy_longerShard", TT),
-    g("T-pol-tupleShardByte", T, "a.shard[0] == BridgeProfile.shardId(pol.depth, k)", "true", "test_policy_shardOfAnotherTopology|test_policy_shardOfAnotherTopologyEvenWithARowsConfiguration", TT),
     g("T-pol-leafCount", T, "if (paths.length != nl) revert PolicyLeafCount(nl, paths.length);", "", "test_policy_leafCountMismatch|test_policy_extraLeafProof|test_policy_mintNeedsExactlyOnePath", TT),
     g("T-pol-moreAnchorsThanLeaves", T, "if (anchors.length > nl) revert PolicyAnchorCount(anchors.length);", "", "test_policy_moreAnchorsThanLeaves", TT),
     g("T-pol-duplicate", T, "if (ucHash[k] == ucHash[j]) revert PolicyAnchorDuplicate(j);", "", "test_policy_identicalUcBytesAreOneAnchorNeverTwo", TT),
     g("T-pol-leafRange", T, "idx >= na ||", "false ||", "test_policy_leafIndexOutOfRange|test_policy_aLeafIndexPastTheLastAnchorIsRefusedEvenWhenAllAreUsed", TT),
     g("T-pol-leafOrder", T, "|| idx > next", "|| false", "test_policy_anchorsNotInFirstUseOrder", TT),
-    g("T-pol-leafShard", T, "|| rowOf[idx] != want", "|| false", "test_policy_leafNamesAnAnchorOfAnotherShard", TT),
-    g("T-pol-leafRowFromSid", T, "uint256(uint8(r.leaves[i].sid[0]) >> 7)", "uint256(0)", "test_verifyReturn_golden_everyLeafOnceInOrder|test_policy_leafNamesAnAnchorOfAnotherShard", TT),
     g("T-pol-nextUse", T, "if (idx == next) ++next;", "", "test_verifyReturn_golden_everyLeafOnceInOrder", TT),
     g("T-pol-unused", T, "if (next != na) revert PolicyAnchorUnused(next);", "", "test_policy_unusedAnchorIsRefused", TT),
     # ---- verifier: gas gate -------------------------------------------------------------------
-    g("T-gate-budget", T, "if (total > BridgeBounds.TX_GAS_BUDGET) revert BudgetExceeded();", "", "test_gate_fourAnchorsOfMaximumSignaturesAreBudgetExceeded", TT),
-    g("T-gate-budgetLoosened", T, "if (total > BridgeBounds.TX_GAS_BUDGET) revert BudgetExceeded();", "if (total > BridgeBounds.TX_GAS_BUDGET + 25_000) revert BudgetExceeded();", "test_gate_boundaryAcceptsTheLastPassingPaddingAndRefusesTheNextBeforeAnyNativeCall", TT),
-    g("T-gate-afterUcCalls", T, "        if (total > BridgeBounds.TX_GAS_BUDGET) revert BudgetExceeded();\n\n        // One UC call per anchor. B1 0x0100 authenticates the claim's expected state root and expected\n        // IR hash together; only then does the opening carry weight: it must hash to the authenticated\n        // IR hash and open to the authenticated state root, and its timestamp bounds the time of every\n        // leaf that anchor serves.\n        uint64[] memory times = new uint64[](anchors.length);\n        for (uint256 j = 0; j < anchors.length; ++j) {\n            Anchor memory a = anchors[j];\n            if (!B1Calls.verdict(B1Calls.UC_VERIFIER, B1Calls.ucRequest(a), plan.ucGas[j])) {\n                revert UCRejected();\n            }\n            times[j] = InputRecord.open(a.inputRecord, a.expectedIRHash, a.expectedStateRoot);\n        }\n", "\n        // One UC call per anchor. B1 0x0100 authenticates the claim's expected state root and expected\n        // IR hash together; only then does the opening carry weight: it must hash to the authenticated\n        // IR hash and open to the authenticated state root, and its timestamp bounds the time of every\n        // leaf that anchor serves.\n        uint64[] memory times = new uint64[](anchors.length);\n        for (uint256 j = 0; j < anchors.length; ++j) {\n            Anchor memory a = anchors[j];\n            if (!B1Calls.verdict(B1Calls.UC_VERIFIER, B1Calls.ucRequest(a), plan.ucGas[j])) {\n                revert UCRejected();\n            }\n            times[j] = InputRecord.open(a.inputRecord, a.expectedIRHash, a.expectedStateRoot);\n        }\n        if (total > BridgeBounds.TX_GAS_BUDGET) revert BudgetExceeded();\n", "test_gate_boundaryAcceptsTheLastPassingPaddingAndRefusesTheNextBeforeAnyNativeCall", TT),
     g("T-gate-bitmap", T, "if (pop != paths[i].siblings.length) revert PathBitmapMismatch(i);", "", "test_gate_bitmapPopcountMustEqualTheSiblingCount", TT),
-    g("T-gate-ucGas", T, "plan.ucGas[j] = BridgeBounds.ucGas(a.shard.length, a.uc.length, sigs, steps);", "plan.ucGas[j] = 0;", "test_gas_everyNativeCallIsForwardedExactlyItsCharge", TT),
     g("T-gate-leafGas", T, "plan.leafGas[i] = BridgeBounds.rsmtGas(pop);", "plan.leafGas[i] = 0;", "test_gas_everyNativeCallIsForwardedExactlyItsCharge", TT),
     g("T-gate-kernelGas", T, "BridgeBounds.KERNEL_MAX_LEAVES\n            )\n        );", "BridgeBounds.MAX_LEAVES\n            )\n        );", "test_gas_everyNativeCallIsForwardedExactlyItsCharge", TT),
-    g("BB-ucBase", BB, "UC_BASE = 92_700;", "UC_BASE = 92_699;", "test_gate_everyGoldenComponentEqualsTheOracleGate|test_gate_worstAdmittedBundleFitsTheBudget", TT),
-    g("BB-rsmtPerSibling", BB, "+ PER_STEP * (1 + siblings);", "+ PER_STEP * siblings;", "test_gate_everyGoldenComponentEqualsTheOracleGate|test_gate_worstAdmittedBundleFitsTheBudget", TT),
+    g("BB-rsmtPerSibling", BB, "+ PER_STEP * (1 + siblings);", "+ PER_STEP * siblings;", "test_gate_everyGoldenComponentEqualsTheOracleGate", TT),
     g("BB-b2PerLeaf", BB, "B2_PER_LEAF = 14_000;", "B2_PER_LEAF = 13_999;", "test_gate_everyGoldenComponentEqualsTheOracleGate", TT),
-    g("BB-intrinsic", BB, "return INTRINSIC_BASE + PER_BYTE * envelopeBytes;", "return INTRINSIC_BASE + PER_BYTE * envelopeBytes + 1;", "test_gate_everyGoldenComponentEqualsTheOracleGate", TT),
     # ---- UC scan ------------------------------------------------------------------------------
-    g("U-depth", U, "if (n != depth) revert UCScanRejected();", "", "test_wrongDepthIsRefused", UT),
-    g("U-steps", U, "if (n > BridgeBounds.MAX_UNICITY_STEPS) revert BudgetExceeded();", "", "test_craftedBoundsAreExactlyTheirCaps", UT),
-    g("U-sigs", U, "if (sigs > BridgeBounds.MAX_SIGNATURES) revert BudgetExceeded();", "", "test_signatureCountOverTheCapIsBudget", UT),
-    g("U-tag", U, "if (major != MAJOR_TAG || arg != tag) revert UCScanRejected();", "", "test_gate_ucWithAnotherTagIsRefusedBeforeAnyNativeCall", TT),
-    g("U-arity", U, "if (major != MAJOR_ARRAY || arg != n) revert UCScanRejected();", "", "test_aShorterOrLongerArrayIsRefused", UT),
-    g("U-shardLen", U, "|| len != shard.length", "|| false", "test_claimShardOfAnotherLengthIsRefused", UT),
-    g("U-shardBytes", U, "if (b[p + i] != shard[i]) revert UCScanRejected();", "", "test_certificateOfAnotherShardIsRefused", UT),
-    g("U-nullCount", U, "if (pos < b.length && uint8(b[pos]) == NULL) return (0, pos + 1);", "", "test_nullStepsAndNullSignaturesCountAsZero", UT),
     # ---- verifier: kernel output --------------------------------------------------------------
     g("T-ker-marker", T, "if (_mw(out, 0) != uint256(KERNEL_MARKER)) revert KernelBadOutput();", "", "test_kernel_wrongMarker", TT),
     g("T-ker-validBool", T, "if (valid > 1 ||", "if (false ||", "test_kernel_validWordNotBool", TT),
@@ -202,7 +179,6 @@ GUARDS = [
     g("T-shape-returnVault", T, "|| r.releaseTo == c.vault", "|| false", "test_shape_returnReleaseToVault", TT),
     g("T-shape-returnNullifier", T, "|| r.nullifier == bytes32(0)\n            ) revert KernelResultShape();", "\n            ) revert KernelResultShape();", "test_shape_returnNullifierZero", TT),
     # ---- verifier: B1 outcomes ----------------------------------------------------------------
-    g("T-b1-ucFalse", T, "if (!B1Calls.verdict(B1Calls.UC_VERIFIER, B1Calls.ucRequest(a), plan.ucGas[j])) {", "B1Calls.verdict(B1Calls.UC_VERIFIER, B1Calls.ucRequest(a), plan.ucGas[j]);\n            if (false) {", "test_b1_ucFalse|test_b1_ucFalseDoesNotReachRsmt", TT),
     g("T-b1-leafFalse", T, "if (!B1Calls.verdict(B1Calls.RSMT_VERIFIER, req, plan.leafGas[i])) {", "B1Calls.verdict(B1Calls.RSMT_VERIFIER, req, plan.leafGas[i]);\n            if (false) {", "test_b1_rsmtFalseNamesTheLeaf", TT),
     # ---- verifier: InputRecord opening and the time comparison ---------------------------------
     g("T-ir-time", T, "if (r.leaves[i].referenceTime > anchorTime) {", "if (false) {", "test_ir_timeOneBelowTheLatestLeafIsRejected|test_ir_theFirstViolatingLeafIsNamed|test_ir_aStaleOpeningIsRefusedByTimeNotAcceptedByAge", TT),
@@ -211,7 +187,6 @@ GUARDS = [
     g("T-ir-ownAnchor", T, "uint64 anchorTime = times[plan.leafAnchor[i]];", "uint64 anchorTime = times[0];", "test_ir_eachLeafIsBoundedByItsOwnAnchorsTime", TT),
     g("T-leaf-ownRoot", T, "anchors[plan.leafAnchor[i]].expectedStateRoot,", "anchors[0].expectedStateRoot,", "test_verifyReturn_golden_everyLeafOnceInOrder", TT),
     g("T-ir-budget", T, "pos = _framedBytes(b, pos, InputRecord.MAX_BYTES);", "pos = _framedBytes(b, pos, type(uint256).max);", "test_ir_boundIsReadBeforeAnythingIsAllocated", TT),
-    g("T-ir-order", T, "if (!B1Calls.verdict(B1Calls.UC_VERIFIER, B1Calls.ucRequest(a), plan.ucGas[j])) {", "InputRecord.open(a.inputRecord, a.expectedIRHash, a.expectedStateRoot);\n            if (!B1Calls.verdict(B1Calls.UC_VERIFIER, B1Calls.ucRequest(a), plan.ucGas[j])) {", "test_ir_isNotTrustedBeforeTheUcVerdict", TT),
     g("T-member-value", T, "abi.encodePacked(r.leaves[i].leafValue),", "abi.encodePacked(r.leaves[i].txHash),", "test_member_theValueIsTheRawLeafValueNotTheTxHash|test_verifyReturn_golden_everyLeafOnceInOrder", TT),
     g("BB-max-semantic", BB, "MAX_SEMANTIC_BYTES = 16 * 1024;", "MAX_SEMANTIC_BYTES = 8 * 1024;", "test_envelope_historyAtTheSemanticCapReachesTheKernel", TT),
     # ---- InputRecord opening ------------------------------------------------------------------
@@ -234,13 +209,8 @@ GUARDS = [
     g("I-hashEnd", I, "if (pos + 34 > b.length ||", "if (false ||", "test_everyTruncationIsRefused", IT),
     # ---- B1 wrappers --------------------------------------------------------------------------
     g("B-call-gasCap", B, "ok := staticcall(gasCap, target,", "ok := staticcall(gas(), target,", "test_gas_everyNativeCallIsForwardedExactlyItsCharge", TT),
-    g("B-call-failed", B, "if (!ok) revert PrecompileFailed(target);", "", "test_b1_ucMalformedHaltIsFailureNotFalse|test_kernel_revertIsPrecompileFailed|test_b1_rsmtHaltIsFailureNotFalse", TT),
+    g("B-call-failed", B, "if (!ok) revert PrecompileFailed(target);", "", "test_batch_aHaltIsAFailureNotAFalse|test_kernel_revertIsPrecompileFailed|test_b1_rsmtHaltIsFailureNotFalse", TT),
     g("B-call-bound", B, "if (size > maxReturn) revert PrecompileBadReturn(target);", "", "test_kernel_oversizeReturndataIsBoundedBeforeCopy", TT),
-    g("B-verdict-length", B, "if (out.length != 64) revert PrecompileBadReturn(target);", "", "test_b1_ucBadReturnShapes|test_b1_inactiveUcAddressIsBadReturn|test_b1_rsmtBadReturnShapes", TT),
-    g("B-verdict-version", B, "if (version != 1 ||", "if (false ||", "test_b1_ucBadReturnShapes|test_b1_rsmtBadReturnShapes", TT),
-    g("B-verdict-flag", B, "|| flag > 1) revert PrecompileBadReturn(target);", "|| false) revert PrecompileBadReturn(target);", "test_b1_ucBadReturnShapes", TT),
-    g("B-uc-shardCap", B, "a.shard.length > MAX_SHARD_BYTES ||", "false ||", "test_ucRequest_capsAreEnforced", BT),
-    g("B-uc-ucCap", B, "|| a.uc.length > MAX_UC_BYTES", "|| false", "test_ucRequest_capsAreEnforced", BT),
     g("B-member-valueCap", B, "if (value.length > MAX_RSMT_VALUE_BYTES) revert BudgetExceeded();", "", "test_memberRequest_valueCap", BT),
     # ---- identity family (unicity-native) -----------------------------------------------------
     g("P-id-typePrefix", P, "bytes(TYPE_PREFIX), identityD", "bytes(ASSET_PREFIX), identityD", "test_golden_typeAndAssetDerivations|test_golden_identityFamilyVectors", TT),
@@ -255,10 +225,7 @@ GUARDS = [
     # ---- profile codecs -----------------------------------------------------------------------
     g("T-cfg-cap", T, "if (cfgBytes.length > BridgeProfile.MAX_CFG_BYTES) revert BudgetExceeded();", "", "test_cfg_oversizeIsBudget", TT),
     g("P-cfg-reencode", P, "if (keccak256(encodeCfg(c)) != keccak256(b)) revert CfgMalformed();", "", "test_cfg_malformedVariants", TT),
-    g("P-pol-reencode", P, "if (keccak256(encodePolicy(p)) != keccak256(b)) revert PolicyMalformed();", "", "test_policy_trailingByteWithMatchingHash|test_policy_nonShortestPartitionWithMatchingHash|test_policy_wrongDomainWithMatchingHash", TT),
     g("P-pol-partitionZero", P, "if (v == 0) revert PolicyMalformed();", "", "test_policy_partitionZero", TT),
-    g("P-pol-rows", P, "if (major != Cbor.ARRAY || n != rows) revert PolicyMalformed();", "", "test_policy_rowCountDoesNotMatchDepth", TT),
-    g("P-pol-maxDepth", P, "uint8 internal constant MAX_DEPTH = 1;", "uint8 internal constant MAX_DEPTH = 2;", "test_policy_depthTwo", TT),
     # ---- CBOR reader --------------------------------------------------------------------------
     g("C-head-end", C, "if (pos >= b.length) revert CborMalformed();", "", "test_cfg_everyPrefixIsRefusedWithANamedError", TT),
     g("C-head-reserved", C, "if (ai > 27) revert CborMalformed();", "", "test_cfg_reservedAdditionalInformationIsCborMalformed", TT),
@@ -269,6 +236,52 @@ GUARDS = [
     g("C-bytes-end", C, "|| p + len > b.length) revert CborMalformed();", "|| false) revert CborMalformed();", "test_readBytes_aDeclaredLengthPastTheInputIsMalformed", "test/bridge/Cbor.t.sol"),
     g("C-uint-major", C, "if (major != UINT ||", "if (false ||", "test_cfg_wrongMajorTypesAndWidths", TT),
     g("C-uint-max", C, "|| v > max) revert CborMalformed();", "|| false) revert CborMalformed();", "test_cfg_wrongMajorTypesAndWidths", TT),
+    # ---- any-age: policy, coverage, preflight, gate, batch call -----------------------------------
+    g("V-ctor-policyDecode", V, "Policy memory p = BridgeProfile.decodePolicy(d.policyBody);", "Policy memory p = Policy({partition: 11});", "test_constructor_policyMalformed", VT),
+    g("T-pol-tuplePartition", T, "if (a.partition != pol.partition) revert PolicyTupleMismatch();", "", "test_topology_anAnchorOutsideThePoliciesPartitionIsRefused", TT),
+    g("T-cov-depth", T, "depth[j] = CertGroups.shardDepth(a.shard);", "depth[j] = 0;", "test_topology_aLeafOutsideItsAnchorsPrefixIsRefusedAtEveryDepth|test_topology_deepShardsCompareWholeBytesThenTheRemainingBits", TT),
+    g("T-cov-prefix", T, "|| !_prefixMatches(r.leaves[i].sid, anchors[idx].shard, depth[idx])", "|| false", "test_topology_aLeafOutsideItsAnchorsPrefixIsRefusedAtEveryDepth|test_policy_leafNamesAnAnchorOfAnotherShard", TT),
+    g("T-cov-wholeBytes", T, "if (sid[i] != shard[i]) return false;", "", "test_topology_deepShardsCompareWholeBytesThenTheRemainingBits", TT),
+    g("T-cov-partialByte", T, "return (uint8(sid[whole]) & mask) == (uint8(shard[whole]) & mask);", "return true;", "test_topology_aLeafOutsideItsAnchorsPrefixIsRefusedAtEveryDepth|test_topology_deepShardsCompareWholeBytesThenTheRemainingBits", TT),
+    g("T-cov-partialMask", T, "uint8 mask = uint8(0xff << (8 - rest));", "uint8 mask = uint8(0xff);", "test_topology_aLeafOutsideItsAnchorsPrefixIsRefusedAtEveryDepth|test_topology_uniformShardCountsAreVerifiedByOneBatch", TT),
+    g("T-pre-items", T, "BridgeBounds.CFG_ITEMS + BridgeBounds.POLICY_ITEMS + BridgeBounds.IR_ITEMS * anchors.length", "0", "test_preflight_theBudgetIsSharedWithTheCfgPolicyAndIrOpenings", TT),
+    g("T-gate-budget", T, "if (total > BridgeBounds.TX_GAS_BUDGET) revert BudgetExceeded();", "", "test_gate_theExactBoundaryIsDecidedByTheGateBeforeAnyBatchCall|test_gate_sixteenSignatureAnchorsAtTheCapAreAdmittedOrPricedOutNeverHalfRun", TT),
+    g("T-gate-budgetLoosened", T, "if (total > BridgeBounds.TX_GAS_BUDGET) revert BudgetExceeded();", "if (total > BridgeBounds.TX_GAS_BUDGET + 25_000) revert BudgetExceeded();", "test_gate_theExactBoundaryIsDecidedByTheGateBeforeAnyBatchCall", TT),
+    g("T-gate-batchGas", T, "plan.batchGas = CertGroups.batchGas(counts);", "plan.batchGas = 0;", "test_gas_everyNativeCallIsForwardedExactlyItsCharge", TT),
+    g("T-gate-reserve", T, "+ plan.batchGas + leafGas + BridgeBounds.GAS_RESERVE;", "+ plan.batchGas + leafGas;", "test_gate_everyGoldenComponentEqualsTheOracleGate|test_gate_theExactBoundaryIsDecidedByTheGateBeforeAnyBatchCall", TT),
+    g("T-gate-leafSum", T, "leafGas += plan.leafGas[i];", "", "test_gate_theExactBoundaryIsDecidedByTheGateBeforeAnyBatchCall", TT),
+    g("T-batch-verdict", T, "B1Calls.CERT_BATCH, B1Calls.BATCH_VERSION, B1Calls.batchRequest(anchors), plan.batchGas", "B1Calls.CERT_BATCH, B1Calls.BATCH_VERSION, B1Calls.batchRequest(anchors), plan.batchGas + 1", "test_gas_everyNativeCallIsForwardedExactlyItsCharge", TT),
+    g("T-batch-before-ir", T, "times[j] = InputRecord.open(a.inputRecord, a.expectedIRHash, a.expectedStateRoot);", "times[j] = type(uint64).max;", "test_batch_onlyAfterTheVerdictDoesTheOpeningCarryWeight|test_ir_aTimestampLieWithTheSameHashIsBadOpening", TT),
+    g("T-env-ucCap", T, "pos = _framedBytes(b, pos, BridgeBounds.MAX_ANCHOR_UC_BYTES);", "pos = _framedBytes(b, pos, type(uint256).max);", "test_envelope_anAnchorUcOverTheByteCapIsBudget", TT),
+    g("B-batch-count", B, "if (k == 0 || k > MAX_BATCH_CLAIMS) revert BudgetExceeded();", "", "test_batchRequest_claimCountIsOneToSixteen", BT),
+    g("B-batch-shardCap", B, "if (a.shard.length > MAX_SHARD_BYTES || a.uc.length > MAX_UC_BYTES) {", "if (a.uc.length > MAX_UC_BYTES) {", "test_batchRequest_capsAreEnforced", BT),
+    g("B-batch-ucCap", B, "if (a.shard.length > MAX_SHARD_BYTES || a.uc.length > MAX_UC_BYTES) {", "if (a.shard.length > MAX_SHARD_BYTES) {", "test_batchRequest_capsAreEnforced", BT),
+    g("B-verdict-version", B, "if (got != version ||", "if (false ||", "test_batch_everyWrongReturnShapeIsRejected", TT),
+    g("B-verdict-length", B, "if (out.length != 64) revert PrecompileBadReturn(target);", "", "test_batch_everyWrongReturnShapeIsRejected|test_batch_theInactiveAddressIsABadReturnNotAVerdict|test_b1_rsmtBadReturnShapes", TT),
+    g("B-verdict-flag", B, "|| flag > 1) revert PrecompileBadReturn(target);", "|| false) revert PrecompileBadReturn(target);", "test_batch_everyWrongReturnShapeIsRejected", TT),
+    g("BB-intrinsic", BB, "+ EXEC_PER_BYTE\n            * envelopeBytes;", "+ EXEC_PER_BYTE\n            * envelopeBytes + 1;", "test_gate_everyGoldenComponentEqualsTheOracleGate", TT),
+    g("BB-maxCalldata", BB, "return CALL_FIXED + _pad32(cfgBytes) + _pad32(envelopeBytes);", "return CALL_FIXED + cfgBytes + envelopeBytes;", "test_gate_everyGoldenComponentEqualsTheOracleGate", TT),
+    g("P-pol-reencode", P, "if (keccak256(encodePolicy(p)) != keccak256(b)) revert PolicyMalformed();", "if (encodePolicy(p).length != b.length) revert PolicyMalformed();", "test_policy_trailingByteWithMatchingHash|test_policy_nonShortestPartitionWithMatchingHash|test_policy_wrongDomainWithMatchingHash|test_policy_versionsOtherThanTwoAreRefused", TT),
+    # ---- the Solidity scan and grouping (CertGroups) ---------------------------------------------
+    g("CG-claims", CG, "if (k == 0 || k > MAX_CLAIMS) revert BudgetExceeded();", "", "test_claimCountAndShardLengthBounds", CGT),
+    g("CG-ucBytes", CG, "if (a.uc.length > MAX_UC_BYTES) revert BudgetExceeded();", "", "test_theUcByteBound", CGT),
+    g("CG-depth", CG, "if (siblings != d) revert UCScanRejected();", "", "test_theCertificateMustCarryExactlyTheDerivedDepthOfSiblings", CGT),
+    g("CG-steps", CG, "if (steps > MAX_UNICITY_STEPS) revert BudgetExceeded();", "", "test_unicityStepsAreBoundedAt32", CGT),
+    g("CG-sigs", CG, "if (o.sigs > MAX_SIGS_PER_SEAL) revert BudgetExceeded();", "", "test_aNullSignatureMapIsEmpty_andTooManySignaturesAreOverTheBound", CGT),
+    g("CG-trailing", CG, "if (pos != uc.length) revert UCScanRejected();", "", "test_trailingBytesAndTruncationAreRefused", CGT),
+    g("CG-shardEq", CG, "if (!_sliceEq(b, p, shard, 0, len)) revert UCScanRejected();", "", "test_theCertificateMustNameTheClaimsShard", CGT),
+    g("CG-epochUint", CG, "if (major != 0 || epoch > type(uint64).max) revert UCScanRejected();", "", "test_theEpochMustBeAnUnsignedInteger", CGT),
+    g("CG-minimalHead", CG, "(ai == 24 && arg < 24) ||", "(false) ||", "test_indefiniteAndNonMinimalHeadsAreRefused", CGT),
+    g("CG-nesting", CG, "if (++depth > MAX_NESTING) revert BudgetExceeded();", "", "test_nestingIsBoundedAt16", CGT),
+    g("CG-nestingBase", CG, "uint256 depth = base;", "uint256 depth = 0;", "test_nestingIsBoundedAt16", CGT),
+    g("CG-fits", CG, "if (children > bud.limit - bud.items) revert BudgetExceeded();", "", "test_aDenseContainerIsRefusedByItsDeclaredLength_beforeItIsWalked", CGT),
+    g("CG-itemBudget", CG, "uint256 internal constant MAX_ITEMS = 4_096;", "uint256 internal constant MAX_ITEMS = 4_097;", "test_theSolidityItemBudgetIs4096_exactlyAllowedAndOneMoreRefused", CGT),
+    g("CG-sealIdentity", CG, "&& _sliceEq(\n                        a[j].uc, occ[j].sealStart, a[i].uc, occ[i].sealStart, occ[i].sealLen\n                    )", "&& true", "test_aForcedDigestCollision_neverMergesDifferentSealsOrClaims", CGT),
+    g("CG-claimIdentity", CG, "&& _sliceEq(x.uc, 0, y.uc, 0, x.uc.length);", "&& true;", "test_aForcedDigestCollision_neverMergesDifferentSealsOrClaims", CGT),
+    g("CG-epochGroup", CG, "if (occ[j].epoch == occ[i].epoch) return false;", "", "test_distinctEpochsAreCounted_andTheEpochPriceIsPerDistinctEpoch", CGT),
+    g("CG-perEpoch", CG, "PER_EPOCH = 29_900;", "PER_EPOCH = 29_899;", "test_aSingleClaim_isPricedAtTheContractsSubtotal|test_distinctEpochsAreCounted_andTheEpochPriceIsPerDistinctEpoch", CGT),
+    g("CG-perPair", CG, "SCAN_PER_PAIR = 500;", "SCAN_PER_PAIR = 499;", "test_anExactDuplicate_payBytesAndTheScanPairsOnly", CGT),
+    g("CG-shardLast", CG, "if (last == 0) revert UCScanRejected();", "", "test_shardDepth_refusals", CGT),
 ]
 
 

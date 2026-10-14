@@ -4,7 +4,7 @@ pragma solidity 0.8.37;
 import {B1Calls} from "./B1Calls.sol";
 import {BridgeBounds} from "./BridgeBounds.sol";
 import {InputRecord} from "./InputRecord.sol";
-import {UcScan} from "./UcScan.sol";
+import {CertGroups} from "./CertGroups.sol";
 import {BridgeProfile} from "./BridgeProfile.sol";
 import {Anchor, Cfg, KernelResult, Leaf, LeafProof, Policy} from "./BridgeTypes.sol";
 import {
@@ -33,16 +33,18 @@ import {
 // Every refusal inside the bounded loops below must revert the whole call.
 // forge-lint: disable-start(require-revert-in-loop)
 
-/// @notice Stateless composing verifier of the whole-token native bridge (design
-///         `bridge-b2b4-design-v2.md`, "Verification relation"). It composes the proposed 0x0104
-///         semantics kernel with B1 A' certificate and RSMT calls. It stores nothing, takes `Cfg` as
+/// @notice Stateless composing verifier of the whole-token native bridge, protocol 4 (any-age verification: design
+///         `bridge-b2b4-design-v2.md`, "Verification relation", and briefs/b1-any-age-contract.md). It composes the 0x0104
+///         semantics kernel with ONE registry-backed certificate batch (0x0100, CERT_BATCH_V2) over the whole anchor table and
+///         the RSMT membership calls. It stores nothing, takes `Cfg` as
 ///         input and authorizes nothing: a caller receives a relation result, and only a vault whose
 ///         immutable cfg equals the result's cfg may act on it.
 ///
-///         Order of checks: Cfg and environment, envelope framing and bounds, policy opening, kernel,
-///         result shape, anchor table (one anchor per distinct complete UC in first-use leaf order),
-///         the shared gas gate over bounded scans, one UC call per anchor, per-leaf time against the
-///         leaf's own anchor, one RSMT path per leaf. Everything is a STATICCALL or pure; every native
+///         Order of checks: Cfg and environment, envelope framing and bounds, policy opening, the Solidity CBOR preflight
+///         (every anchor's UC scanned and grouped, the shared 4,096 item budget), kernel, result shape, anchor table (one
+///         anchor per distinct complete UC in first-use leaf order, each leaf covered by the anchor whose shard prefix it
+///         carries), the shared gas gate, ONE batch call for the table, per-leaf time against the leaf's own anchor, one RSMT
+///         path per leaf. Everything is a STATICCALL or pure; every native
 ///         call is forwarded exactly its computed charge; failure reverts with a named error and no
 ///         state effect. The bounds and the gate formula live in `BridgeBounds`.
 contract TokenVerifier {
@@ -61,10 +63,11 @@ contract TokenVerifier {
         KERNEL_FIXED_BYTES + KERNEL_LEAF_BYTES * BridgeBounds.KERNEL_MAX_LEAVES;
 
     /// @dev What `_verify` carries between its stages: each leaf's own anchor and the computed charge
-    ///      of every native call (the gate terms, also the gas forwarded to each call).
+    ///      of every native call (the gate terms, also the gas forwarded to each call): the batch's `G_batch` and one RSMT charge
+    ///      per leaf.
     struct Plan {
         uint256[] leafAnchor;
-        uint256[] ucGas;
+        uint256 batchGas;
         uint256[] leafGas;
     }
 
@@ -116,31 +119,54 @@ contract TokenVerifier {
             Anchor[] memory anchors,
             LeafProof[] memory paths
         ) = _openEnvelope(proof);
-        // The policy body is opened before the kernel and before any B1 call; a submitted anchor table
-        // never chooses its own admission.
+        // The policy body is opened before the kernel and before any native call; a submitted anchor table never chooses its own
+        // admission.
         Policy memory pol = _checkPolicyBody(c, policyBody, anchors.length);
         if (history.length > BridgeBounds.MAX_SEMANTIC_BYTES) revert BudgetExceeded();
+        // The Solidity CBOR preflight, before any native call: every UC scanned and grouped under the shared item budget, which the Cfg,
+        // the policy and the IR openings have already used a part of. Counts E, S, Q, A, P are what the batch is priced by.
+        CertGroups.Counts memory counts = CertGroups.measure(
+            anchors,
+            BridgeBounds.CFG_ITEMS + BridgeBounds.POLICY_ITEMS + BridgeBounds.IR_ITEMS
+                * anchors.length
+        );
         r = _kernel(op, cfgBytes, history);
         _checkShape(op, r, c, ch);
         Plan memory plan = _planAnchors(pol, anchors, r, paths);
-        // The gate is computed from complete bounded scans before any native call.
-        uint256 total = BridgeBounds.intrinsicGas(proof.length)
+        uint256 steps = counts.p;
+        plan.leafGas = new uint256[](paths.length);
+        uint256 leafGas = 0;
+        for (uint256 i = 0; i < paths.length; ++i) {
+            uint256 pop = BridgeBounds.popcount(uint256(paths[i].bitmap));
+            if (pop != paths[i].siblings.length) revert PathBitmapMismatch(i);
+            steps += pop;
+            plan.leafGas[i] = BridgeBounds.rsmtGas(pop);
+            leafGas += plan.leafGas[i];
+        }
+        if (steps > BridgeBounds.MAX_PATH_STEPS) revert BudgetExceeded();
+        plan.batchGas = CertGroups.batchGas(counts);
+        // The gate is computed from complete bounded scans before any native call (the kernel's own call above is charged its maximum).
+        uint256 total = BridgeBounds.intrinsicGas(cfgBytes.length, proof.length)
             + BridgeBounds.b2Gas(
                 BridgeBounds.kernelRequestBytes(cfgBytes.length, history.length), r.leaves.length
-            ) + BridgeBounds.GAS_RESERVE;
-        total += _gate(pol, anchors, paths, plan);
+            ) + plan.batchGas + leafGas + BridgeBounds.GAS_RESERVE;
         if (total > BridgeBounds.TX_GAS_BUDGET) revert BudgetExceeded();
 
-        // One UC call per anchor. B1 0x0100 authenticates the claim's expected state root and expected
-        // IR hash together; only then does the opening carry weight: it must hash to the authenticated
-        // IR hash and open to the authenticated state root, and its timestamp bounds the time of every
-        // leaf that anchor serves.
+        // One batch call over the whole anchor table, forwarded exactly G_batch. The registry authenticates each claim's expected shard
+        // configuration, state root and IR hash together under its own epoch's quorum; only then does the opening carry weight: it must
+        // hash to the authenticated IR hash and open to the authenticated state root, and its timestamp bounds the time of every leaf
+        // that anchor serves.
+        if (!B1Calls.verdict(
+                B1Calls.CERT_BATCH,
+                B1Calls.BATCH_VERSION,
+                B1Calls.batchRequest(anchors),
+                plan.batchGas
+            )) {
+            revert UCRejected();
+        }
         uint64[] memory times = new uint64[](anchors.length);
         for (uint256 j = 0; j < anchors.length; ++j) {
             Anchor memory a = anchors[j];
-            if (!B1Calls.verdict(B1Calls.UC_VERIFIER, B1Calls.ucRequest(a), plan.ucGas[j])) {
-                revert UCRejected();
-            }
             times[j] = InputRecord.open(a.inputRecord, a.expectedIRHash, a.expectedStateRoot);
         }
         uint256 n = r.leaves.length;
@@ -160,7 +186,7 @@ contract TokenVerifier {
                 paths[i].bitmap,
                 paths[i].siblings
             );
-            if (!B1Calls.verdict(B1Calls.RSMT_VERIFIER, req, plan.leafGas[i])) {
+            if (!B1Calls.verdict(B1Calls.RSMT_VERIFIER, 1, req, plan.leafGas[i])) {
                 revert LeafNotIncluded(i);
             }
         }
@@ -307,6 +333,10 @@ contract TokenVerifier {
     ///      policy row; anchors pairwise distinct by complete UC bytes; numbered by first use in leaf
     ///      order with none unused; every leaf's `anchorIndex` an already-used index or the next unused
     ///      one, naming an anchor of the leaf's own shard (the top `depth` bits of its state ID).
+    /// @dev The anchor table and its coverage of the kernel's leaves. Anchors are one per distinct complete UC in first-use leaf order,
+    ///      all in the policy's partition; the depth of each is derived from its own shard id (`CertGroups.shardDepth`), never from the
+    ///      policy; each leaf's state ID carries, in its first `d` bits, the shard prefix of the anchor that serves it; every anchor is
+    ///      used. A native verdict alone authorizes nothing: this is the exact leaf-to-anchor coverage.
     function _planAnchors(
         Policy memory pol,
         Anchor[] memory anchors,
@@ -317,23 +347,12 @@ contract TokenVerifier {
         if (paths.length != nl) revert PolicyLeafCount(nl, paths.length);
         if (anchors.length > nl) revert PolicyAnchorCount(anchors.length);
         uint256 na = anchors.length;
-        uint256[] memory rowOf = new uint256[](na);
+        uint256[] memory depth = new uint256[](na);
         bytes32[] memory ucHash = new bytes32[](na);
         for (uint256 j = 0; j < na; ++j) {
             Anchor memory a = anchors[j];
-            uint256 row = type(uint256).max; // no row named yet
-            for (uint256 k = 0; k < pol.shardConfHashes.length; ++k) {
-                if (a.shard.length == 1 && a.shard[0] == BridgeProfile.shardId(pol.depth, k)) {
-                    row = k;
-                }
-            }
-            if (
-                row == type(uint256).max || a.partition != pol.partition
-                    || a.shardConfHash != pol.shardConfHashes[row]
-            ) {
-                revert PolicyTupleMismatch();
-            }
-            rowOf[j] = row;
+            if (a.partition != pol.partition) revert PolicyTupleMismatch();
+            depth[j] = CertGroups.shardDepth(a.shard);
             ucHash[j] = sha256(a.uc);
             for (uint256 k = 0; k < j; ++k) {
                 if (ucHash[k] == ucHash[j]) revert PolicyAnchorDuplicate(j);
@@ -343,43 +362,33 @@ contract TokenVerifier {
         uint256 next = 0;
         for (uint256 i = 0; i < nl; ++i) {
             uint256 idx = paths[i].anchorIndex;
-            uint256 want = pol.depth == 0 ? 0 : uint256(uint8(r.leaves[i].sid[0]) >> 7);
-            if (idx >= na || idx > next || rowOf[idx] != want) revert PolicyLeafIndex(i, idx);
+            if (
+                idx >= na || idx > next
+                    || !_prefixMatches(r.leaves[i].sid, anchors[idx].shard, depth[idx])
+            ) revert PolicyLeafIndex(i, idx);
             if (idx == next) ++next;
             plan.leafAnchor[i] = idx;
         }
         if (next != na) revert PolicyAnchorUnused(next);
     }
 
-    /// @dev Prices every native call from complete bounded scans and returns `sum G_UC + sum G_RSMT`.
-    ///      A UC whose shard certificate does not name the claim's shard, or does not carry exactly
-    ///      `depth` shard siblings, is refused here; a bitmap whose popcount differs from the sibling
-    ///      count is refused here; both before any native call.
-    function _gate(
-        Policy memory pol,
-        Anchor[] memory anchors,
-        LeafProof[] memory paths,
-        Plan memory plan
-    ) private pure returns (uint256 total) {
-        plan.ucGas = new uint256[](anchors.length);
-        for (uint256 j = 0; j < anchors.length; ++j) {
-            Anchor memory a = anchors[j];
-            (uint256 sigs, uint256 steps) = UcScan.scan(a.uc, a.shard, pol.depth);
-            plan.ucGas[j] = BridgeBounds.ucGas(a.shard.length, a.uc.length, sigs, steps);
-            total += plan.ucGas[j];
+    /// @dev The first `d` bits of the 32-byte state ID `sid` equal the first `d` bits of the native shard id `shard` (the terminator
+    ///      bit and everything after it excluded). d = 0 matches every ID.
+    function _prefixMatches(bytes32 sid, bytes memory shard, uint256 d)
+        private
+        pure
+        returns (bool)
+    {
+        uint256 whole = d / 8;
+        for (uint256 i = 0; i < whole; ++i) {
+            if (sid[i] != shard[i]) return false;
         }
-        plan.leafGas = new uint256[](paths.length);
-        for (uint256 i = 0; i < paths.length; ++i) {
-            uint256 pop = BridgeBounds.popcount(uint256(paths[i].bitmap));
-            if (pop != paths[i].siblings.length) revert PathBitmapMismatch(i);
-            plan.leafGas[i] = BridgeBounds.rsmtGas(pop);
-            total += plan.leafGas[i];
-        }
+        uint256 rest = d % 8;
+        if (rest == 0) return true;
+        // forge-lint: disable-next-line(unsafe-typecast)
+        uint8 mask = uint8(0xff << (8 - rest)); // rest is 1..7: the shift keeps the top `rest` bits of a byte
+        return (uint8(sid[whole]) & mask) == (uint8(shard[whole]) & mask);
     }
-
-    // -------------------------------------------------------------------------------------------
-    // Kernel
-    // -------------------------------------------------------------------------------------------
 
     function _kernel(uint8 op, bytes memory cfgBytes, bytes memory payload)
         private

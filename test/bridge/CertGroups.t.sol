@@ -4,6 +4,7 @@ pragma solidity 0.8.37;
 import {Test, console} from "forge-std/Test.sol";
 import {CertGroups} from "../../src/bridge/CertGroups.sol";
 import {Cbor} from "../../src/bridge/Cbor.sol";
+import {UcBuilder} from "./UcBuilder.sol";
 import {Anchor} from "../../src/bridge/BridgeTypes.sol";
 import {BudgetExceeded, UCScanRejected} from "../../src/bridge/BridgeErrors.sol";
 
@@ -36,98 +37,8 @@ contract CertGroupsHarness {
 /// @notice The structural scan and the canonical first-occurrence grouping the batch price is computed from,
 ///         on hand-built CBOR (no native code, no vectors): counts E,S,Q,A,P,K,C, reordering invariance, exact-byte
 ///         identity under forced digest collisions, and the limits that bound the scan.
-contract CertGroupsTest is Test {
+contract CertGroupsTest is Test, UcBuilder {
     CertGroupsHarness internal h = new CertGroupsHarness();
-
-    // ---- builders -------------------------------------------------------------------------
-
-    function _tag(uint256 t) internal pure returns (bytes memory) {
-        return Cbor.head(6, t);
-    }
-
-    function _seal(uint256 epoch, uint256 sigs, uint8 sigSeed)
-        internal
-        pure
-        returns (bytes memory s)
-    {
-        bytes memory map = Cbor.head(5, sigs);
-        for (uint256 i = 0; i < sigs; ++i) {
-            map = bytes.concat(
-                map,
-                Cbor.head(3, 1),
-                abi.encodePacked(bytes1(uint8(0x41 + i))),
-                Cbor.head(2, 65),
-                _fill(65, sigSeed)
-            );
-        }
-        s = bytes.concat(
-            _tag(39005),
-            Cbor.head(4, 8),
-            Cbor.uint_(1),
-            Cbor.uint_(3),
-            Cbor.uint_(1000),
-            Cbor.uint_(epoch),
-            Cbor.uint_(1_700_000_000),
-            Cbor.bstr32(bytes32(uint256(1))),
-            Cbor.bstr32(bytes32(uint256(2))),
-            map
-        );
-    }
-
-    function _fill(uint256 n, uint8 v) internal pure returns (bytes memory b) {
-        b = new bytes(n);
-        for (uint256 i = 0; i < n; ++i) {
-            b[i] = bytes1(v);
-        }
-    }
-
-    function _ucWith(
-        bytes memory shard,
-        uint256 siblings,
-        uint256 steps,
-        bytes memory ir,
-        bytes memory seal
-    ) internal pure returns (bytes memory) {
-        bytes memory sib = Cbor.head(4, siblings);
-        for (uint256 i = 0; i < siblings; ++i) {
-            sib = bytes.concat(sib, Cbor.bstr32(bytes32(i + 100)));
-        }
-        bytes memory st = Cbor.head(4, steps);
-        for (uint256 i = 0; i < steps; ++i) {
-            st = bytes.concat(st, Cbor.bstr32(bytes32(i + 200)));
-        }
-        return bytes.concat(
-            _tag(39001),
-            Cbor.head(4, 7),
-            Cbor.uint_(1),
-            ir,
-            Cbor.bstr32(bytes32(uint256(7))),
-            Cbor.bstr32(bytes32(uint256(8))),
-            _tag(39003),
-            Cbor.head(4, 3),
-            Cbor.uint_(1),
-            Cbor.bstr(shard),
-            sib,
-            _tag(39004),
-            Cbor.head(4, 3),
-            Cbor.uint_(1),
-            Cbor.uint_(9),
-            st,
-            seal
-        );
-    }
-
-    /// shard 0x80 = depth 0 (the whole tree), 0xc0 = depth 1 ('1'), 0x60 = depth 2
-    function _uc(
-        bytes memory shard,
-        uint256 siblings,
-        uint256 steps,
-        uint256 epoch,
-        uint256 sigs,
-        uint8 seed
-    ) internal pure returns (bytes memory) {
-        return _ucWith(shard, siblings, steps, Cbor.uint_(5), _seal(epoch, sigs, seed));
-    }
 
     function _claim(bytes memory shard, bytes memory uc, bytes32 root)
         internal
@@ -369,12 +280,12 @@ contract CertGroupsTest is Test {
     }
 
     function test_theEpochMustBeAnUnsignedInteger() public {
-        bytes memory seal = _seal(4, 1, 0xaa);
-        // epoch item is the 4th element; replace the uint 4 with the text "4"
-        bytes memory bad = _ucWith(hex"c0", 1, 0, Cbor.uint_(5), _sealWithEpochItem(hex"6134"));
+        // a negative integer is one byte with no payload, so the rest of the certificate stays aligned and only the epoch check can refuse it
+        bytes memory bad = _ucWith(hex"c0", 1, 0, Cbor.uint_(5), _sealWithEpochItem(hex"20"));
         vm.expectRevert(UCScanRejected.selector);
         h.measure(_one(bad));
-        assertGt(seal.length, 0);
+        // and the same certificate with an unsigned epoch is fine
+        _c(_one(_ucWith(hex"c0", 1, 0, Cbor.uint_(5), _sealWithEpochItem(hex"00"))));
     }
 
     function _sealWithEpochItem(bytes memory epochItem) internal pure returns (bytes memory) {
@@ -408,11 +319,11 @@ contract CertGroupsTest is Test {
     }
 
     function test_nestingIsBoundedAt16() public {
-        // the input record is an item at nesting depth 1 inside the UC array: sixteen nested arrays below it
-        // are the 16 allowed containers of that skip, a seventeenth is not
-        _c(_one(_ucWith(hex"c0", 1, 0, _nested(16), _seal(4, 1, 0xaa))));
+        // the UC tag and array already enclose the input record (native nesting counts from the UC root), so 14 nested arrays reach the
+        // bound of 16 containers and a fifteenth does not fit
+        _c(_one(_ucWith(hex"c0", 1, 0, _nested(14), _seal(4, 1, 0xaa))));
         vm.expectRevert(BudgetExceeded.selector);
-        h.measure(_one(_ucWith(hex"c0", 1, 0, _nested(17), _seal(4, 1, 0xaa))));
+        h.measure(_one(_ucWith(hex"c0", 1, 0, _nested(15), _seal(4, 1, 0xaa))));
     }
 
     function _nested(uint256 depth) internal pure returns (bytes memory b) {
