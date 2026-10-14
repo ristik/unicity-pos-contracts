@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MIT
 pragma solidity 0.8.37;
 
-import {BridgeBase} from "./BridgeBase.sol";
+import {TopologyFixtures} from "./TopologyFixtures.sol";
 import {BridgeVault} from "../../src/bridge/BridgeVault.sol";
 import {TokenVerifier} from "../../src/bridge/TokenVerifier.sol";
 import {B1Calls} from "../../src/bridge/B1Calls.sol";
@@ -13,7 +13,7 @@ import "../../src/bridge/BridgeErrors.sol";
 ///         DOUBLES (`vm.mockCall` over reverting code), here answering by default; the exact request bytes are pinned
 ///         in `TokenVerifier.t.sol`. These tests show the wiring: what the vault passes, what bubbles
 ///         up, and that verification alone moves no state. They do not close B4.
-contract BridgeVaultIntegrationTest is BridgeBase {
+contract BridgeVaultIntegrationTest is TopologyFixtures {
     BridgeVault internal vault;
     TokenVerifier internal verifier;
 
@@ -261,5 +261,86 @@ contract BridgeVaultIntegrationTest is BridgeBase {
         vm.prank(ALICE);
         vm.expectRevert(abi.encodeWithSelector(KernelAmountMismatch.selector, 1 ether, 2 ether));
         vault.lock{value: 1 ether}(hex"d9aabb");
+    }
+
+    // ---- the same state IDs proved before and after a topology change ----------------------------
+
+    /// @dev One return, three state IDs, two proofs: BEFORE the change the shard `1` (one parent) certified all three; AFTER it the
+    ///      children `10` and `11` certify them, in two anchors. The kernel result, and so the burn nullifier, is the same for both.
+    function _topologyProofs(bytes memory history)
+        internal
+        pure
+        returns (bytes memory before_, bytes memory after_, bytes32[3] memory sids)
+    {
+        bytes memory parent = _shardId(1, 1);
+        bytes memory left = _shardId(2, 2);
+        bytes memory right = _shardId(2, 3);
+        sids[0] = _sidIn(left, 0);
+        sids[1] = _sidIn(left, 1);
+        sids[2] = _sidIn(right, 2);
+        Anchor[] memory a1 = new Anchor[](1);
+        a1[0] = _synthAnchor(parent, 0, 3, hex"00");
+        Anchor[] memory a2 = new Anchor[](2);
+        a2[0] = _synthAnchor(left, 1, 3, hex"00");
+        a2[1] = _synthAnchor(right, 2, 3, hex"00");
+        LeafProof[] memory p1 = new LeafProof[](3);
+        LeafProof[] memory p2 = new LeafProof[](3);
+        for (uint256 i = 0; i < 3; ++i) {
+            p1[i] = LeafProof({anchorIndex: 0, bitmap: bytes32(0), siblings: new bytes32[](0)});
+            p2[i] = LeafProof({
+                anchorIndex: uint16(i == 2 ? 1 : 0), bitmap: bytes32(0), siblings: new bytes32[](0)
+            });
+        }
+        before_ = abi.encode(_policyV2(11), history, a1, p1);
+        after_ = abi.encode(_policyV2(11), history, a2, p2);
+    }
+
+    function _topologyResult(uint256 n, bytes32[3] memory sids)
+        internal
+        view
+        returns (KernelResult memory r)
+    {
+        r = _ret(vault, n, 5 ether, BOB, keccak256("eta-topology"));
+        for (uint256 i = 0; i < 3; ++i) {
+            r.leaves[i].sid = sids[i];
+        }
+    }
+
+    /// @notice The claim "re-proving a state after a topology change creates no second spend", as one test: the same SIDs proved under the
+    ///         parent shard and under its children give the verifier the same kernel result, so the same burn nullifier; the vault credits
+    ///         one of the two proofs, stores that one nullifier against the nonce, and refuses the other (in either order).
+    function test_topologyChange_sameSidsKeepOneNullifierAndOneRelease() public {
+        bytes memory history = hex"aabbcc";
+        (bytes memory before_, bytes memory after_, bytes32[3] memory sids) =
+            _topologyProofs(history);
+        uint256 n = _lock(vault, ALICE, 5 ether);
+        KernelResult memory r = _topologyResult(n, sids);
+        _kernelDefault(r);
+        // both proofs verify, to the same relation and the same nullifier (the nullifier excludes paths and anchors)
+        KernelResult memory rb = verifier.verifyReturn(vault.cfgBytes(), before_);
+        KernelResult memory ra = verifier.verifyReturn(vault.cfgBytes(), after_);
+        assertEq(rb.nullifier, ra.nullifier, "one nullifier");
+        assertEq(rb.nullifier, keccak256("eta-topology"));
+        assertEq(rb.nonce, ra.nonce);
+        for (uint256 i = 0; i < 3; ++i) {
+            assertEq(rb.leaves[i].sid, ra.leaves[i].sid, "same state IDs");
+        }
+        // the proof from after the change redeems; the one from before is then refused: the nonce is spent, the nullifier unchanged
+        vault.redeem(after_);
+        assertEq(vault.spentNullifier(n), keccak256("eta-topology"));
+        assertEq(vault.claimable(BOB), 5 ether);
+        vm.expectRevert(abi.encodeWithSelector(AlreadyRedeemed.selector, n));
+        vault.redeem(before_);
+        assertEq(vault.spentNullifier(n), keccak256("eta-topology"));
+        assertEq(vault.claimable(BOB), 5 ether, "credited once");
+
+        // the other order, on a fresh lock: the parent-era proof redeems, the child-era proof is refused
+        uint256 m = _lock(vault, ALICE, 5 ether);
+        _kernelDefault(_topologyResult(m, sids));
+        vault.redeem(before_);
+        assertEq(vault.spentNullifier(m), keccak256("eta-topology"));
+        vm.expectRevert(abi.encodeWithSelector(AlreadyRedeemed.selector, m));
+        vault.redeem(after_);
+        assertEq(vault.claimable(BOB), 10 ether, "two locks, one credit each");
     }
 }
