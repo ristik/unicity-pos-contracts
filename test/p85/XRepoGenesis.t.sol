@@ -27,6 +27,8 @@ contract XRepoGenesisTest is Test {
         vm.setEnv("P85_OUT", out);
         vm.setEnv("P85_CHAIN_ID", "31337");
         vm.setEnv("P85_NETWORK_WORD", vm.toString(keccak256("xrepo-genesis-network")));
+        vm.setEnv("P85_ROOT_NETWORK", "5");
+        vm.setEnv("P85_ROOT_GENESIS", vm.toString(keccak256("xrepo-root-genesis")));
         vm.setEnv("P85_ROOTS", "0xff00000000000000000000000000000000000002");
         vm.setEnv("P85_TREASURY", "0x00000000000000000000000000000000000000fe");
         vm.setEnv("P85_V_MAX", "16");

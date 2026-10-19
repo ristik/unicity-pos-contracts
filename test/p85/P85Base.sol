@@ -38,6 +38,9 @@ abstract contract P85Base is Test {
     uint256 internal constant GENESIS_BOND = 1_000 * UCT; // weight 10 at the 100 UCT bond unit
     bytes32 internal constant NETWORK = keccak256("p85-test-network");
     bytes32 internal constant LINEAGE = keccak256("p85-test-lineage");
+    /// @dev The root consensus' numeric network N and genesis G the evidence tests sign under (a test with Go-signed votes overrides them).
+    uint64 internal constant ROOT_NETWORK = 5;
+    bytes32 internal constant ROOT_GENESIS = keccak256("p85-test-root-genesis");
     bytes32 internal constant GENESIS_ASSIGNMENT = keccak256("assignment/genesis");
 
     PosFactory internal factory;
@@ -85,6 +88,19 @@ abstract contract P85Base is Test {
     uint128 internal manualMinBond = uint128(100 * UCT);
 
     /// @dev The manifest's resource ceilings; a test whose result depends on them overrides it.
+    function _rootNetwork() internal view virtual returns (uint64) {
+        return ROOT_NETWORK;
+    }
+
+    function _rootGenesis() internal view virtual returns (bytes32) {
+        return ROOT_GENESIS;
+    }
+
+    /// @dev The compressed root key of genesis identity i; a test with Go-signed votes returns the signing key of its corpus.
+    function _rootKey(uint256 i) internal virtual returns (bytes memory) {
+        return compressed(rootPk(i));
+    }
+
     function _manifestLimits() internal view virtual returns (Limits memory) {
         return Limits({vMax: 128, lMax: 8, rMax: 4, maxBatch: 32});
     }
@@ -108,7 +124,7 @@ abstract contract P85Base is Test {
             ids[i] = GenesisIdentity({
                 owner: vm.addr(ownerPk(i)),
                 withdrawal: vm.addr(wdPk(i)),
-                rootKey: compressed(rootPk(i)),
+                rootKey: _rootKey(i),
                 evmKey: compressed(evmPk(i)),
                 rootNodeID: nodeWord("root-", i),
                 evmNodeID: nodeWord("evm-", i),
@@ -129,6 +145,8 @@ abstract contract P85Base is Test {
             selection: address(new SelectionEngine()),
             reader: address(new EligibilityReader(cu, ev)),
             network: NETWORK,
+            rootNetwork: _rootNetwork(),
+            rootGenesis: _rootGenesis(),
             roots: address(roots),
             treasury: treasury,
             bondUnit: uint128(100 * UCT),
@@ -158,7 +176,7 @@ abstract contract P85Base is Test {
             ids[i] = GenesisIdentity({
                 owner: vm.addr(ownerPk(i)),
                 withdrawal: vm.addr(wdPk(i)),
-                rootKey: compressed(rootPk(i)),
+                rootKey: _rootKey(i),
                 evmKey: compressed(evmPk(i)),
                 rootNodeID: nodeWord("root-", i),
                 evmNodeID: nodeWord("evm-", i),
@@ -198,6 +216,8 @@ abstract contract P85Base is Test {
             limits: limits,
             genesis: g,
             electionParams: _electionParams(),
+            rootNetwork: _rootNetwork(),
+            rootGenesis: _rootGenesis(),
             identities: ids
         });
         bytes32 h = keccak256(abi.encode(m));
@@ -257,6 +277,32 @@ abstract contract P85Base is Test {
     function sign(uint256 pk, bytes32 digest) internal pure returns (bytes memory) {
         (uint8 v, bytes32 r, bytes32 s) = vm.sign(pk, digest);
         return abi.encodePacked(r, s, v);
+    }
+
+    /// @dev A root vote statement of the header's slot for executed state `exec`, signed (natively) by `pk`: parent = round - 1, no
+    /// timestamp, non-committing. The digest is the contract's own, so a header that makes the statement invalid reverts here.
+    function rootVote(Evidence.VoteHeader memory h, bytes32 exec, uint256 pk)
+        internal
+        view
+        returns (Evidence.SignedVote memory v)
+    {
+        v = unsignedVote(h, exec);
+        v.signature = signNative(pk, evidence.voteDigest(h, v));
+    }
+
+    function unsignedVote(Evidence.VoteHeader memory h, bytes32 exec)
+        internal
+        pure
+        returns (Evidence.SignedVote memory v)
+    {
+        v.parent = h.votingRound - 1;
+        v.exec = exec;
+    }
+
+    /// @dev A native consensus signature: r||s (64 bytes, low s), as the roots' signer writes it.
+    function signNative(uint256 pk, bytes32 digest) internal pure returns (bytes memory) {
+        (, bytes32 r, bytes32 s) = vm.sign(pk, digest);
+        return abi.encodePacked(r, s);
     }
 
     /// @dev StakingID of genesis identity i (assigned in manifest order from 1).

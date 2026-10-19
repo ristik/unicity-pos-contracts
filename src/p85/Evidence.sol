@@ -8,12 +8,16 @@ pragma solidity 0.8.37;
 import {Manifest, Policy} from "./P85Types.sol";
 import {IRootRecords, IStakeCustody, IElectionPolicy, CaseView} from "./IP85.sol";
 import {KeyLib} from "./KeyLib.sol";
+import {RootVoteCbor} from "./RootVoteCbor.sol";
 
 /// @title Evidence
 /// @notice Ordinary-EVM objective evidence for the P85 PoS profile (design v5 sections 3-4).
 ///
-/// The fixed verifier (S1 fixture format below) checks two distinct signed vote statements for one
-/// network, domain, key, voting epoch and round. The canonical offence ID excludes signatures and
+/// The verifier checks two distinct signed vote statements for one network, domain, key, voting epoch and round. A ROOT statement is
+/// the typed scheme 2 vote of the root consensus: the contract rebuilds the canonical CBOR the roots sign (RootVoteCbor: VI, VH, PV) from
+/// the typed fields and the authenticated root network N and genesis G of the manifest, and verifies the signature over sha256(PV), plus,
+/// for a committing vote, the native seal signature, with the exposure's exact key. EVM-validator evidence has its own, not yet defined,
+/// authenticated format; submitEvmEvidence keeps its earlier opaque-statement boundary and shares nothing with the root codec. The canonical offence ID excludes signatures and
 /// statement order, so a reordered, re-encoded or third conflicting statement is the same offence.
 /// Historical attribution comes from the exposure custody recorded for the assignment that held the
 /// key in that epoch, never from a current key. Admission installs a hold on every attributable lot
@@ -49,6 +53,11 @@ contract Evidence {
     error NotNextLot();
     error EmptyBatch();
     error BatchTooLarge();
+    error BadRootConfig();
+    error BadStatement();
+    error CommitMismatch();
+    error SealSignatureMissing();
+    error SealSignatureForbidden();
 
     event Initialized(bytes32 manifestHash);
     event EvidenceAccepted(
@@ -62,9 +71,26 @@ contract Evidence {
         bytes32 indexed caseID, uint32 cursor, uint256 actualDebit, uint256 bounty
     );
 
-    /// @notice One signed vote statement; `payload` is the digest of the canonical VoteInfo bytes
-    /// (S1 canonical decoding is the PR1 fixture boundary).
+    /// @notice One signed ROOT vote statement (scheme 2): the typed fields of the vote besides the header's voting epoch and round.
+    /// `timestamp` is the proposal time and is signed exactly when non-zero. A committing vote names the committed state hash and round and the
+    /// native seal it signs (commit epoch and timestamp); a non-committing vote leaves all of those zero. `signature` is the vote signature
+    /// (64 bytes r||s, or 65 with v in {0, 1}, low s) over sha256(PV); `sealSignature` is the committing vote's signature over the native
+    /// seal bytes and must be empty otherwise. Neither stands in for the other.
     struct SignedVote {
+        uint64 parent;
+        bytes32 exec;
+        uint64 timestamp;
+        bool committing;
+        bytes32 commitHash;
+        uint64 commitRound;
+        uint64 commitEpoch;
+        uint64 commitTimestamp;
+        bytes signature;
+        bytes sealSignature;
+    }
+
+    /// @notice One EVM-domain statement; `payload` is the digest of the canonical vote bytes (the EVM format is not yet defined).
+    struct EvmVote {
         bytes32 payload;
         bytes signature;
     }
@@ -96,6 +122,9 @@ contract Evidence {
     IElectionPolicy public election;
     IRootRecords public roots;
     uint32 public maxBatch;
+    /// @notice The root consensus' numeric network N and genesis identity G, pinned by the manifest: the signed vote domain derives from them.
+    uint64 public rootNetwork;
+    bytes32 public rootGenesis;
 
     mapping(bytes32 => Case) internal _cases;
     mapping(bytes32 => bool) public offenceSeen;
@@ -123,6 +152,13 @@ contract Evidence {
         election = IElectionPolicy(m.election);
         roots = IRootRecords(m.roots);
         maxBatch = m.limits.maxBatch;
+        // N is a uint16 in the roots' signing configuration and G must name a root genesis: a manifest that cannot describe the signed domain
+        // is refused at genesis rather than producing evidence that no signature can match.
+        if (m.rootNetwork > type(uint16).max || m.rootGenesis == bytes32(0)) {
+            revert BadRootConfig();
+        }
+        rootNetwork = m.rootNetwork;
+        rootGenesis = m.rootGenesis;
         emit Initialized(manifestHash_);
     }
 
@@ -135,8 +171,106 @@ contract Evidence {
         if (!initialized) revert NotInitialized();
     }
 
-    /// @notice The signed digest of one statement.
-    function voteDigest(VoteHeader calldata h, bytes32 payload) public pure returns (bytes32) {
+    /// @notice The vote domain Dv = "root-vote/" + hex(G) of this deployment.
+    function voteDomain() public view returns (bytes memory) {
+        return RootVoteCbor.voteDomain(rootGenesis);
+    }
+
+    /// @notice VI, the canonical vote info the roots hash into VH.
+    function voteInfo(VoteHeader calldata h, SignedVote calldata v)
+        public
+        view
+        returns (bytes memory)
+    {
+        return RootVoteCbor.voteInfo(
+            rootNetwork, voteDomain(), h.votingEpoch, h.votingRound, v.parent, v.exec, v.timestamp
+        );
+    }
+
+    /// @notice PV, the byte string the vote signature covers (the signer hashes it with SHA-256 itself).
+    function votePreimage(VoteHeader calldata h, SignedVote calldata v)
+        public
+        view
+        returns (bytes memory)
+    {
+        bytes memory dv = voteDomain();
+        return _preimage(dv, h, v);
+    }
+
+    /// @notice The digest of one ROOT statement: sha256(PV). Reverts on a statement the roots could not have signed.
+    function voteDigest(VoteHeader calldata h, SignedVote calldata v)
+        public
+        view
+        returns (bytes32)
+    {
+        bytes memory dv = voteDomain();
+        _checkStatement(h, v);
+        return sha256(_preimage(dv, h, v));
+    }
+
+    function _preimage(bytes memory dv, VoteHeader calldata h, SignedVote calldata v)
+        private
+        view
+        returns (bytes memory)
+    {
+        uint64 n = rootNetwork;
+        bytes32 vh = sha256(
+            RootVoteCbor.voteInfo(
+                n, dv, h.votingEpoch, h.votingRound, v.parent, v.exec, v.timestamp
+            )
+        );
+        return RootVoteCbor.votePreimage(n, dv, vh, v.committing, v.commitHash, v.commitRound);
+    }
+
+    /// @dev The statement rules of votesig and S1: a voting round above zero and above its parent; a half-empty commit pair refused (a
+    /// committing vote names a hash and a commit round above zero and below the voting round); for a committing vote the commit epoch is
+    /// within [1, voting epoch]; a non-committing vote carries none of the commit data.
+    function _checkStatement(VoteHeader calldata h, SignedVote calldata v) private pure {
+        if (h.votingRound == 0 || v.parent >= h.votingRound) revert BadStatement();
+        if (v.committing) {
+            if (v.commitRound == 0 || v.commitRound >= h.votingRound) revert BadStatement();
+            if (v.commitEpoch == 0 || v.commitEpoch > h.votingEpoch) revert CommitMismatch();
+        } else if (
+            v.commitHash != bytes32(0) || v.commitRound != 0 || v.commitEpoch != 0
+                || v.commitTimestamp != 0
+        ) {
+            revert BadStatement();
+        }
+    }
+
+    /// @dev Verifies one statement against the exposure's key: the vote signature over sha256(PV) and, for a committing vote, the seal
+    /// signature over the native seal bytes. Returns the statement digest.
+    function _verifyStatement(
+        VoteHeader calldata h,
+        SignedVote calldata v,
+        bytes memory dv,
+        address signer
+    ) private view returns (bytes32 digest) {
+        _checkStatement(h, v);
+        uint64 n = rootNetwork;
+        bytes32 vh = sha256(
+            RootVoteCbor.voteInfo(
+                n, dv, h.votingEpoch, h.votingRound, v.parent, v.exec, v.timestamp
+            )
+        );
+        digest =
+            sha256(RootVoteCbor.votePreimage(n, dv, vh, v.committing, v.commitHash, v.commitRound));
+        if (!KeyLib.verifyNative(signer, digest, v.signature)) revert BadSignature();
+        if (v.committing) {
+            if (v.sealSignature.length == 0) revert SealSignatureMissing();
+            bytes32 sealDigest = sha256(
+                RootVoteCbor.sealSigBytes(
+                    n, v.commitRound, v.commitEpoch, v.commitTimestamp, vh, v.commitHash
+                )
+            );
+            if (!KeyLib.verifyNative(signer, sealDigest, v.sealSignature)) revert BadSignature();
+        } else if (v.sealSignature.length != 0) {
+            revert SealSignatureForbidden();
+        }
+    }
+
+    /// @notice The earlier opaque digest of an EVM-domain statement (the EVM format is not yet defined; see the contract notes).
+    function evmVoteDigest(VoteHeader calldata h, bytes32 payload) public pure returns (bytes32) {
         return keccak256(
             abi.encode(
                 VOTE_DOMAIN,
@@ -159,7 +293,7 @@ contract Evidence {
         );
     }
 
-    /// @notice Admit an objective offence and install holds on every attributable lot.
+    /// @notice Admit an objective ROOT-domain offence and install holds on every attributable lot.
     /// @param exposureID The historical exposure of the assignment that held `h.key` in the epoch.
     function submitEvidence(
         VoteHeader calldata h,
@@ -168,11 +302,34 @@ contract Evidence {
         bytes32 exposureID
     ) external whenInitialized returns (bytes32 caseID) {
         if (h.network != network) revert WrongNetwork();
-        if (h.domain != DOMAIN_ROOT && h.domain != DOMAIN_EVM) revert BadDomain();
-        if (a.payload == b.payload) revert IdenticalStatements();
-        if (!KeyLib.verify(h.key, voteDigest(h, a.payload), a.signature)) revert BadSignature();
-        if (!KeyLib.verify(h.key, voteDigest(h, b.payload), b.signature)) revert BadSignature();
+        if (h.domain != DOMAIN_ROOT) revert BadDomain();
+        // The key is decompressed once and the domain built once; both statements and both seals are checked against that address.
+        address signer = KeyLib.toAddress(h.key);
+        bytes memory dv = RootVoteCbor.voteDomain(rootGenesis);
+        bytes32 da = _verifyStatement(h, a, dv, signer);
+        bytes32 db = _verifyStatement(h, b, dv, signer);
+        if (da == db) revert IdenticalStatements();
+        return _admit(h, exposureID);
+    }
 
+    /// @notice Admit an EVM-domain offence on two opaque statements. The EVM-validator vote has its own authenticated format, which is not
+    /// defined yet; until it is, this path keeps the earlier fixture boundary (a payload digest signed under a keccak domain) and must not
+    /// be used for root votes, which `submitEvidence` verifies against the real signed message.
+    function submitEvmEvidence(
+        VoteHeader calldata h,
+        EvmVote calldata a,
+        EvmVote calldata b,
+        bytes32 exposureID
+    ) external whenInitialized returns (bytes32 caseID) {
+        if (h.network != network) revert WrongNetwork();
+        if (h.domain != DOMAIN_EVM) revert BadDomain();
+        if (a.payload == b.payload) revert IdenticalStatements();
+        if (!KeyLib.verify(h.key, evmVoteDigest(h, a.payload), a.signature)) revert BadSignature();
+        if (!KeyLib.verify(h.key, evmVoteDigest(h, b.payload), b.signature)) revert BadSignature();
+        return _admit(h, exposureID);
+    }
+
+    function _admit(VoteHeader calldata h, bytes32 exposureID) private returns (bytes32 caseID) {
         bytes32 offenceID = offenceIDOf(h);
         if (offenceSeen[offenceID]) revert DuplicateOffence();
 

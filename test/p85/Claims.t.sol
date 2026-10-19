@@ -12,12 +12,8 @@ contract ClaimsTest is P85Flow {
     function _credit(address who) internal returns (uint256 amount) {
         // A settled offence credits the reporter 1 UCT (bounty) and the treasury 9 UCT.
         Evidence.VoteHeader memory h = Evidence.VoteHeader(NETWORK, 1, compressed(rootPk(0)), 1, 10);
-        Evidence.SignedVote memory a = Evidence.SignedVote(
-            keccak256("A"), sign(rootPk(0), evidence.voteDigest(h, keccak256("A")))
-        );
-        Evidence.SignedVote memory b = Evidence.SignedVote(
-            keccak256("B"), sign(rootPk(0), evidence.voteDigest(h, keccak256("B")))
-        );
+        Evidence.SignedVote memory a = rootVote(h, keccak256("A"), rootPk(0));
+        Evidence.SignedVote memory b = rootVote(h, keccak256("B"), rootPk(0));
         bytes32 expo_ = genesisExposure(0);
         vm.prank(who);
         bytes32 caseID = evidence.submitEvidence(h, a, b, expo_);

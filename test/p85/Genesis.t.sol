@@ -207,6 +207,26 @@ contract GenesisTest is P85Base {
         assertEq(fresh.vMax(), 128);
     }
 
+    /// N is a uint16 in the roots' signing configuration and G must name a root genesis: each defect alone is refused, and the extreme valid values are accepted.
+    function test_evidenceRefusesAnUnsignableRootConfigAtSetup() public {
+        Evidence fresh = new Evidence(address(this));
+        Manifest memory m;
+        m.evidence = address(fresh);
+        m.rootNetwork = uint64(type(uint16).max) + 1;
+        m.rootGenesis = keccak256("g");
+        vm.expectRevert(Evidence.BadRootConfig.selector);
+        fresh.initialize(bytes32(0), m);
+        m.rootNetwork = 5;
+        m.rootGenesis = bytes32(0);
+        vm.expectRevert(Evidence.BadRootConfig.selector);
+        fresh.initialize(bytes32(0), m);
+        m.rootNetwork = type(uint16).max;
+        m.rootGenesis = keccak256("g");
+        fresh.initialize(bytes32(0), m);
+        assertEq(fresh.rootNetwork(), type(uint16).max);
+        assertEq(fresh.rootGenesis(), keccak256("g"));
+    }
+
     function test_evidenceInitializeRejectsForeignManifest() public {
         Evidence fresh = new Evidence(address(this));
         Manifest memory m;
@@ -449,6 +469,8 @@ contract GenesisTest is P85Base {
             selection: address(0),
             reader: address(0),
             network: NETWORK,
+            rootNetwork: _rootNetwork(),
+            rootGenesis: _rootGenesis(),
             roots: address(roots),
             treasury: treasury,
             bondUnit: uint128(100 * UCT),

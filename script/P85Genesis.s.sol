@@ -21,7 +21,7 @@ import {
 /// @notice Produces the proof-of-stake genesis state of the EVM shard: the P85 modules deployed and initialized by the factory in one
 /// constructor, with the genesis identities bonded. `script/p85-genesis.sh` runs it and folds the state dump into a genesis alloc.
 ///
-/// Inputs (environment): P85_GENESIS_JSON (the genesis plan bft-core's `ubft pos-relayer genesis --out-contracts` writes), P85_NETWORK_WORD,
+/// Inputs (environment): P85_GENESIS_JSON (the genesis plan bft-core's `ubft pos-relayer genesis --out-contracts` writes), P85_NETWORK_WORD, P85_ROOT_NETWORK (the root consensus' numeric network N), P85_ROOT_GENESIS (its genesis identity G),
 /// P85_CHAIN_ID, P85_ROOTS (the registry that serves the root records), P85_TREASURY, P85_V_MAX, P85_L_MAX, P85_N_MAX (the caps the election
 /// price was measured at), P85_CADENCE_ROUNDS, P85_CADENCE_SECONDS, P85_OUT (a directory under ./script/genesis-out); optional P85_DIST_NUM / P85_DIST_DEN: the election's weight-distance bound D <= num/den. THIS genesis script is the devnet/testnet
 /// profile, whose small committees (4 -> 5 is D = 2/5, one replacement in four D = 1/2) need 1/2 (default 1/2, range-checked 0 < num <= den); the contracts have no built-in
@@ -68,6 +68,8 @@ contract P85Genesis is Script {
             selection: address(0),
             reader: address(0),
             network: vm.envBytes32("P85_NETWORK_WORD"),
+            rootNetwork: uint64(vm.envUint("P85_ROOT_NETWORK")),
+            rootGenesis: vm.envBytes32("P85_ROOT_GENESIS"),
             roots: vm.envAddress("P85_ROOTS"),
             treasury: vm.envAddress("P85_TREASURY"),
             bondUnit: uint128(vm.parseJsonUint(json, ".bondUnit")),
@@ -146,6 +148,8 @@ contract P85Genesis is Script {
         vm.serializeAddress(d, "policy", address(factory.POLICY()));
         vm.serializeBytes32(d, "manifestHash", factory.MANIFEST_HASH());
         vm.serializeBytes32(d, "networkWord", c.network);
+        vm.serializeUint(d, "rootNetwork", c.rootNetwork);
+        vm.serializeBytes32(d, "rootGenesis", c.rootGenesis);
         vm.serializeBytes32(d, "custodyCodeHash", address(factory.CUSTODY()).codehash);
         vm.serializeBytes32(d, "electionCodeHash", address(factory.ELECTION()).codehash);
         vm.serializeUint(d, "chainId", block.chainid);

@@ -34,6 +34,8 @@ contract PosFactory {
         address selection;
         address reader;
         bytes32 network;
+        uint64 rootNetwork; // the root consensus' numeric network N
+        bytes32 rootGenesis; // the root genesis identity G
         address roots;
         address treasury;
         uint128 bondUnit;
@@ -80,6 +82,8 @@ contract PosFactory {
             limits: c.limits,
             genesis: c.genesis,
             electionParams: c.electionParams,
+            rootNetwork: c.rootNetwork,
+            rootGenesis: c.rootGenesis,
             identities: c.identities
         });
         bytes32 h = keccak256(abi.encode(m));
