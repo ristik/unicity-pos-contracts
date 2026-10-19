@@ -110,12 +110,8 @@ contract CoverageLossTest is P85Flow {
         _publish();
         Evidence.VoteHeader memory h =
             Evidence.VoteHeader(NETWORK, 1, compressed(rootPk(0)), 1, 99_950);
-        Evidence.SignedVote memory a = Evidence.SignedVote(
-            keccak256("A"), sign(rootPk(0), evidence.voteDigest(h, keccak256("A")))
-        );
-        Evidence.SignedVote memory b = Evidence.SignedVote(
-            keccak256("B"), sign(rootPk(0), evidence.voteDigest(h, keccak256("B")))
-        );
+        Evidence.SignedVote memory a = rootVote(h, keccak256("A"), rootPk(0));
+        Evidence.SignedVote memory b = rootVote(h, keccak256("B"), rootPk(0));
         vm.expectCall(address(election), abi.encodeCall(IElectionPolicy.coverageChanged, (gid(0))));
         vm.prank(reporter);
         bytes32 caseID = evidence.submitEvidence(h, a, b, genesisExposure(0));

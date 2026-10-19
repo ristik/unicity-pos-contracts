@@ -32,12 +32,20 @@ contract EvidenceTest is P85Flow {
         return Evidence.VoteHeader(NETWORK, domain, compressed(keyPk), epoch, round);
     }
 
-    function _vote(Evidence.VoteHeader memory h, bytes32 payload, uint256 keyPk)
+    function _vote(Evidence.VoteHeader memory h, bytes32 exec, uint256 keyPk)
         internal
         view
         returns (Evidence.SignedVote memory)
     {
-        return Evidence.SignedVote(payload, sign(keyPk, evidence.voteDigest(h, payload)));
+        return rootVote(h, exec, keyPk);
+    }
+
+    function _evmVote(Evidence.VoteHeader memory h, bytes32 payload, uint256 keyPk)
+        internal
+        view
+        returns (Evidence.EvmVote memory)
+    {
+        return Evidence.EvmVote(payload, sign(keyPk, evidence.evmVoteDigest(h, payload)));
     }
 
     function _submitAs(
@@ -49,10 +57,18 @@ contract EvidenceTest is P85Flow {
         bytes32 exposureID_
     ) internal returns (bytes32 caseID) {
         Evidence.VoteHeader memory h = _header(domain, keyPk, epoch, round);
-        Evidence.SignedVote memory a = _vote(h, keccak256("A"), keyPk);
-        Evidence.SignedVote memory b = _vote(h, keccak256("B"), keyPk);
-        vm.prank(who);
-        caseID = evidence.submitEvidence(h, a, b, exposureID_);
+        // (the statements are built before the prank: their digest is an external call to the module)
+        if (domain == EVM) {
+            Evidence.EvmVote memory ea = _evmVote(h, keccak256("A"), keyPk);
+            Evidence.EvmVote memory eb = _evmVote(h, keccak256("B"), keyPk);
+            vm.prank(who);
+            caseID = evidence.submitEvmEvidence(h, ea, eb, exposureID_);
+        } else {
+            Evidence.SignedVote memory a = _vote(h, keccak256("A"), keyPk);
+            Evidence.SignedVote memory b = _vote(h, keccak256("B"), keyPk);
+            vm.prank(who);
+            caseID = evidence.submitEvidence(h, a, b, exposureID_);
+        }
     }
 
     function _submit(uint8 domain, uint256 keyPk, uint64 epoch, uint64 round, bytes32 exposureID_)
@@ -138,18 +154,18 @@ contract EvidenceTest is P85Flow {
         evidence.submitEvidence(h, a, a, expo_);
 
         // statement a signed by the wrong key
-        Evidence.SignedVote memory forged = Evidence.SignedVote(
-            keccak256("A"), sign(rootPk(1), evidence.voteDigest(h, keccak256("A")))
-        );
+        Evidence.SignedVote memory forged = rootVote(h, keccak256("A"), rootPk(1));
         vm.expectRevert(Evidence.BadSignature.selector);
         evidence.submitEvidence(h, forged, b, expo_);
         // statement b signed over a different round
         Evidence.VoteHeader memory otherRound = _header(ROOT, rootPk(0), 1, 11);
         Evidence.SignedVote memory wrongRound = _vote(otherRound, keccak256("B"), rootPk(0));
+        wrongRound.parent = 9; // (a valid statement of round 10 whose signature covers round 11)
         vm.expectRevert(Evidence.BadSignature.selector);
         evidence.submitEvidence(h, a, wrongRound, expo_);
         // a malformed signature length
-        Evidence.SignedVote memory shortSig = Evidence.SignedVote(keccak256("B"), hex"01");
+        Evidence.SignedVote memory shortSig = b;
+        shortSig.signature = hex"01";
         vm.expectRevert(Evidence.BadSignature.selector);
         evidence.submitEvidence(h, a, shortSig, expo_);
     }
@@ -168,10 +184,10 @@ contract EvidenceTest is P85Flow {
 
         // the EVM domain checks the EVM key: a root-key pair with domain EVM mismatches
         Evidence.VoteHeader memory evmHeader = _header(EVM, rootPk(0), 1, 10);
-        Evidence.SignedVote memory ea = _vote(evmHeader, keccak256("A"), rootPk(0));
-        Evidence.SignedVote memory eb = _vote(evmHeader, keccak256("B"), rootPk(0));
+        Evidence.EvmVote memory ea = _evmVote(evmHeader, keccak256("A"), rootPk(0));
+        Evidence.EvmVote memory eb = _evmVote(evmHeader, keccak256("B"), rootPk(0));
         vm.expectRevert(Evidence.KeyMismatch.selector);
-        evidence.submitEvidence(evmHeader, ea, eb, genesisExposure(0));
+        evidence.submitEvmEvidence(evmHeader, ea, eb, genesisExposure(0));
 
         // epoch 2 is not the epoch G held the key in
         Evidence.VoteHeader memory wrongEpoch = _header(ROOT, rootPk(0), 2, 10);
@@ -180,16 +196,16 @@ contract EvidenceTest is P85Flow {
         vm.expectRevert(Evidence.EpochMismatch.selector);
         evidence.submitEvidence(wrongEpoch, wa, wb, genesisExposure(0));
         Evidence.VoteHeader memory wrongEvmEpoch = _header(EVM, evmPk(0), 7, 10);
-        Evidence.SignedVote memory xa = _vote(wrongEvmEpoch, keccak256("A"), evmPk(0));
-        Evidence.SignedVote memory xb = _vote(wrongEvmEpoch, keccak256("B"), evmPk(0));
+        Evidence.EvmVote memory xa = _evmVote(wrongEvmEpoch, keccak256("A"), evmPk(0));
+        Evidence.EvmVote memory xb = _evmVote(wrongEvmEpoch, keccak256("B"), evmPk(0));
         vm.expectRevert(Evidence.EpochMismatch.selector);
-        evidence.submitEvidence(wrongEvmEpoch, xa, xb, genesisExposure(0));
+        evidence.submitEvmEvidence(wrongEvmEpoch, xa, xb, genesisExposure(0));
 
-        // a round before the epoch's first round
+        // round 0 is no vote round at all (the roots start at 1), whatever the epoch's first round
         Evidence.VoteHeader memory early = _header(ROOT, rootPk(0), 1, 0);
-        Evidence.SignedVote memory ya = _vote(early, keccak256("A"), rootPk(0));
-        Evidence.SignedVote memory yb = _vote(early, keccak256("B"), rootPk(0));
-        vm.expectRevert(Evidence.RoundBeforeEpoch.selector);
+        Evidence.SignedVote memory ya = unsignedVote(h, keccak256("A"));
+        Evidence.SignedVote memory yb = unsignedVote(h, keccak256("B"));
+        vm.expectRevert(Evidence.BadStatement.selector);
         evidence.submitEvidence(early, ya, yb, genesisExposure(0));
     }
 

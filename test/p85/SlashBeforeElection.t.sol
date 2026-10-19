@@ -32,12 +32,8 @@ contract SlashBeforeElectionTest is P85Flow {
     function _offend(uint256 member) internal returns (bytes32 caseID) {
         Evidence.VoteHeader memory h =
             Evidence.VoteHeader(NETWORK, 1, compressed(rootPk(member)), 1, 50);
-        Evidence.SignedVote memory a = Evidence.SignedVote(
-            keccak256("A"), sign(rootPk(member), evidence.voteDigest(h, keccak256("A")))
-        );
-        Evidence.SignedVote memory b = Evidence.SignedVote(
-            keccak256("B"), sign(rootPk(member), evidence.voteDigest(h, keccak256("B")))
-        );
+        Evidence.SignedVote memory a = rootVote(h, keccak256("A"), rootPk(member));
+        Evidence.SignedVote memory b = rootVote(h, keccak256("B"), rootPk(member));
         vm.prank(reporter);
         caseID = evidence.submitEvidence(h, a, b, genesisExposure(member));
     }

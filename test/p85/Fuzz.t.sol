@@ -57,12 +57,8 @@ contract FuzzTest is P85Flow {
     function _submitRoot(uint256 identityIdx, uint64 round) internal returns (bytes32 caseID) {
         Evidence.VoteHeader memory h =
             Evidence.VoteHeader(NETWORK, 1, compressed(rootPk(identityIdx)), 1, round);
-        Evidence.SignedVote memory a = Evidence.SignedVote(
-            keccak256("A"), sign(rootPk(identityIdx), evidence.voteDigest(h, keccak256("A")))
-        );
-        Evidence.SignedVote memory b = Evidence.SignedVote(
-            keccak256("B"), sign(rootPk(identityIdx), evidence.voteDigest(h, keccak256("B")))
-        );
+        Evidence.SignedVote memory a = rootVote(h, keccak256("A"), rootPk(identityIdx));
+        Evidence.SignedVote memory b = rootVote(h, keccak256("B"), rootPk(identityIdx));
         vm.prank(reporter);
         caseID = evidence.submitEvidence(h, a, b, genesisExposure(identityIdx));
     }
@@ -134,12 +130,8 @@ contract FuzzTest is P85Flow {
     function _submitJ(uint256 identityIdx, uint64 round) internal returns (bytes32) {
         Evidence.VoteHeader memory h =
             Evidence.VoteHeader(NETWORK, 1, compressed(rootPk(identityIdx)), 2, round);
-        Evidence.SignedVote memory a = Evidence.SignedVote(
-            keccak256("A"), sign(rootPk(identityIdx), evidence.voteDigest(h, keccak256("A")))
-        );
-        Evidence.SignedVote memory b = Evidence.SignedVote(
-            keccak256("B"), sign(rootPk(identityIdx), evidence.voteDigest(h, keccak256("B")))
-        );
+        Evidence.SignedVote memory a = rootVote(h, keccak256("A"), rootPk(identityIdx));
+        Evidence.SignedVote memory b = rootVote(h, keccak256("B"), rootPk(identityIdx));
         vm.prank(reporter);
         return evidence.submitEvidence(h, a, b, exposureID(ASG_J, gid(identityIdx)));
     }

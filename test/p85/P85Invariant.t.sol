@@ -483,21 +483,37 @@ contract InvariantHandler is P85Flow {
         uint64 round = x.firstRound + uint64((seed >> 24) % 2_500);
         Evidence.VoteHeader memory h =
             Evidence.VoteHeader(NETWORK, domain, compressed(pk), epoch, round);
-        Evidence.SignedVote memory v1 =
-            Evidence.SignedVote(keccak256("A"), sign(pk, evidence.voteDigest(h, keccak256("A"))));
-        Evidence.SignedVote memory v2 =
-            Evidence.SignedVote(keccak256("B"), sign(pk, evidence.voteDigest(h, keccak256("B"))));
         address who = (seed >> 40) % 2 == 0 ? reporter : makeAddr("reporter2");
-        vm.prank(who);
-        try evidence.submitEvidence(h, v1, v2, e) returns (bytes32 caseID) {
+        bytes32 caseID;
+        bool ok;
+        if (domain == 1) {
+            // (the statements are built before the prank: their digest is an external call to the module)
+            Evidence.SignedVote memory v1 = rootVote(h, keccak256("A"), pk);
+            Evidence.SignedVote memory v2 = rootVote(h, keccak256("B"), pk);
+            vm.prank(who);
+            try evidence.submitEvidence(h, v1, v2, e) returns (bytes32 c) {
+                (caseID, ok) = (c, true);
+            } catch {}
+        } else {
+            Evidence.EvmVote memory v1 = Evidence.EvmVote(
+                keccak256("A"), sign(pk, evidence.evmVoteDigest(h, keccak256("A")))
+            );
+            Evidence.EvmVote memory v2 = Evidence.EvmVote(
+                keccak256("B"), sign(pk, evidence.evmVoteDigest(h, keccak256("B")))
+            );
+            vm.prank(who);
+            try evidence.submitEvmEvidence(h, v1, v2, e) returns (bytes32 c) {
+                (caseID, ok) = (c, true);
+            } catch {}
+        }
+        // legal failures: late, duplicate offence, key mismatch for rotated keys
+        if (ok) {
             cases.push(caseID);
             ghostOffences++;
             if (!knownExcluded[ex.id]) {
                 knownExcluded[ex.id] = true;
                 excludedIds.push(ex.id);
             }
-        } catch {
-            // legal: late, duplicate offence, key mismatch for rotated keys
         }
     }
 

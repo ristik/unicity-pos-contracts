@@ -683,12 +683,12 @@ contract PendingClosureSpecTest is P85Flow {
 
     // --- evidence ---------------------------------------------------------------------------------------------
 
-    function _vote(Evidence.VoteHeader memory h, bytes32 payload, uint256 keyPk)
+    function _vote(Evidence.VoteHeader memory h, bytes32 exec, uint256 keyPk)
         internal
         view
         returns (Evidence.SignedVote memory)
     {
-        return Evidence.SignedVote(payload, sign(keyPk, evidence.voteDigest(h, payload)));
+        return rootVote(h, exec, keyPk);
     }
 
     function _submitCase(uint64 epoch, uint256 keyPk, bytes32 exposureID_, uint64 round)

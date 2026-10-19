@@ -449,6 +449,8 @@ contract GenesisTest is P85Base {
             selection: address(0),
             reader: address(0),
             network: NETWORK,
+            rootNetwork: _rootNetwork(),
+            rootGenesis: _rootGenesis(),
             roots: address(roots),
             treasury: treasury,
             bondUnit: uint128(100 * UCT),

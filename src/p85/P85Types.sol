@@ -75,6 +75,11 @@ struct Manifest {
     Limits limits;
     GenesisAssignment genesis;
     ElectionParams electionParams;
+    // The root consensus' own identity, as the roots sign votes under it (bft-core votesig): the numeric network N (a uint16 there; `network`
+    // above is this deployment's bytes32 word and is not converted to it) and the root genesis identity G whose hex names the vote domain.
+    // Evidence reconstructs the signed vote from these, never from the reporter.
+    uint64 rootNetwork;
+    bytes32 rootGenesis;
     GenesisIdentity[] identities;
 }
 
