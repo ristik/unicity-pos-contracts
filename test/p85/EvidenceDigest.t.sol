@@ -78,7 +78,7 @@ contract CodecHarness {
     }
 }
 
-/// @notice The shared Go-generated corpus (`fixtures/evidence-digest-corpus-v1.json`, bft-core s1ref `s1gen.BuildDigestCorpus`, checked there
+/// @notice The shared Go-generated corpus (`fixtures/evidence-digest-corpus-go-v1.json`, converted to `fixtures/evidence-digest-corpus-v1.json` by `script/evidence-corpus-convert.py`, bft-core s1ref `s1gen.BuildDigestCorpus`, checked there
 /// against the production `votesig` encoder and verifier): Solidity reproduces VI, VH, PV, the digest, the native seal bytes and the timeout
 /// preimages byte for byte, and accepts the Go keys' real signatures under the native rules.
 ///

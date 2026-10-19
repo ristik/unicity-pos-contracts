@@ -5,7 +5,7 @@
   "VI = C([N, Dv, epoch, round, parent, exec]) with the timestamp appended exactly when it is non-zero; VH = sha256(VI); PV = C([\"UNICITY_POS_VOTE\", N, Dv, VH, commitHash|null, commitRound]); digest = sha256(PV). The signer hashes PV itself: signatures are over the digest of PV.",
   "A non-committing vote has commitHash null and commitRound 0; a committing vote has a 32-byte commit hash and a commit round below the voting round, and its native seal (previousHash = VH) is signed by the same key over the seal bytes.",
   "sig64 is r||s with low s; sig65 appends the true recovery id (0 or 1); sigHighS is the same signature with s replaced by n-s (valid for the key, refused by the low-s rule).",
-  "Numbers are decimal strings. Every figure here is checked against the production encoder and verifier in s1ref's tests."
+  "Forge-shaped conversion of bft-core's verbatim file (evidence-digest-corpus-go-v1.json) by script/evidence-corpus-convert.py: numbers are JSON numbers, hex is 0x-prefixed, `committing` and `hasAnchor` flags, zero values for an absent commit hash, seal and anchor. Every figure in bft-core's file is checked against the production encoder and verifier in s1ref's tests."
  ],
  "voteTag": "UNICITY_POS_VOTE",
  "timeoutTag": "UNICITY_POS_TIMEOUT",
