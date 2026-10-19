@@ -569,6 +569,27 @@ contract EvidenceGoSignedTest is GoSignedBase {
         evidence.submitEvidence(hdr, half, _vote(ib), genesisExposure(1));
     }
 
+    /// A non-committing vote carries no commit data: each commit field alone is refused as a malformed statement (before any signature is looked at).
+    function test_aNonCommittingVoteCarryingCommitDataIsRefused() public {
+        VoteJ memory ia = _idx("eq.a");
+        VoteJ memory ib = _idx("eq.b");
+        Evidence.VoteHeader memory hdr = _header(ia);
+        Evidence.SignedVote memory bad = _vote(ia);
+        bad.commitHash = bytes32(uint256(1));
+        vm.expectRevert(Evidence.BadStatement.selector);
+        evidence.submitEvidence(hdr, bad, _vote(ib), genesisExposure(0));
+        bad = _vote(ia);
+        bad.commitEpoch = 1;
+        vm.expectRevert(Evidence.BadStatement.selector);
+        evidence.submitEvidence(hdr, bad, _vote(ib), genesisExposure(0));
+        bad = _vote(ia);
+        bad.commitTimestamp = 1;
+        vm.expectRevert(Evidence.BadStatement.selector);
+        evidence.submitEvidence(hdr, bad, _vote(ib), genesisExposure(0));
+        // the unmodified pair is accepted: the refusals above are the commit fields and nothing else
+        evidence.submitEvidence(hdr, _vote(ia), _vote(ib), genesisExposure(0));
+    }
+
     function test_theSealSignatureNeverStandsInForTheVoteSignatureOrTheReverse() public {
         VoteJ memory ia = _idx("eq.cm-a");
         VoteJ memory ib = _idx("eq.cm-b");
