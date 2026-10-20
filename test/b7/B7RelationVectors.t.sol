@@ -123,7 +123,7 @@ contract B7RelationVectorsTest is Test {
             }
         }
         assertEq(valid, 4);
-        assertGe(refused, 16);
+        assertEq(refused, 18);
     }
 
     /// The decoded fields are the encoded words: a re-encoding of the three-epoch journal reproduces its bytes.

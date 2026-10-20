@@ -73,7 +73,7 @@ library B7Relation {
             metadata[9],
             metadata[10]
         );
-        return keccak256(abi.encodePacked(head, members));
+        return keccak256(bytes.concat(head, abi.encodePacked(members)));
     }
 
     /// @notice The kernel result fields the vault consumes (the direct path's KernelResult without its leaves).
