@@ -6,7 +6,7 @@ usage: check-corpus.py <checkout of the corpus repository>
 The checks, each fatal:
   1. the checkout is the pinned commit (when it is a git checkout);
   2. every corpus file matches SHA256SUMS, and SHA256(SHA256SUMS) is MANIFEST.sha256 and the pinned digest;
-  3. the SDK trust document is the pinned one, and the golden mint and return histories embed its digest;
+  3. the trust-base genesis EntryID (trustBaseId) is the pinned one, and the golden mint and return histories embed it;
   4. the golden file is the pinned bytes (so it cannot be edited by hand or regenerated unpinned);
   5. every golden value the pin lists as shared occurs in the corpus, so the doubles cannot drift from it.
 """
@@ -48,9 +48,9 @@ def main():
     if manifest != (root / "MANIFEST.sha256").read_text().strip() or manifest != pin["corpus"]["manifestSha256"]:
         fail(f"corpus digest {manifest} is not the pinned {pin['corpus']['manifestSha256']}")
 
-    trust = sha((root / "config" / "sdk-root-trust-base.json").read_bytes())
-    if trust != pin["corpus"]["trustDocumentSha256"]:
-        fail(f"corpus trust document {trust} is not the pinned one")
+    trust = (root / "config" / "trust-base.genesis.entryid").read_text().strip()
+    if trust != pin["corpus"]["trustBaseId"]:
+        fail(f"corpus trustBaseId {trust} is not the pinned one")
 
     raw = (REPO / pin["golden"]["file"]).read_bytes()
     if sha(raw) != pin["golden"]["sha256"]:
@@ -58,7 +58,7 @@ def main():
     golden = json.loads(raw)
     for op in ("mint", "return"):
         if trust not in golden[op]["history"].lower():
-            fail(f"golden {op} history does not embed the corpus trust document digest")
+            fail(f"golden {op} history does not embed the corpus trustBaseId")
 
     corpus = "".join(p.read_text().lower() for p in sorted(root.rglob("*.json")))
     for path in pin["golden"]["sharedPaths"]:
