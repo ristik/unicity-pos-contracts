@@ -10,8 +10,8 @@ Go oracle and the A' reference oracle; no value in them was written by hand.
 
 ## Sealed corpus pin
 
-`corpus-pin.json` pins the shared corpus (native-bridge-plugins `protocol/vectors`, the protocol-5 reseal of nbp#27, commit
-`bfc1c0fb…`, manifest digest `7b1b7e4c…`, `trustBaseId` (the trust-base genesis EntryID) `cde64957…`, sealed candidate), the oracle
+`corpus-pin.json` pins the shared corpus (native-bridge-plugins `protocol/vectors` on `main`, commit `affbc5de…` (after
+#526 steps 1–3; artifactVersion 6), manifest digest `8ca2a20d…`, `trustBaseId` (the trust-base genesis EntryID) `cde64957…`), the oracle
 commit, the SHA-256 of `golden.json` and the list of golden values the corpus also contains.
 `python3 script/bridge-golden/check-corpus.py <corpus checkout>` verifies the corpus files and digest, that
 both golden histories embed the corpus `trustBaseId`, that `golden.json` is the pinned bytes, and that each
