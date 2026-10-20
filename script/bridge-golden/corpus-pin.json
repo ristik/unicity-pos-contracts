@@ -1,9 +1,9 @@
 {
   "corpus": {
     "repository": "https://github.com/ristik/native-bridge-plugins",
-    "commit": "affbc5deadef11d2687afab99f8e4cb0c89f0be9",
+    "commit": "96260c9dbb728c13d5f2955fdd95fb0c936903bf",
     "directory": "protocol/vectors",
-    "manifestSha256": "8ca2a20d3525694a38cf29f0f21d2ddbc9f4b5b7ea7385d6507fdc2423119b56",
+    "manifestSha256": "9d395ee4cd5402faf1f6153b50651fb3c93af0d1030ce0baf4e305e5de1eb5bb",
     "trustBaseId": "cde64957372a85558b265e4091d21fe1c591abae5fd6c6b5c5d1c59ba0824577"
   },
   "oracle": {
