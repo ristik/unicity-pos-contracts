@@ -38,7 +38,7 @@ The cross-repository consistency suite (bft-core `xrepo/README.md` has the whole
 - `xrepo-genesis-input.json` is what bft-core's `ubft pos-relayer genesis --out-contracts` writes for a committed plan over the FULL shard
   configuration. `XRepoGenesis.t.sol` runs `script/P85Genesis.s.sol` on it and checks custody holds the genesis assignment under the file's id.
 - `xrepo-go-retirement.json` is produced by bft-core (same command): the ack history followed by the Retirements of identities 1 and 2,
-  whose reference digests are custody's exposure chains as the root derives them, and two conflicting scheme 2 root votes of identity 1's
+  whose reference digests are the evmassign model of custody's exposure-chain storage word (a root reads it from custody's storage proof), and two conflicting scheme 2 root votes of identity 1's
   root key in J's epoch, signed by the root's signer. `XRepoRetirement.t.sol` imports each record through the real SealRegistry
   (`RegistryDriver.sol`) and applies it verbatim, charges the Go pair to the retired identity's historical exposure, and takes one held
   and one clean lot through maturity and claim.

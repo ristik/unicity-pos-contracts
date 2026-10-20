@@ -13,7 +13,7 @@ import {ElectionParams, RootRecord, RecordKind, RetirementData} from "../../src/
 ///
 /// `fixtures/xrepo-go-retirement.json` is produced by bft-core from this repository's publication fixture: the records the root's
 /// projection emits for the acknowledged history (Closure of G, Ack of J, Closure of J) followed by the Retirements of identities 1
-/// and 2, whose reference digests are custody's exposure chains as the root derives them from the deployment words; and two
+/// and 2, whose reference digests are the evmassign model of custody's exposure-chain storage word (a root reads it from custody's storage proof); and two
 /// conflicting scheme 2 root votes of identity 1's root key in J's epoch, built by the root's statement derivation and signed by the
 /// root's signer.
 ///
