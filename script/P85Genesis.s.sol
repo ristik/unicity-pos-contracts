@@ -154,6 +154,11 @@ contract P85Genesis is Script {
         vm.serializeBytes32(d, "networkWord", c.network);
         vm.serializeUint(d, "rootNetwork", c.rootNetwork);
         vm.serializeBytes32(d, "rootGenesis", c.rootGenesis);
+        vm.serializeBytes32(d, "policyCodeHash", address(factory.POLICY()).codehash);
+        vm.serializeBytes32(d, "rewardPoolCodeHash", address(factory.REWARDS()).codehash);
+        vm.serializeUint(d, "rewardFunding", c.rewardFunding);
+        vm.serializeUint(d, "rewardRate", c.rewardRate);
+        vm.serializeAddress(d, "governanceAuthority", c.governanceAuthority);
         vm.serializeBytes32(d, "custodyCodeHash", address(factory.CUSTODY()).codehash);
         vm.serializeBytes32(d, "electionCodeHash", address(factory.ELECTION()).codehash);
         vm.serializeUint(d, "chainId", block.chainid);
