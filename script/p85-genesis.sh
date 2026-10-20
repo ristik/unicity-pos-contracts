@@ -7,7 +7,7 @@
 # Usage: script/p85-genesis.sh <genesis.json from `ubft pos-relayer genesis --out-contracts`> <out-dir>
 # Environment: P85_NETWORK_WORD P85_ROOT_NETWORK (the root consensus' numeric network N) P85_ROOT_GENESIS (its genesis identity G) P85_CHAIN_ID P85_ROOTS (the registry address) P85_TREASURY P85_GOVERNANCE_AUTHORITY (the fixed development authority that may queue and cancel a policy proposal; explicit, no default), and the caps the election price is measured at:
 #   P85_V_MAX P85_L_MAX P85_N_MAX (devnet/testnet 16 2 8), P85_CADENCE_ROUNDS P85_CADENCE_SECONDS.
-# Optional: P85_REWARD_RATE (the genesis operator reward rate, base units per 1,000 progress units; default 1 UCT), P85_DIST_NUM / P85_DIST_DEN, the election's weight-distance bound (testnet profile default 1/2, 0 < num <= den; the contracts have no built-in bound: a production genesis must set it explicitly, 1/4). The roots' EVM
+# Optional: P85_REWARD_RATE (the genesis operator reward rate, base units per 1,000 progress units; default 1 UCT), P85_REWARD_FUNDING (the initial reward pool allocation in base units, allocated in the genesis state; default 10,000 UCT), P85_DIST_NUM / P85_DIST_DEN, the election's weight-distance bound (testnet profile default 1/2, 0 < num <= den; the contracts have no built-in bound: a production genesis must set it explicitly, 1/4). The roots' EVM
 # configuration must commit the same bound as `continuity_max_distance`.
 set -euo pipefail
 cd "$(dirname "$0")/.."
@@ -25,7 +25,7 @@ import json, sys
 work, out = sys.argv[1], sys.argv[2]
 state = json.load(open(f"{work}/state.json"))
 dep = json.load(open(f"{work}/deployment.json"))
-keep = {dep[k].lower() for k in ("factory", "custody", "genesisImpl", "election", "evidence", "selection", "reader", "policy")}
+keep = {dep[k].lower() for k in ("factory", "custody", "genesisImpl", "election", "evidence", "selection", "reader", "policy", "rewardPool")}
 alloc = {}
 for addr, acct in state.items():
     if addr.lower() not in keep:

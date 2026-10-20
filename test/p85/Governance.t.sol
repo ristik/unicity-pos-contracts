@@ -431,6 +431,36 @@ contract GovernanceTest is P85Flow {
         assertLt(activating, plain + 200_000);
     }
 
+    /// @dev The hash of a snapshot is recomputed here from its predecessor's: domain, chain, module, id, predecessor hash, policy and rate.
+    function _expectedHash(uint32 id, bytes32 pred, Policy memory p, uint128 rate)
+        internal
+        view
+        returns (bytes32)
+    {
+        return keccak256(
+            abi.encode(
+                keccak256("unicity.p85.governance.snapshot"),
+                block.chainid,
+                address(gov),
+                id,
+                pred,
+                p,
+                rate
+            )
+        );
+    }
+
+    function test_snapshotHashesChainFromTheirPredecessors() public {
+        GovernanceSnapshot memory s1 = gov.snapshotAt(1);
+        assertEq(s1.hash, _expectedHash(1, bytes32(0), _defaultPolicy(), DEFAULT_REWARD_RATE));
+        _schedule(_proposal(), 3 ether);
+        clock(CAD_P, CAD_T);
+        _elect();
+        GovernanceSnapshot memory s2 = gov.snapshotAt(2);
+        assertEq(s2.hash, _expectedHash(2, s1.hash, _proposal(), 3 ether));
+        assertTrue(s2.hash != s1.hash);
+    }
+
     // --- the surface -----------------------------------------------------------------------------
 
     /// @dev Governance has no setter for the knobs this deployment keeps immutable: the only state-changing functions are the four of the
