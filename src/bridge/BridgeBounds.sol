@@ -13,8 +13,9 @@ library BridgeBounds {
     /// @dev Distinct UC anchors of one redemption (one per distinct complete UC), and at most the leaves: B1's claim ceiling (K <= 16).
     uint256 internal constant MAX_ANCHORS = 16;
     /// @dev Visited transaction/leaf occurrences L across the whole supported recursive verification (mint, transfers, burn and
-    ///      embedded dependencies), counted before any deduplication.
-    uint256 internal constant MAX_LEAVES = 16;
+    ///      embedded dependencies), counted before any deduplication. 24 since #526 step 5 (profile v5, artifact 7): above
+    ///      MAX_ANCHORS, so a history whose leaves each carry their own certificate can need one anchor too many (refused).
+    uint256 internal constant MAX_LEAVES = 24;
     uint256 internal constant MAX_ANCHOR_UC_BYTES = 8 * 1024;
     uint256 internal constant MAX_RSMT_SIBLINGS = 32;
     uint256 internal constant MAX_SEMANTIC_BYTES = 16 * 1024;
