@@ -49,6 +49,9 @@ abstract contract P85Base is Test {
     Evidence internal evidence;
     MockRootRecords internal roots;
     address internal treasury = makeAddr("treasury");
+    address internal governanceAuthority = makeAddr("governance-authority");
+    /// @dev 1 UCT per 1,000 progress units (design t8-p7 section 3).
+    uint128 internal constant DEFAULT_REWARD_RATE = 1 ether;
     address internal reporter = makeAddr("reporter");
 
     uint256 internal constant N_GENESIS = 4;
@@ -165,6 +168,8 @@ abstract contract P85Base is Test {
                 firstRound: 1
             }),
             policy: policy,
+            rewardRate: DEFAULT_REWARD_RATE,
+            governanceAuthority: governanceAuthority,
             electionParams: _electionParams(),
             identities: ids
         });

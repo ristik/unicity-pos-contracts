@@ -16,7 +16,7 @@ import {
 import {StakeCustody} from "./StakeCustody.sol";
 import {ElectionPolicy} from "./ElectionPolicy.sol";
 import {Evidence} from "./Evidence.sol";
-import {FixedPolicy} from "./FixedPolicy.sol";
+import {GovernanceParams} from "./GovernanceParams.sol";
 import {Quantize} from "./Quantize.sol";
 
 /// @title PosFactory
@@ -44,6 +44,8 @@ contract PosFactory {
         GenesisAssignment genesis;
         ElectionParams electionParams;
         Policy policy;
+        uint128 rewardRate; // the genesis operator reward rate, base units per 1,000 progress units (T8)
+        address governanceAuthority; // the fixed development authority that may queue and cancel a policy proposal (T8)
         GenesisIdentity[] identities;
     }
 
@@ -55,14 +57,16 @@ contract PosFactory {
     StakeCustody public immutable CUSTODY;
     ElectionPolicy public immutable ELECTION;
     Evidence public immutable EVIDENCE;
-    FixedPolicy public immutable POLICY;
+    GovernanceParams public immutable POLICY;
 
     event Deployed(
         bytes32 manifestHash, address custody, address election, address evidence, address policy
     );
 
     constructor(Config memory c) payable {
-        POLICY = new FixedPolicy(c.policy);
+        POLICY = new GovernanceParams(
+            c.policy, c.rewardRate, c.governanceAuthority, c.election, c.roots
+        );
         CUSTODY = StakeCustody(c.custody);
         ELECTION = ElectionPolicy(c.election);
         EVIDENCE = Evidence(c.evidence);
