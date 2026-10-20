@@ -193,3 +193,14 @@ PR3, the fixtures that PR1 replaces and the design interpretations to confirm, a
 The P85 modules compile under a size-first optimizer profile (`optimizer_runs = 1`, restricted to
 `src/p85/**` in `foundry.toml`) so that `StakeCustody` stays under EIP-170; the SealRegistry's pinned
 settings and code hash are unaffected.
+
+## License
+
+[LICENSE](LICENSE) is the Apache License 2.0. Each source file's SPDX header names its licence:
+- the P85 PoS sources and their tests (`src/p85`, `test/p85`, `script/P85Genesis.s.sol`; `SPDX-License-Identifier: Apache-2.0`)
+  are Apache-2.0, an independent clean-room implementation (`docs/p85/PROVENANCE.md`), and so are the P85 helper scripts
+  `script/p85-*` (no header);
+- the generated P85 interface artifact `artifacts/p85-pr2-interface.json` is Apache-2.0 too;
+- files with another SPDX identifier (MIT, or `UNLICENSED` for the SealRegistry, fee, wrapped-token and vesting contracts and
+  their artifacts) keep it;
+- third-party code under `lib/` keeps its own licences.
