@@ -187,6 +187,12 @@ contract ElectionGasTest is P85Flow {
             used
         );
         assertEq(uint8(out), uint8(ElectionPolicy.Outcome.Reserved));
+        // the measured election activated the scheduled snapshot and captured it (elect swallows an activation failure, so without this
+        // the pinned price could silently be that of an election without the activation)
+        assertEq(factory.POLICY().currentPolicyID(), 2, "the governance snapshot was not activated");
+        assertEq(
+            election.result(election.openResult()).policyID, 2, "the election did not capture it"
+        );
     }
 
     /// @dev The genesis tool's measurement of the worst-case election for a chosen (V, L, C): V identities of L lots each, a committed

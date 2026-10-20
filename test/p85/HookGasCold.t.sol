@@ -142,6 +142,17 @@ contract HookGasColdTest is P85Flow {
             uint256 b = gasleft();
             election.elect(keccak256("origin"));
             used = b - gasleft();
+            if (keccak256(bytes(kind)) == keccak256("elect-gov")) {
+                // the scheduled snapshot must really have been activated and captured by the election: elect swallows an activation failure, and a
+                // measurement without it would silently lower the price pinned from this number
+                GovernanceParams gov = factory.POLICY();
+                assertEq(gov.currentPolicyID(), 2, "the governance snapshot was not activated");
+                assertEq(
+                    election.result(election.openResult()).policyID,
+                    2,
+                    "the election did not capture it"
+                );
+            }
         } else {
             uint256 b = gasleft();
             custody.applyRootRecords(1);

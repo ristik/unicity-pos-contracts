@@ -171,7 +171,7 @@ contract RewardsRegistryTest is P85Flow {
         // the model, from the boundaries alone
         uint64 a = pool.START();
         while (true) {
-            uint64 end = (a / 1_000 + 1) * 1_000;
+            uint64 end = pool.START() + ((a - pool.START()) / 1_000 + 1) * 1_000; // the pool's grid is anchored at START
             bool second = a >= ack.offset;
             if (!second && ack.offset < end) end = ack.offset;
             if (end > finalP) break;
