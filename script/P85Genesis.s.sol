@@ -22,7 +22,7 @@ import {
 /// constructor, with the genesis identities bonded. `script/p85-genesis.sh` runs it and folds the state dump into a genesis alloc.
 ///
 /// Inputs (environment): P85_GENESIS_JSON (the genesis plan bft-core's `ubft pos-relayer genesis --out-contracts` writes), P85_NETWORK_WORD, P85_ROOT_NETWORK (the root consensus' numeric network N), P85_ROOT_GENESIS (its genesis identity G),
-/// P85_CHAIN_ID, P85_ROOTS (the registry that serves the root records), P85_TREASURY, P85_V_MAX, P85_L_MAX, P85_N_MAX (the caps the election
+/// P85_CHAIN_ID, P85_ROOTS (the registry that serves the root records), P85_TREASURY, P85_GOVERNANCE_AUTHORITY, P85_V_MAX, P85_L_MAX, P85_N_MAX (the caps the election
 /// price was measured at), P85_CADENCE_ROUNDS, P85_CADENCE_SECONDS, P85_OUT (a directory under ./script/genesis-out); optional P85_DIST_NUM / P85_DIST_DEN: the election's weight-distance bound D <= num/den. THIS genesis script is the devnet/testnet
 /// profile, whose small committees (4 -> 5 is D = 2/5, one replacement in four D = 1/2) need 1/2 (default 1/2, range-checked 0 < num <= den); the contracts have no built-in
 /// bound, so a PRODUCTION genesis must set P85_DIST_NUM/P85_DIST_DEN explicitly (1/4 is the production policy) and never rely on the default (briefs/p85-churn-bound-note.md). The roots' installed EVM configuration must commit the same bound
@@ -109,6 +109,8 @@ contract P85Genesis is Script {
                 holdRetirement: 2_000,
                 timeFloor: 3_600
             }),
+            rewardRate: uint128(vm.envOr("P85_REWARD_RATE", uint256(1 ether))),
+            governanceAuthority: vm.envAddress("P85_GOVERNANCE_AUTHORITY"),
             identities: ids
         });
         // The election reads the record source's clock when it is initialized, so a record source with code must exist at the address the

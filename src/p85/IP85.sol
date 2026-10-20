@@ -3,6 +3,20 @@ pragma solidity 0.8.37;
 
 import {Policy, Delegation, ReserveInput, RootRecord} from "./P85Types.sol";
 
+/// @notice A policy snapshot of the governed source: immutable once written. `effective*` is the election block that activated it (0 for genesis).
+struct GovernanceSnapshot {
+    Policy policy;
+    uint128 rewardRate; // operator reward, base units per 1,000 progress units
+    bytes32 hash; // chained to the predecessor snapshot's hash
+    uint64 effectiveProgress;
+    uint64 effectiveTime;
+}
+
+/// @notice The election entry point's hook into a governed policy source.
+interface IGovernance {
+    function activateDue(uint64 progress, uint64 ucTime) external returns (bool);
+}
+
 /// @notice Authenticated root-record source: the SealRegistry projection of verified control
 /// records, canonical progress and quorum-approved UC time. PR2 consumes this interface; PR1
 /// supplies the authenticated implementation. Relayers supply data, never finality.

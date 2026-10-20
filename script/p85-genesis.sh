@@ -5,14 +5,14 @@
 #   <out>/deployment.json  addresses, code hashes, manifest hash, network word, caps
 #
 # Usage: script/p85-genesis.sh <genesis.json from `ubft pos-relayer genesis --out-contracts`> <out-dir>
-# Environment: P85_NETWORK_WORD P85_ROOT_NETWORK (the root consensus' numeric network N) P85_ROOT_GENESIS (its genesis identity G) P85_CHAIN_ID P85_ROOTS (the registry address) P85_TREASURY, and the caps the election price is measured at:
+# Environment: P85_NETWORK_WORD P85_ROOT_NETWORK (the root consensus' numeric network N) P85_ROOT_GENESIS (its genesis identity G) P85_CHAIN_ID P85_ROOTS (the registry address) P85_TREASURY P85_GOVERNANCE_AUTHORITY (the fixed development authority that may queue and cancel a policy proposal; explicit, no default), and the caps the election price is measured at:
 #   P85_V_MAX P85_L_MAX P85_N_MAX (devnet/testnet 16 2 8), P85_CADENCE_ROUNDS P85_CADENCE_SECONDS.
-# Optional: P85_DIST_NUM / P85_DIST_DEN, the election's weight-distance bound (testnet profile default 1/2, 0 < num <= den; the contracts have no built-in bound: a production genesis must set it explicitly, 1/4). The roots' EVM
+# Optional: P85_REWARD_RATE (the genesis operator reward rate, base units per 1,000 progress units; default 1 UCT), P85_DIST_NUM / P85_DIST_DEN, the election's weight-distance bound (testnet profile default 1/2, 0 < num <= den; the contracts have no built-in bound: a production genesis must set it explicitly, 1/4). The roots' EVM
 # configuration must commit the same bound as `continuity_max_distance`.
 set -euo pipefail
 cd "$(dirname "$0")/.."
 [ "$#" -eq 2 ] || { echo "usage: $0 <genesis.json> <out-dir>" >&2; exit 2; }
-for v in P85_NETWORK_WORD P85_ROOT_NETWORK P85_ROOT_GENESIS P85_CHAIN_ID P85_ROOTS P85_TREASURY P85_V_MAX P85_L_MAX P85_N_MAX P85_CADENCE_ROUNDS P85_CADENCE_SECONDS; do
+for v in P85_NETWORK_WORD P85_ROOT_NETWORK P85_ROOT_GENESIS P85_CHAIN_ID P85_ROOTS P85_TREASURY P85_GOVERNANCE_AUTHORITY P85_V_MAX P85_L_MAX P85_N_MAX P85_CADENCE_ROUNDS P85_CADENCE_SECONDS; do
 	[ -n "${!v:-}" ] || { echo "set $v" >&2; exit 2; }
 done
 out=$(mkdir -p "$2" && cd "$2" && pwd)

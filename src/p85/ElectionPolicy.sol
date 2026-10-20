@@ -14,7 +14,7 @@ import {
     ReserveInput,
     ReserveMember
 } from "./P85Types.sol";
-import {IRootRecords, IStakeCustody, IPolicySource, IEvidence} from "./IP85.sol";
+import {IRootRecords, IStakeCustody, IPolicySource, IEvidence, IGovernance} from "./IP85.sol";
 import {KeyLib} from "./KeyLib.sol";
 import {Continuity} from "./Continuity.sol";
 import {Selection} from "./Selection.sol";
@@ -468,6 +468,10 @@ contract ElectionPolicy {
         } catch {
             return Outcome.Disabled;
         }
+        // A governed policy source activates its scheduled snapshot here: at an eligible, due boundary, before the election captures the
+        // policy ID, so a builder, follower and replay agree on one ID per block. A source without governance (no such function) or a
+        // refusal leaves the policy in force unchanged; the election never fails on it.
+        try IGovernance(address(policySource)).activateDue(p, t) returns (bool) {} catch {}
         try this.electNow(origin, p, t, predecessor) returns (Outcome o) {
             return o;
         } catch {

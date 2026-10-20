@@ -11,6 +11,7 @@ import {Evidence} from "../../src/p85/Evidence.sol";
 import {SelectionEngine} from "../../src/p85/SelectionEngine.sol";
 import {EligibilityReader} from "../../src/p85/EligibilityReader.sol";
 import {FixedPolicy} from "../../src/p85/FixedPolicy.sol";
+import {GovernanceParams} from "../../src/p85/GovernanceParams.sol";
 import {PolicyBounds} from "../../src/p85/PolicyBounds.sol";
 import {
     Policy,
@@ -484,6 +485,8 @@ contract GenesisTest is P85Base {
                 firstRound: 1
             }),
             policy: _defaultPolicy(),
+            rewardRate: DEFAULT_REWARD_RATE,
+            governanceAuthority: governanceAuthority,
             electionParams: _electionParams(),
             identities: ids
         });
