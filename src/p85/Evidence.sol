@@ -16,16 +16,15 @@ import {RootVoteCbor} from "./RootVoteCbor.sol";
 /// The verifier checks two distinct signed vote statements for one network, domain, key, voting epoch and round. A ROOT statement is
 /// the typed scheme 2 vote of the root consensus: the contract rebuilds the canonical CBOR the roots sign (RootVoteCbor: VI, VH, PV) from
 /// the typed fields and the authenticated root network N and genesis G of the manifest, and verifies the signature over sha256(PV), plus,
-/// for a committing vote, the native seal signature, with the exposure's exact key. EVM-validator evidence has its own, not yet defined,
-/// authenticated format; submitEvmEvidence keeps its earlier opaque-statement boundary and shares nothing with the root codec. The canonical offence ID excludes signatures and
-/// statement order, so a reordered, re-encoded or third conflicting statement is the same offence.
+/// for a committing vote, the native seal signature, with the exposure's exact key. EVM-validator evidence needs its own authenticated
+/// format, which is not defined yet; until it is, submitEvmEvidence is fail-closed and always reverts with EvmEvidenceUndefined, so no
+/// EVM-domain statement can hold or debit stake. The canonical offence ID excludes signatures and statement order, so a reordered, re-encoded or third conflicting statement is the same offence.
 /// Historical attribution comes from the exposure custody recorded for the assignment that held the
 /// key in that epoch, never from a current key. Admission installs a hold on every attributable lot
 /// atomically; settlement debits ascending lots through StakeCustody and removes each hold once its
 /// work is done. Evidence protection is option A: the complete valid pair must execute as an
 /// ordinary EVM transaction by the inclusive cutoff.
 contract Evidence {
-    bytes32 internal constant VOTE_DOMAIN = keccak256("unicity.p85.s1.vote");
     bytes32 internal constant OFFENCE_DOMAIN = keccak256("unicity.p85.offence");
     bytes32 internal constant CASE_DOMAIN = keccak256("unicity.p85.case");
 
@@ -58,6 +57,7 @@ contract Evidence {
     error CommitMismatch();
     error SealSignatureMissing();
     error SealSignatureForbidden();
+    error EvmEvidenceUndefined();
 
     event Initialized(bytes32 manifestHash);
     event EvidenceAccepted(
@@ -89,7 +89,7 @@ contract Evidence {
         bytes sealSignature;
     }
 
-    /// @notice One EVM-domain statement; `payload` is the digest of the canonical vote bytes (the EVM format is not yet defined).
+    /// @notice One EVM-domain statement (the authenticated EVM format is not defined yet; submitEvmEvidence refuses every one).
     struct EvmVote {
         bytes32 payload;
         bytes signature;
@@ -269,21 +269,6 @@ contract Evidence {
         }
     }
 
-    /// @notice The earlier opaque digest of an EVM-domain statement (the EVM format is not yet defined; see the contract notes).
-    function evmVoteDigest(VoteHeader calldata h, bytes32 payload) public pure returns (bytes32) {
-        return keccak256(
-            abi.encode(
-                VOTE_DOMAIN,
-                h.network,
-                h.domain,
-                keccak256(h.key),
-                h.votingEpoch,
-                h.votingRound,
-                payload
-            )
-        );
-    }
-
     /// @notice Canonical offence ID: independent of signatures and statement order.
     function offenceIDOf(VoteHeader calldata h) public pure returns (bytes32) {
         return keccak256(
@@ -312,21 +297,15 @@ contract Evidence {
         return _admit(h, exposureID);
     }
 
-    /// @notice Admit an EVM-domain offence on two opaque statements. The EVM-validator vote has its own authenticated format, which is not
-    /// defined yet; until it is, this path keeps the earlier fixture boundary (a payload digest signed under a keccak domain) and must not
-    /// be used for root votes, which `submitEvidence` verifies against the real signed message.
-    function submitEvmEvidence(
-        VoteHeader calldata h,
-        EvmVote calldata a,
-        EvmVote calldata b,
-        bytes32 exposureID
-    ) external whenInitialized returns (bytes32 caseID) {
-        if (h.network != network) revert WrongNetwork();
-        if (h.domain != DOMAIN_EVM) revert BadDomain();
-        if (a.payload == b.payload) revert IdenticalStatements();
-        if (!KeyLib.verify(h.key, evmVoteDigest(h, a.payload), a.signature)) revert BadSignature();
-        if (!KeyLib.verify(h.key, evmVoteDigest(h, b.payload), b.signature)) revert BadSignature();
-        return _admit(h, exposureID);
+    /// @notice EVM-domain evidence. The EVM-validator vote needs its own authenticated format, which is not defined yet; until it is,
+    /// this path is fail-closed: every call reverts with EvmEvidenceUndefined, whatever it carries, so no EVM-domain statement can hold
+    /// or debit stake. Root votes go through `submitEvidence`, which verifies the real signed message.
+    function submitEvmEvidence(VoteHeader calldata, EvmVote calldata, EvmVote calldata, bytes32)
+        external
+        pure
+        returns (bytes32)
+    {
+        revert EvmEvidenceUndefined();
     }
 
     function _admit(VoteHeader calldata h, bytes32 exposureID) private returns (bytes32 caseID) {
@@ -334,20 +313,15 @@ contract Evidence {
         if (offenceSeen[offenceID]) revert DuplicateOffence();
 
         // forge-lint: disable-start(unused-return)
-        (bytes32 assignmentID, uint64 identity,,,, bytes32 rootKeyHash, bytes32 evmKeyHash,,,) =
+        (bytes32 assignmentID, uint64 identity,,,, bytes32 rootKeyHash,,,,) =
             custody.exposures(exposureID);
         // forge-lint: disable-end(unused-return)
         if (assignmentID == bytes32(0)) revert ExposureUnknown();
         Asg memory asg = _assignment(assignmentID);
         if (asg.state == 3) revert NotAttributable();
-        bytes32 keyHash = keccak256(h.key);
-        if (h.domain == DOMAIN_ROOT) {
-            if (keyHash != rootKeyHash) revert KeyMismatch();
-            if (h.votingEpoch != asg.rootEpoch) revert EpochMismatch();
-        } else {
-            if (keyHash != evmKeyHash) revert KeyMismatch();
-            if (h.votingEpoch != asg.evmEpoch) revert EpochMismatch();
-        }
+        // only the root domain is admitted (submitEvmEvidence is fail-closed)
+        if (keccak256(h.key) != rootKeyHash) revert KeyMismatch();
+        if (h.votingEpoch != asg.rootEpoch) revert EpochMismatch();
         Policy memory terms = custody.policyTerms(assignmentID);
         _requireTimely(h.votingRound, asg, terms);
 

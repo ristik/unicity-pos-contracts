@@ -495,16 +495,11 @@ contract InvariantHandler is P85Flow {
                 (caseID, ok) = (c, true);
             } catch {}
         } else {
-            Evidence.EvmVote memory v1 = Evidence.EvmVote(
-                keccak256("A"), sign(pk, evidence.evmVoteDigest(h, keccak256("A")))
-            );
-            Evidence.EvmVote memory v2 = Evidence.EvmVote(
-                keccak256("B"), sign(pk, evidence.evmVoteDigest(h, keccak256("B")))
-            );
+            // the EVM domain is fail-closed: no pair is ever admitted (fail_on_revert turns a success into a failure)
+            Evidence.EvmVote memory v = Evidence.EvmVote(keccak256("A"), "");
             vm.prank(who);
-            try evidence.submitEvmEvidence(h, v1, v2, e) returns (bytes32 c) {
-                (caseID, ok) = (c, true);
-            } catch {}
+            vm.expectRevert(Evidence.EvmEvidenceUndefined.selector);
+            evidence.submitEvmEvidence(h, v, v, e);
         }
         // legal failures: late, duplicate offence, key mismatch for rotated keys
         if (ok) {
