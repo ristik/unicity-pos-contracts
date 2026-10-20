@@ -172,6 +172,10 @@ contract RewardPool is ReentrancyGuard {
         GOVERNANCE = IRewardGovernance(governance);
         (,,,, uint64 offset,, bool offsetSet,,,,,,,,,) = CUSTODY.assignments(genesisAssignmentID);
         if (!offsetSet) revert TimelineMismatch();
+        // a genesis committee over the settlement bound could never be settled: refuse it at deployment, not at the first interval
+        if (CUSTODY.assignmentExposures(genesisAssignmentID).length > MAX_MEMBERS) {
+            revert CommitteeTooLarge();
+        }
         START = offset;
         _segments.push(Segment(genesisAssignmentID, offset, 0, false));
         nextStart = offset;

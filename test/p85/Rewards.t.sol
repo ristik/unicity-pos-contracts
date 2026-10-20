@@ -5,7 +5,7 @@ import {P85Flow} from "./P85Flow.sol";
 import {RewardPool} from "../../src/p85/RewardPool.sol";
 import {ElectionPolicy} from "../../src/p85/ElectionPolicy.sol";
 import {GovernanceParams} from "../../src/p85/GovernanceParams.sol";
-import {Policy, ElectionParams, RecordKind} from "../../src/p85/P85Types.sol";
+import {Policy, ElectionParams, RecordKind, RecoveryAckData} from "../../src/p85/P85Types.sol";
 
 /// @dev A payee contract that tries to claim again while it is being paid.
 contract ReenteringPayee {
@@ -328,6 +328,89 @@ contract RewardsTest is RewardsBase {
         assertEq(pool.credits(payee(0)), 0.25 ether, "nothing was paid or debited");
         assertEq(payee(0).balance, 0);
         _conserved();
+    }
+
+    // --- recovery ---------------------------------------------------------------------------------
+
+    /// @dev J was committed (three members, identity 3 left out), never acknowledged; the incumbent slate K (all four) was acknowledged
+    /// instead. J owns [jOffset, kOffset) and K owns [kOffset, ...).
+    function _recover(uint64 jOffset, uint64 kOffset) internal {
+        reserve(RES_J, ASG_J, allExcept(3), 1);
+        pushRecord(
+            RecordKind.RecoveryAck,
+            abi.encode(
+                RecoveryAckData(
+                    RES_J, ASG_K, jOffset, jOffset + 1, jOffset + 50, kOffset, kOffset + 1, 3, 3
+                )
+            )
+        );
+        applyAll();
+        _advanceAll();
+    }
+
+    function test_aRecoveryGivesJItsOwnIntervalBetweenTheTwoOffsets() public {
+        clock(100, 10);
+        _recover(300, 700);
+        assertEq(pool.segmentCount(), 3);
+        assertEq(pool.segmentAt(0).end, 300);
+        assertEq(pool.segmentAt(1).assignmentID, ASG_J);
+        assertEq(pool.segmentAt(1).start, 300);
+        assertEq(pool.segmentAt(1).end, 700);
+        assertTrue(pool.segmentAt(1).ended);
+        assertEq(pool.segmentAt(2).assignmentID, ASG_K);
+        assertEq(pool.segmentAt(2).start, 700);
+        assertFalse(pool.segmentAt(2).ended);
+
+        clock(2_000, 20);
+        // [0,300) G, [300,700) J, [700,1000) K, [1000,2000) K
+        assertEq(_drain(), 4);
+        uint256 jBudget = 0.4 ether;
+        uint256 j = jBudget / 3; // J's three members, rounded down
+        assertEq(pool.credits(payee(0)), 0.3 ether / 4 + j + 1.3 ether / 4);
+        assertEq(pool.credits(payee(2)), 0.3 ether / 4 + j + 1.3 ether / 4);
+        assertEq(pool.credits(payee(3)), 0.3 ether / 4 + 1.3 ether / 4, "left out of J, back in K");
+        assertEq(
+            pool.totalCredits(), 2 ether - (jBudget - 3 * j), "the rounding dust stays available"
+        );
+        _conserved();
+    }
+
+    function test_aZeroLengthJEarnsNothingAndHandsOverToK() public {
+        clock(100, 10);
+        _recover(500, 500);
+        assertEq(pool.segmentAt(1).start, pool.segmentAt(1).end);
+        clock(1_000, 20);
+        assertEq(_drain(), 2, "[0,500) G and [500,1000) K; the empty J is skipped within the call");
+        for (uint256 i; i < 4; ++i) {
+            assertEq(pool.credits(payee(i)), 0.5 ether / 4 + 0.5 ether / 4);
+        }
+        assertEq(pool.totalCredits(), 1 ether);
+    }
+
+    function test_jMayStraddleAGridPoint() public {
+        clock(100, 10);
+        _recover(300, 1_700);
+        clock(3_000, 20);
+        // [0,300) G, [300,1000) J, [1000,1700) J, [1700,2000) K, [2000,3000) K
+        assertEq(_drain(), 5);
+        uint256 jBudget = 0.7 ether;
+        uint256 j = (jBudget / 3) * 2; // two J intervals, each rounded down on its own
+        assertEq(pool.credits(payee(1)), 0.3 ether / 4 + j + 1.3 ether / 4);
+        assertEq(pool.credits(payee(3)), 0.3 ether / 4 + 1.3 ether / 4);
+        _conserved();
+    }
+
+    function test_kBeforeJIsNotATimeline() public {
+        clock(100, 10);
+        reserve(RES_J, ASG_J, allExcept(3), 1);
+        pushRecord(
+            RecordKind.RecoveryAck,
+            abi.encode(RecoveryAckData(RES_J, ASG_K, 700, 701, 750, 300, 301, 3, 3))
+        );
+        applyAll();
+        vm.expectRevert(RewardPool.TimelineMismatch.selector);
+        pool.advanceRecords(2);
+        assertEq(pool.recordCursor(), 0, "the reward operation failed, nothing was read");
     }
 
     // --- rate changes ----------------------------------------------------------------------------

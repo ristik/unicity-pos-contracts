@@ -12,6 +12,7 @@ import {SelectionEngine} from "../../src/p85/SelectionEngine.sol";
 import {EligibilityReader} from "../../src/p85/EligibilityReader.sol";
 import {FixedPolicy} from "../../src/p85/FixedPolicy.sol";
 import {GovernanceParams} from "../../src/p85/GovernanceParams.sol";
+import {RewardPool} from "../../src/p85/RewardPool.sol";
 import {PolicyBounds} from "../../src/p85/PolicyBounds.sol";
 import {
     Policy,
@@ -324,6 +325,32 @@ contract GenesisTest is P85Base {
         vm.deal(address(this), 65_538 * 100 * UCT);
         vm.expectRevert(CustodyStorage.InvalidGenesis.selector);
         deployer.factory{value: 65_538 * 100 * UCT}(_config(ids));
+    }
+
+    function _members(uint256 n) internal returns (GenesisIdentity[] memory ids) {
+        ids = new GenesisIdentity[](n);
+        for (uint256 i; i < n; ++i) {
+            ids[i] = GenesisIdentity({
+                owner: address(uint160(0xA100 + i)),
+                withdrawal: address(uint160(0xB100 + i)),
+                rootKey: compressed(rootPk(i)),
+                evmKey: compressed(evmPk(i)),
+                rootNodeID: bytes32(uint256(1 + i)),
+                evmNodeID: bytes32(uint256(1_001 + i)),
+                operatorPayee: address(uint160(0xC100 + i)),
+                bond: 100 * UCT
+            });
+        }
+    }
+
+    /// @dev The reward pool settles an interval over the whole committee in one call, at most MAX_MEMBERS (16): a larger genesis committee
+    /// is refused at deployment instead of leaving rewards that could never be settled.
+    function test_aGenesisCommitteeOverTheRewardBoundIsRefusedAtDeployment() public {
+        vm.deal(address(this), 17 * 100 * UCT);
+        deployer.factory{value: 16 * 100 * UCT}(_config(_members(16)));
+        vm.deal(address(this), 17 * 100 * UCT);
+        vm.expectRevert(RewardPool.CommitteeTooLarge.selector);
+        deployer.factory{value: 17 * 100 * UCT}(_config(_members(17)));
     }
 
     function test_factoryRejectsRootKeyReusedAsEvmKey() public {
