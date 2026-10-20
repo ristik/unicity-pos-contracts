@@ -92,6 +92,11 @@ abstract contract P85Base is Test {
         return ROOT_NETWORK;
     }
 
+    /// @dev The root-record source of custody, election and evidence; a test that imports through the SealRegistry returns its address.
+    function _recordSource() internal view virtual returns (address) {
+        return address(roots);
+    }
+
     function _rootGenesis() internal view virtual returns (bytes32) {
         return ROOT_GENESIS;
     }
@@ -147,7 +152,7 @@ abstract contract P85Base is Test {
             network: NETWORK,
             rootNetwork: _rootNetwork(),
             rootGenesis: _rootGenesis(),
-            roots: address(roots),
+            roots: _recordSource(),
             treasury: treasury,
             bondUnit: uint128(100 * UCT),
             minBond: uint128(100 * UCT),
@@ -209,7 +214,7 @@ abstract contract P85Base is Test {
             selection: address(new SelectionEngine()),
             reader: address(new EligibilityReader(address(custody), address(evidence))),
             policySource: policySource,
-            roots: address(roots),
+            roots: _recordSource(),
             treasury: treasury,
             bondUnit: uint128(100 * UCT),
             minBond: manualMinBond,
@@ -228,7 +233,7 @@ abstract contract P85Base is Test {
                 election: address(election),
                 evidence: address(evidence),
                 policySource: policySource,
-                roots: address(roots),
+                roots: _recordSource(),
                 treasury: treasury,
                 bondUnit: uint128(100 * UCT),
                 minBond: manualMinBond,

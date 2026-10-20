@@ -26,7 +26,7 @@ getters report. bft-core's `rootchain/evmstate` derives every slot from the decl
 (`testdata/` there holds copies). The custody scenarios use the test mock as `roots`; bft-core pairs them with registry storage built from
 the registry fixture's slot rules.
 
-# xrepo-go-records.json, xrepo-custody-view.json, xrepo-genesis-input.json
+# xrepo-go-records.json, xrepo-custody-view.json, xrepo-genesis-input.json, xrepo-go-retirement.json
 The cross-repository consistency suite (bft-core `xrepo/README.md` has the whole picture and the list of what is and is not covered).
 
 - `xrepo-go-records.json` is produced by bft-core (`XREPO_UPDATE=1 go test ./xrepo`) from this repository's `publication.json`: the root
@@ -37,6 +37,11 @@ The cross-repository consistency suite (bft-core `xrepo/README.md` has the whole
   compares it with its own model.
 - `xrepo-genesis-input.json` is what bft-core's `ubft pos-relayer genesis --out-contracts` writes for a committed plan over the FULL shard
   configuration. `XRepoGenesis.t.sol` runs `script/P85Genesis.s.sol` on it and checks custody holds the genesis assignment under the file's id.
+- `xrepo-go-retirement.json` is produced by bft-core (same command): the ack history followed by the Retirements of identities 1 and 2,
+  whose reference digests are custody's exposure chains as the root derives them, and two conflicting scheme 2 root votes of identity 1's
+  root key in J's epoch, signed by the root's signer. `XRepoRetirement.t.sol` imports each record through the real SealRegistry
+  (`RegistryDriver.sol`) and applies it verbatim, charges the Go pair to the retired identity's historical exposure, and takes one held
+  and one clean lot through maturity and claim.
 
 All shared files, in both directions, are listed in bft-core `xrepo/fixtures.json`; CI compares every copy with bft-core at the commit in
 `xrepo/bft-core-pin.json`.
