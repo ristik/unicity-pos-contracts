@@ -650,7 +650,7 @@ contract EvidenceGoSignedTest is GoSignedBase {
         evidence.submitEvidence(hdr, _vote(_idx("eq.a")), _vote(_idx("eq.b")), genesisExposure(0));
         hdr.domain = 1;
         Evidence.EvmVote memory e = Evidence.EvmVote(bytes32(uint256(1)), "");
-        vm.expectRevert(Evidence.BadDomain.selector);
+        vm.expectRevert(Evidence.EvmEvidenceUndefined.selector); // the EVM path is fail-closed
         evidence.submitEvmEvidence(hdr, e, e, genesisExposure(0));
     }
 

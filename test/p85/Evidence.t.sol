@@ -40,14 +40,6 @@ contract EvidenceTest is P85Flow {
         return rootVote(h, exec, keyPk);
     }
 
-    function _evmVote(Evidence.VoteHeader memory h, bytes32 payload, uint256 keyPk)
-        internal
-        view
-        returns (Evidence.EvmVote memory)
-    {
-        return Evidence.EvmVote(payload, sign(keyPk, evidence.evmVoteDigest(h, payload)));
-    }
-
     function _submitAs(
         address who,
         uint8 domain,
@@ -58,17 +50,10 @@ contract EvidenceTest is P85Flow {
     ) internal returns (bytes32 caseID) {
         Evidence.VoteHeader memory h = _header(domain, keyPk, epoch, round);
         // (the statements are built before the prank: their digest is an external call to the module)
-        if (domain == EVM) {
-            Evidence.EvmVote memory ea = _evmVote(h, keccak256("A"), keyPk);
-            Evidence.EvmVote memory eb = _evmVote(h, keccak256("B"), keyPk);
-            vm.prank(who);
-            caseID = evidence.submitEvmEvidence(h, ea, eb, exposureID_);
-        } else {
-            Evidence.SignedVote memory a = _vote(h, keccak256("A"), keyPk);
-            Evidence.SignedVote memory b = _vote(h, keccak256("B"), keyPk);
-            vm.prank(who);
-            caseID = evidence.submitEvidence(h, a, b, exposureID_);
-        }
+        Evidence.SignedVote memory a = _vote(h, keccak256("A"), keyPk);
+        Evidence.SignedVote memory b = _vote(h, keccak256("B"), keyPk);
+        vm.prank(who);
+        caseID = evidence.submitEvidence(h, a, b, exposureID_);
     }
 
     function _submit(uint8 domain, uint256 keyPk, uint64 epoch, uint64 round, bytes32 exposureID_)
@@ -127,9 +112,55 @@ contract EvidenceTest is P85Flow {
     function test_aDistinctRoundOrDomainIsADistinctOffence() public {
         bytes32 c1 = _submit(ROOT, rootPk(0), 1, 10, genesisExposure(0));
         bytes32 c2 = _submit(ROOT, rootPk(0), 1, 11, genesisExposure(0));
-        bytes32 c3 = _submit(EVM, evmPk(0), 1, 10, genesisExposure(0));
-        assertTrue(c1 != c2 && c1 != c3 && c2 != c3);
-        assertEq(evidence.pendingHolds(lotOf(gid(0))), 3);
+        assertTrue(c1 != c2);
+        assertEq(evidence.pendingHolds(lotOf(gid(0))), 2);
+        // the domain is part of the offence ID, although only the root domain is admitted today
+        assertTrue(
+            evidence.offenceIDOf(_header(ROOT, rootPk(0), 1, 10))
+                != evidence.offenceIDOf(_header(EVM, rootPk(0), 1, 10))
+        );
+    }
+
+    /// The EVM domain is fail-closed until an authenticated EVM-validator format exists: a pair the earlier opaque path admitted
+    /// (two distinct payloads signed by the exposure's EVM key under the old keccak digest, right epoch, timely) is refused with the
+    /// named error, and so is anything else; nothing is held, and the same slot stays open for the root domain.
+    function test_evmEvidenceIsFailClosed() public {
+        Evidence.VoteHeader memory h = _header(EVM, evmPk(0), 1, 10);
+        Evidence.EvmVote memory ea =
+            Evidence.EvmVote(keccak256("A"), sign(evmPk(0), _oldEvmDigest(h, keccak256("A"))));
+        Evidence.EvmVote memory eb =
+            Evidence.EvmVote(keccak256("B"), sign(evmPk(0), _oldEvmDigest(h, keccak256("B"))));
+        vm.expectRevert(Evidence.EvmEvidenceUndefined.selector);
+        evidence.submitEvmEvidence(h, ea, eb, genesisExposure(0));
+
+        Evidence.EvmVote memory junk = Evidence.EvmVote(bytes32(0), "");
+        Evidence.VoteHeader memory other = _header(ROOT, rootPk(0), 9, 0);
+        other.network = keccak256("another network");
+        vm.expectRevert(Evidence.EvmEvidenceUndefined.selector);
+        evidence.submitEvmEvidence(other, junk, junk, bytes32(0));
+
+        assertEq(evidence.pendingHolds(lotOf(gid(0))), 0);
+        _submit(ROOT, rootPk(0), 1, 10, genesisExposure(0));
+        assertEq(evidence.pendingHolds(lotOf(gid(0))), 1);
+    }
+
+    /// The digest the earlier opaque EVM path verified (removed from the contract).
+    function _oldEvmDigest(Evidence.VoteHeader memory h, bytes32 payload)
+        internal
+        pure
+        returns (bytes32)
+    {
+        return keccak256(
+            abi.encode(
+                keccak256("unicity.p85.s1.vote"),
+                h.network,
+                h.domain,
+                keccak256(h.key),
+                h.votingEpoch,
+                h.votingRound,
+                payload
+            )
+        );
     }
 
     function test_admissionRejectsEachMalformedPairIsolated() public {
@@ -182,24 +213,12 @@ contract EvidenceTest is P85Flow {
         vm.expectRevert(Evidence.KeyMismatch.selector);
         evidence.submitEvidence(h, a, b, genesisExposure(1));
 
-        // the EVM domain checks the EVM key: a root-key pair with domain EVM mismatches
-        Evidence.VoteHeader memory evmHeader = _header(EVM, rootPk(0), 1, 10);
-        Evidence.EvmVote memory ea = _evmVote(evmHeader, keccak256("A"), rootPk(0));
-        Evidence.EvmVote memory eb = _evmVote(evmHeader, keccak256("B"), rootPk(0));
-        vm.expectRevert(Evidence.KeyMismatch.selector);
-        evidence.submitEvmEvidence(evmHeader, ea, eb, genesisExposure(0));
-
         // epoch 2 is not the epoch G held the key in
         Evidence.VoteHeader memory wrongEpoch = _header(ROOT, rootPk(0), 2, 10);
         Evidence.SignedVote memory wa = _vote(wrongEpoch, keccak256("A"), rootPk(0));
         Evidence.SignedVote memory wb = _vote(wrongEpoch, keccak256("B"), rootPk(0));
         vm.expectRevert(Evidence.EpochMismatch.selector);
         evidence.submitEvidence(wrongEpoch, wa, wb, genesisExposure(0));
-        Evidence.VoteHeader memory wrongEvmEpoch = _header(EVM, evmPk(0), 7, 10);
-        Evidence.EvmVote memory xa = _evmVote(wrongEvmEpoch, keccak256("A"), evmPk(0));
-        Evidence.EvmVote memory xb = _evmVote(wrongEvmEpoch, keccak256("B"), evmPk(0));
-        vm.expectRevert(Evidence.EpochMismatch.selector);
-        evidence.submitEvmEvidence(wrongEvmEpoch, xa, xb, genesisExposure(0));
 
         // round 0 is no vote round at all (the roots start at 1), whatever the epoch's first round
         Evidence.VoteHeader memory early = _header(ROOT, rootPk(0), 1, 0);
