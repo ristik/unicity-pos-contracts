@@ -715,7 +715,8 @@ contract SealRegistry is IRootRecords {
         if (!ready) _store(B1Layout.F_ORIGIN_READY, 1);
     }
 
-    /// @dev Writes the 11 metadata words and 8 words per member of one entry.
+    /// @dev Writes the 11 metadata words and 8 words per member of one entry, and its commitment C_e at field 11 (never rewritten:
+    /// closing the epoch writes only fields 5 and 6, which C_e excludes).
     function _writeEntry(B1Entry calldata en) private {
         uint256 e = en.epoch;
         uint256 m = en.members.length;
@@ -743,6 +744,52 @@ contract SealRegistry is IRootRecords {
             _store(B1Layout.memberSlot(e, j, 5), uint256(mem.key[0]));
             _store(B1Layout.memberSlot(e, j, 6), uint256(mem.key[1]));
             _store(B1Layout.memberSlot(e, j, 7), mem.weight);
+        }
+        _store(
+            B1Layout.entrySlot(e, B1Layout.COMMITMENT_FIELD),
+            uint256(
+                B1Layout.epochCommitment(
+                    bytes32(_load(SLOT_GENESIS_COMMITMENT)),
+                    bytes32(_load(B1Layout.F_PROFILE_HASH)),
+                    en,
+                    total
+                )
+            )
+        );
+    }
+
+    // ------------------------------------------------------------------ B7 trust cache
+
+    /// @notice The most epochs one epochCommitments call reads: the most root epochs one B7 journal names.
+    uint256 public constant MAX_COMMITMENT_VIEW = 64;
+
+    /// The view names no epoch or more than MAX_COMMITMENT_VIEW.
+    error CommitmentViewBounds();
+    /// A named epoch is not installed, or its cached commitment is zero.
+    error EpochCommitmentMissing(uint64 epoch);
+
+    /// @notice The cached C_e of each named epoch with its closure words (end, hasEnd), which C_e excludes. One direct lookup per
+    ///         epoch, in the caller's order; it never enumerates the history.
+    function epochCommitments(uint64[] calldata epochs)
+        external
+        view
+        returns (bytes32[] memory commitments, uint64[] memory ends, bool[] memory hasEnd)
+    {
+        uint256 n = epochs.length;
+        if (n == 0 || n > MAX_COMMITMENT_VIEW) revert CommitmentViewBounds();
+        commitments = new bytes32[](n);
+        ends = new uint64[](n);
+        hasEnd = new bool[](n);
+        for (uint256 i = 0; i < n; i++) {
+            uint256 e = epochs[i];
+            bytes32 c = bytes32(_load(B1Layout.entrySlot(e, B1Layout.COMMITMENT_FIELD)));
+            if (_load(B1Layout.entrySlot(e, 0)) != 1 || c == 0) {
+                revert EpochCommitmentMissing(epochs[i]);
+            }
+            commitments[i] = c;
+            // forge-lint: disable-next-line(unsafe-typecast)
+            ends[i] = uint64(_load(B1Layout.entrySlot(e, 5))); // written only from a uint64 start
+            hasEnd[i] = _load(B1Layout.entrySlot(e, 6)) == 1;
         }
     }
 

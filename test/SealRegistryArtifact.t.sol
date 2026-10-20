@@ -59,11 +59,11 @@ contract SealRegistryArtifactTest is SealRegistryBase {
         string memory json = vm.readFile(ARTIFACT);
         assertEq(vm.parseJsonBytes32(json, ".b1Layout.entry.prefix.key"), fixedSlot("b1.entry"));
         assertEq(vm.parseJsonBytes32(json, ".b1Layout.member.prefix.key"), fixedSlot("b1.member"));
-        assertEq(vm.parseJsonStringArray(json, ".b1Layout.entry.fields").length, 11);
+        assertEq(vm.parseJsonStringArray(json, ".b1Layout.entry.fields").length, 12);
         assertEq(vm.parseJsonStringArray(json, ".b1Layout.member.fields").length, 8);
         assertEq(vm.parseJsonUint(json, ".b1Layout.bounds.maxMembers"), 16);
         assertEq(vm.parseJsonUint(json, ".b1Layout.bounds.maxNodeIDBytes"), 128);
-        assertEq(vm.parseJsonUint(json, ".b1Layout.bounds.maxEntryWords"), 11 + 8 * 16);
+        assertEq(vm.parseJsonUint(json, ".b1Layout.bounds.maxEntryWords"), 12 + 8 * 16);
         assertEq(vm.parseJsonUint(json, ".b1Layout.bounds.maxMeasuredB"), builder.MAX_MEASURED_B());
         assertEq(vm.parseJsonUint(json, ".gasProfile.gRestBound.safetyFactor.numerator"), 3);
         assertEq(vm.parseJsonUint(json, ".gasProfile.gRestBound.safetyFactor.denominator"), 2);

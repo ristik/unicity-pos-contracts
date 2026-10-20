@@ -106,6 +106,7 @@ abstract contract SealRegistryB1Helpers is SealRegistryBase {
         vm.store(A_SR, eSlot(e, 8), en.signingConfigHash);
         vm.store(A_SR, eSlot(e, 9), bytes32(en.members.length));
         vm.store(A_SR, eSlot(e, 10), bytes32(totalWeight(en.members)));
+        vm.store(A_SR, eSlot(e, 11), expectedCommitment(en));
         for (uint256 j = 0; j < en.members.length; j++) {
             B1Member memory x = en.members[j];
             vm.store(A_SR, mSlot(e, j, 0), bytes32(uint256(x.nodeIDLength)));
@@ -119,7 +120,7 @@ abstract contract SealRegistryB1Helpers is SealRegistryBase {
     }
 
     function clearEntry(uint256 e, uint256 maxMembers) internal {
-        for (uint256 f = 0; f < 11; f++) {
+        for (uint256 f = 0; f < 12; f++) {
             vm.store(A_SR, eSlot(e, f), bytes32(0));
         }
         for (uint256 j = 0; j < maxMembers; j++) {

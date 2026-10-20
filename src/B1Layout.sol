@@ -112,6 +112,10 @@ library B1Layout {
     bytes32 internal constant F_MEMBER = keccak256("unicity.seal-registry/b1.member");
     /// The registry format word: 2 is the permanent layout.
     uint256 internal constant FORMAT = 2;
+    /// E(e, 11) caches C_e, the entry's trust commitment (B7 design §3): written with the entry, never rewritten.
+    uint256 internal constant COMMITMENT_FIELD = 11;
+    bytes32 internal constant COMMITMENT_DOMAIN =
+        keccak256("unicity.seal-registry.v2/epoch-commitment");
 
     /// E(e,f) = keccak256(abi.encode(F("b1.entry"), uint256(e), uint256(f))), f = 0..10:
     /// present, bodyKind, bodyID, activationCommitID, start, end, hasEnd, signingScheme,
@@ -140,6 +144,50 @@ library B1Layout {
             mstore(add(p, 0x40), j)
             mstore(add(p, 0x60), f)
             slot := keccak256(p, 0x80)
+        }
+    }
+
+    /// C_e = keccak256(COMMITMENT_DOMAIN || genesisCommitment || profileHash || epoch || the stored metadata words 0-4 and 7-10 ||
+    /// the 8 stored words of every member, in order): bft-core `b1state.Deployment.EpochCommitment`. The closure words 5 and 6 are
+    /// excluded, so closing the epoch does not change it. `total` is the checked total weight (stored word 10).
+    ///
+    /// A static B1Member is ABI-encoded as exactly its 8 stored words in stored order, so the members are hashed straight from
+    /// calldata. Precondition: `checkEntry(en, ...)` has run, which reads every member field through the ABI decoder and so refuses a
+    /// uint64 word with dirty high bits before this raw copy could hash it.
+    function epochCommitment(
+        bytes32 genesisCommitment,
+        bytes32 profileHash,
+        B1Entry calldata en,
+        uint256 total
+    ) internal pure returns (bytes32 c) {
+        B1Member[] calldata ms = en.members;
+        bytes32 domain = COMMITMENT_DOMAIN;
+        uint256 epoch = en.epoch;
+        uint256 bodyKind = en.bodyKind;
+        bytes32 bodyID = en.bodyID;
+        bytes32 activation = en.activationCommitID;
+        uint256 start = en.start;
+        uint256 scheme = en.signingScheme;
+        bytes32 signing = en.signingConfigHash;
+        assembly ("memory-safe") {
+            // Temporary words above the free pointer, never kept (as in entrySlot).
+            let p := mload(0x40)
+            mstore(p, domain)
+            mstore(add(p, 0x20), genesisCommitment)
+            mstore(add(p, 0x40), profileHash)
+            mstore(add(p, 0x60), epoch)
+            mstore(add(p, 0x80), 1) // present
+            mstore(add(p, 0xa0), bodyKind)
+            mstore(add(p, 0xc0), bodyID)
+            mstore(add(p, 0xe0), activation)
+            mstore(add(p, 0x100), start)
+            mstore(add(p, 0x120), scheme)
+            mstore(add(p, 0x140), signing)
+            mstore(add(p, 0x160), ms.length)
+            mstore(add(p, 0x180), total)
+            let n := mul(ms.length, 0x100)
+            calldatacopy(add(p, 0x1a0), ms.offset, n)
+            c := keccak256(p, add(0x1a0, n))
         }
     }
 

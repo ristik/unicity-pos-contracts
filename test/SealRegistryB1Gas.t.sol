@@ -210,8 +210,8 @@ contract SealRegistryB1GasModelTest is Test, CancunPrices {
 
 /// @notice Gross gas of maximal updates of the permanent registry: B = 0, 1 and 2 imported epochs of the 16-member ceiling.
 ///
-/// The system call budget is g_sys >= 155936 + (505244 + 177800*16)*B + G_rest(B), where the SSTORE rectangle covers the HISTORY writes only
-/// (per imported epoch 11 + 8*16 = 139 entry words at 22100, plus the former tip's closure (2 words) and the cursor words (importedTipEpoch,
+/// The system call budget is g_sys >= 155936 + (527344 + 177800*16)*B + G_rest(B), where the SSTORE rectangle covers the HISTORY writes only
+/// (per imported epoch 12 + 8*16 = 140 entry words at 22100, the C_e cache word included, plus the former tip's closure (2 words) and the cursor words (importedTipEpoch,
 /// originReady), no refund credit and nothing is ever cleared), and G_rest bounds every other cost of open + finalize: SLOADs, hashing, calldata
 /// decode, memory, the operational-registry writes and the whole of finalize.
 ///
@@ -229,7 +229,7 @@ abstract contract SealRegistryB1GasBase is SealRegistryB1Helpers, CancunPrices {
     /// open (acknowledgement path) writes at most 26 operational words, finalize 2.
     uint256 internal constant OPERATIONAL_WRITES_MAX = 28;
     uint64 internal constant ORIGIN0 = 1000;
-    uint256 internal constant ENTRY_WORDS_MAX = 11 + 8 * 16;
+    uint256 internal constant ENTRY_WORDS_MAX = 12 + 8 * 16; // 11 metadata words, the C_e cache word, 8 per member
 
     mapping(bytes32 => bool) internal isOperational;
     mapping(bytes32 => uint256) internal seenInRun;
@@ -407,7 +407,7 @@ abstract contract SealRegistryB1GasBase is SealRegistryB1Helpers, CancunPrices {
         price(d, t);
     }
 
-    /// @dev The history-write rectangle for `b` imported epochs of the 16-member ceiling: 139 entry words each, the former tip's two closure
+    /// @dev The history-write rectangle for `b` imported epochs of the 16-member ceiling: 140 entry words each, the former tip's two closure
     /// words and the two cursor words.
     function allowance(uint256 b) internal pure returns (uint256) {
         return b == 0 ? 0 : WORD_SSTORE_MAX * (ENTRY_WORDS_MAX * b + 4);
@@ -431,7 +431,7 @@ abstract contract SealRegistryB1GasBase is SealRegistryB1Helpers, CancunPrices {
         emit log_named_uint("  rest* (worst operational writes)", rest);
         emit log_named_uint("  G_rest(B) allowance", builder.gRestBound(b));
 
-        // The premises that make the rectangle cover the history writes: an imported epoch writes at most 139 words, the update at most 4 more
+        // The premises that make the rectangle cover the history writes: an imported epoch writes at most 140 words, the update at most 4 more
         // (the former tip's end and flag, importedTipEpoch, originReady), and no write is dearer than a cold set.
         assertLe(
             t.histWrites, ENTRY_WORDS_MAX * b + 4, "history writes within the rectangle's count"

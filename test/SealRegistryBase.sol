@@ -5,6 +5,7 @@ import {Test} from "forge-std/Test.sol";
 import {SealRegistry} from "../src/SealRegistry.sol";
 import {B1Entry, B1Member, B1Update} from "../src/B1Layout.sol";
 import {B1GenesisBuilder, B1GenesisParams, B1Word} from "../src/B1GenesisBuilder.sol";
+import {B7Relation} from "../src/b7/B7Relation.sol";
 
 /// @notice Shared fixture: the registry's runtime code placed at a_sr with the genesis words of
 /// bft-core #153 §5.4 plus the B1 genesis entry and queue, and helpers that address storage by the
@@ -209,8 +210,56 @@ abstract contract SealRegistryBase is Test {
         return uint64(b1Word("b1.genesisEpoch"));
     }
 
-    /// @dev Requires every one of the 11 + 8m words of an entry to equal the independent expectation,
-    /// and the member words from m up to maxMembers to be zero (no stale tail).
+    /// @dev C_e of an entry from its fields, through B7Relation (whose formula the bft-core b7rel vectors pin), not B1Layout.
+    function expectedCommitment(B1Entry memory en) internal pure returns (bytes32) {
+        bytes32[11] memory meta;
+        meta[0] = bytes32(uint256(1));
+        meta[1] = bytes32(uint256(en.bodyKind));
+        meta[2] = en.bodyID;
+        meta[3] = en.activationCommitID;
+        meta[4] = bytes32(uint256(en.start));
+        meta[7] = bytes32(uint256(en.signingScheme));
+        meta[8] = en.signingConfigHash;
+        meta[9] = bytes32(en.members.length);
+        meta[10] = bytes32(totalWeight(en.members));
+        bytes32[] memory ms = new bytes32[](8 * en.members.length);
+        for (uint256 j = 0; j < en.members.length; j++) {
+            B1Member memory x = en.members[j];
+            ms[8 * j] = bytes32(uint256(x.nodeIDLength));
+            for (uint256 w = 0; w < 4; w++) {
+                ms[8 * j + 1 + w] = x.nodeID[w];
+            }
+            ms[8 * j + 5] = x.key[0];
+            ms[8 * j + 6] = x.key[1];
+            ms[8 * j + 7] = bytes32(uint256(x.weight));
+        }
+        return B7Relation.epochCommitment(GENESIS_COMMITMENT, PROFILE_HASH, en.epoch, meta, ms);
+    }
+
+    /// @dev C_e recomputed from the words the registry holds for epoch e (and its genesisCommitment and b1.profileHash words).
+    function storedWordsCommitment(uint64 e) internal view returns (bytes32) {
+        bytes32[11] memory meta;
+        for (uint256 f = 0; f < 11; f++) {
+            meta[f] = ent(e, f);
+        }
+        uint256 m = uint256(meta[9]);
+        bytes32[] memory ms = new bytes32[](8 * m);
+        for (uint256 j = 0; j < m; j++) {
+            for (uint256 f = 0; f < 8; f++) {
+                ms[8 * j + f] = memW(e, j, f);
+            }
+        }
+        return B7Relation.epochCommitment(
+            vm.load(A_SR, fixedSlot("genesisCommitment")),
+            bytes32(b1Word("b1.profileHash")),
+            e,
+            meta,
+            ms
+        );
+    }
+
+    /// @dev Requires every one of the 12 + 8m words of an entry (the C_e cache word included) to equal the independent
+    /// expectation, and the member words from m up to maxMembers to be zero (no stale tail).
     function assertEntryStored(B1Entry memory en, uint256 maxMembers) internal view {
         uint256 e = en.epoch;
         assertEq(ent(e, 0), bytes32(uint256(1)), "present");
@@ -224,6 +273,7 @@ abstract contract SealRegistryBase is Test {
         assertEq(ent(e, 8), en.signingConfigHash, "signingConfigHash");
         assertEq(ent(e, 9), bytes32(en.members.length), "memberCount");
         assertEq(ent(e, 10), bytes32(totalWeight(en.members)), "totalWeight");
+        assertEq(ent(e, 11), expectedCommitment(en), "commitment");
         for (uint256 j = 0; j < en.members.length; j++) {
             B1Member memory x = en.members[j];
             assertEq(memW(e, j, 0), bytes32(uint256(x.nodeIDLength)), "nodeIDLength");
@@ -241,9 +291,9 @@ abstract contract SealRegistryBase is Test {
         }
     }
 
-    /// @dev Every metadata and member word (up to maxMembers) of epoch e is zero.
+    /// @dev Every metadata, commitment and member word (up to maxMembers) of epoch e is zero.
     function assertEntryAbsent(uint256 e, uint256 maxMembers) internal view {
-        for (uint256 f = 0; f < 11; f++) {
+        for (uint256 f = 0; f < 12; f++) {
             assertEq(ent(e, f), bytes32(0), "stale entry word");
         }
         for (uint256 j = 0; j < maxMembers; j++) {
@@ -267,7 +317,7 @@ abstract contract SealRegistryBase is Test {
             )
         );
         for (uint256 e = 0; e < TRACK_EPOCHS; e++) {
-            for (uint256 f = 0; f < 11; f++) {
+            for (uint256 f = 0; f < 12; f++) {
                 d = keccak256(abi.encode(d, ent(e, f)));
             }
             for (uint256 j = 0; j < TRACK_MEMBERS; j++) {
@@ -341,7 +391,7 @@ abstract contract SealRegistryBase is Test {
             )
         );
         for (uint256 e = 0; e < TRACK_EPOCHS; e++) {
-            for (uint256 f = 0; f < 11; f++) {
+            for (uint256 f = 0; f < 12; f++) {
                 d = keccak256(abi.encode(d, ent(e, f)));
             }
         }

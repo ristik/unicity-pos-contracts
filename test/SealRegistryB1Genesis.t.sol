@@ -51,8 +51,9 @@ contract SealRegistryB1GenesisTest is SealRegistryBase {
         B1Word[] memory ws = _build(genesisParams());
         // 6 operational (genesisCommitment, config, rootEpoch, activeConf, records.ucTime, phase; shard epoch 0 is
         // absent) + 6 profile and cursors (network, format, profileHash, initialized, genesisEpoch, importedTipEpoch;
-        // originReady is 0) + 8 entry metadata (activationCommitID, end, hasEnd are zero) + the non-zero member words.
-        assertEq(ws.length, 6 + 6 + 8 + nonZeroMemberWords(genesisEntry().members));
+        // originReady is 0) + 8 entry metadata (activationCommitID, end, hasEnd are zero) + the C_e cache word + the non-zero member
+        // words.
+        assertEq(ws.length, 6 + 6 + 8 + 1 + nonZeroMemberWords(genesisEntry().members));
         for (uint256 i = 0; i < ws.length; i++) {
             assertTrue(ws[i].value != bytes32(0), "zero words are omitted");
             for (uint256 j = 0; j < i; j++) {
@@ -148,7 +149,7 @@ contract SealRegistryB1GenesisTest is SealRegistryBase {
     }
 
     bytes32 internal constant GENESIS_STORAGE_DIGEST =
-        0x8c9f35d7df00fd660f826cb340b4adc651c90cf0d6a6ff4ee9ab9d9f36e26c76;
+        0x4cba716f24823d619e9fd171dd01ca934ae138e09fa04508e5dd45a45542f7c9;
 
     function test_theInstalledGenesisRoundTripsThroughTheIndependentReaders() public view {
         assertEntryStored(genesisEntry(), 8);
@@ -182,7 +183,7 @@ contract SealRegistryB1GenesisTest is SealRegistryBase {
         for (uint256 j = 0; j < 16; j++) {
             p.entry.members[j] = member(0xA0, uint8(j));
         }
-        assertEq(_build(p).length, 6 + 6 + 8 + nonZeroMemberWords(p.entry.members));
+        assertEq(_build(p).length, 6 + 6 + 8 + 1 + nonZeroMemberWords(p.entry.members));
         // and it installs, and the registry's own storage view agrees
         B1Word[] memory ws = _build(p);
         for (uint256 i = 0; i < ws.length; i++) {
@@ -233,11 +234,11 @@ contract SealRegistryB1GenesisTest is SealRegistryBase {
     // ---------------------------------------------------------------- gas envelope
 
     function test_minGSysIsTheSpecifiedEnvelope() public view {
-        // B = 1: 155936 + (505244 + 177800*16) = 3,505,980, the contract's planning cross-check at N = 16
-        assertEq(builder.minGSys(1, 0), 3_505_980);
-        assertEq(builder.minGSys(1, 12_345), 3_505_980 + 12_345);
-        // B = 2: 155936 + 2*(505244 + 177800*16)
-        assertEq(builder.minGSys(2, 0), 155_936 + 2 * (505_244 + 177_800 * 16));
+        // B = 1: 155936 + (527344 + 177800*16) = 3,528,080, the contract's planning cross-check at N = 16
+        assertEq(builder.minGSys(1, 0), 3_528_080);
+        assertEq(builder.minGSys(1, 12_345), 3_528_080 + 12_345);
+        // B = 2: 155936 + 2*(527344 + 177800*16)
+        assertEq(builder.minGSys(2, 0), 155_936 + 2 * (527_344 + 177_800 * 16));
     }
 
     function test_gSysBelowTheEnvelopeIsRefusedAndAtTheEnvelopeAccepted() public {

@@ -56,10 +56,11 @@ contract B1GenesisBuilder {
         return G_REST_BASE + G_REST_PER_EPOCH * b;
     }
 
-    /// g_sys >= 155936 + (505244 + 177800*16)*B + G_rest(B): the full-entry write rectangle for B epochs at the 16-member ceiling (11 + 8N
-    /// words per entry, one predecessor closure, cursors) plus the measured rest. A conservative rectangle, not an attainable cost.
+    /// g_sys >= 155936 + (527344 + 177800*16)*B + G_rest(B): the full-entry write rectangle for B epochs at the 16-member ceiling (12 + 8N
+    /// words per entry with the C_e cache word, one predecessor closure, cursors) plus the measured rest. A conservative rectangle, not an
+    /// attainable cost.
     function minGSys(uint256 b, uint256 gRest) public pure returns (uint256) {
-        return 155_936 + (505_244 + 177_800 * 16) * b + gRest;
+        return 155_936 + (527_344 + 177_800 * 16) * b + gRest;
     }
 
     function words(B1GenesisParams calldata p) external pure returns (B1Word[] memory out) {
@@ -72,7 +73,7 @@ contract B1GenesisBuilder {
         uint64 total = B1Layout.checkEntry(en, true);
 
         uint256 m = en.members.length;
-        out = new B1Word[](16 + 11 + 8 * m);
+        out = new B1Word[](16 + 12 + 8 * m);
         uint256 n = 0;
         // Operational words, re-exported under the single layout (no layoutVersion word).
         n = _put(out, n, _name("genesisCommitment"), p.genesisCommitment);
@@ -101,6 +102,12 @@ contract B1GenesisBuilder {
         n = _put(out, n, B1Layout.entrySlot(e, 8), en.signingConfigHash);
         n = _put(out, n, B1Layout.entrySlot(e, 9), bytes32(m));
         n = _put(out, n, B1Layout.entrySlot(e, 10), bytes32(uint256(total)));
+        n = _put(
+            out,
+            n,
+            B1Layout.entrySlot(e, B1Layout.COMMITMENT_FIELD),
+            B1Layout.epochCommitment(p.genesisCommitment, p.profileHash, en, total)
+        );
         for (uint256 j = 0; j < m; j++) {
             n = _put(
                 out, n, B1Layout.memberSlot(e, j, 0), bytes32(uint256(en.members[j].nodeIDLength))

@@ -80,7 +80,8 @@ jq -n \
 			entry: {
 				prefix: ($prefixes[0]),
 				formula: "E(e,f) = keccak256(abi.encode(F(\"b1.entry\"), uint256(e), uint256(f)))",
-				fields: ["present", "bodyKind", "bodyID", "activationCommitID", "start", "end", "hasEnd", "signingScheme", "signingConfigHash", "memberCount", "totalWeight"]
+				fields: ["present", "bodyKind", "bodyID", "activationCommitID", "start", "end", "hasEnd", "signingScheme", "signingConfigHash", "memberCount", "totalWeight", "commitment"],
+				commitment: "E(e,11) = C_e = keccak256(keccak256(\"unicity.seal-registry.v2/epoch-commitment\") || genesisCommitment || b1.profileHash || uint256(e) || fields 0-4 and 7-10 || the 8 words of every member in order), written with the entry and never rewritten (closing writes only end and hasEnd, which it excludes); read with epochCommitments(uint64[]), at most 64 epochs"
 			},
 			member: {
 				prefix: ($prefixes[1]),
@@ -92,10 +93,10 @@ jq -n \
 				maxMeasuredB: 2,
 				maxMembers: 16,
 				maxNodeIDBytes: 128,
-				entryMetadataWords: 11,
+				entryMetadataWords: 12,
 				memberWords: 8,
-				maxEntryWords: 139,
-				maxAddressedWords: "139 * (I - g + 1) + 7 fixed words, growing by 139 words per installed epoch and never shrinking (excludes the operational slots)"
+				maxEntryWords: 140,
+				maxAddressedWords: "140 * (I - g + 1) + 7 fixed words, growing by 140 words per installed epoch and never shrinking (excludes the operational slots)"
 			}
 		},
 		recordsLayout: {
@@ -134,7 +135,7 @@ jq -n \
 		],
 		genesisNote: "Zero words are absent from a genesis allocation. The genesis builder (src/B1GenesisBuilder.sol) applies the runtime bounds to the genesis entry and refuses B > 2 with UnmeasuredB, G_rest below the measured-plus-margin allowance, or g_sys below the envelope. This artifact does not contain a deployable genesis record: genesisCommitment, fullShardConfHash and the entry members depend on deployment configuration and are produced by the Go construction using codeHash above.",
 		gasProfile: {
-			envelope: "g_sys >= 155936 + (505244 + 177800*16)*B + G_rest(B)",
+			envelope: "g_sys >= 155936 + (527344 + 177800*16)*B + G_rest(B)",
 			gRestBound: {
 				basis: "Measured-plus-margin, not proven: maximal actual-call fixtures at B = 0, 1, 2 (16-member entries, three node-ID shapes); ureth must re-measure under the real client and may lower or raise the constants before activation",
 				safetyFactor: {numerator: 3, denominator: 2},
@@ -142,7 +143,7 @@ jq -n \
 				perEpoch: 250000,
 				operationalWrites: {count: 28, pricePerWrite: 22100},
 				formula: "G_rest(B) = base + perEpoch*B",
-				covers: "everything in open + finalize except the history SSTOREs of the rectangle (139*B entry words, the two closure words of the former tip and the two cursor words, each at 22100, nothing cleared): SLOADs, hashing, decode, memory, logs, operational-registry writes (28, each priced at 22100) and finalize",
+				covers: "everything in open + finalize except the history SSTOREs of the rectangle (140*B entry words, the two closure words of the former tip and the two cursor words, each at 22100, nothing cleared): SLOADs, hashing, decode, memory, logs, operational-registry writes (28, each priced at 22100) and finalize",
 				price: "Cancun, cold: SLOAD 2100, SSTORE 22100 set / 5000 reset, gross (no refund credit)"
 			},
 			analysis: "docs/b1-registry-gas.md"
