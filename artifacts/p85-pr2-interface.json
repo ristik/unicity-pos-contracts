@@ -250,7 +250,57 @@
       "ELECTION()": "45d4fbc3",
       "EVIDENCE()": "2398a77d",
       "MANIFEST_HASH()": "23884c52",
-      "POLICY()": "dadbccee"
+      "POLICY()": "dadbccee",
+      "REWARDS()": "c0034e0c"
+    }
+  },
+  "RewardPool": {
+    "errors": {
+      "CommitteeTooLarge()": "f87187a8",
+      "InsufficientCredit()": "8ac4bc73",
+      "NoDirectPayment()": "91ce7378",
+      "NotCaughtUp()": "1291630f",
+      "NothingToDo()": "5c52a868",
+      "RecordOutOfOrder()": "7b817be6",
+      "ReentrancyGuardReentrantCall()": "3ee5aeb5",
+      "TimelineMismatch()": "2c4259c0",
+      "TooManyRecords()": "ad07f710",
+      "TransferFailed()": "90b8ec18",
+      "ZeroAddress()": "d92e233d",
+      "ZeroTotalWeight()": "098404de"
+    },
+    "events": {
+      "Claimed(address,address,uint256)": "0xf7a40077ff7a04c7e61f6f26fb13774259ddf1b6bce9ecf26a8276cdd3992683",
+      "Credited(address,uint256)": "0x9c9e0cdb1670e88302408e5b941dc636f63a3293204694bb68910fcf3d9305f3",
+      "Funded(address,uint256)": "0x5af8184bef8e4b45eb9f6ed7734d04da38ced226495548f46e0c8ff8d7d9a524",
+      "IntervalClosed(uint256,uint64,uint64,uint128,uint256,uint256)": "0x5c8462fd1e5aebda0e4b0cf1bd95968cc093952fd82e5dd5e066bf42d8898975",
+      "TimelineExtended(uint64,uint256)": "0xb17aa3c5e010a5c2e2f061913f166769ab1679805b6e0698e99454f3b2c8b0bf"
+    },
+    "methodIdentifiers": {
+      "CUSTODY()": "5bc357c6",
+      "ELECTION()": "45d4fbc3",
+      "GOVERNANCE()": "14627834",
+      "GRID()": "bb654d16",
+      "MAX_MEMBERS()": "ea0e35b1",
+      "MAX_RECORDS_PER_CALL()": "85fb32d4",
+      "ROOTS()": "145a1a4d",
+      "START()": "ba9a061a",
+      "accounted()": "19f8dcf1",
+      "advanceRecords(uint32)": "12631591",
+      "available()": "48a0d754",
+      "claim(uint256,address)": "ddd5e1b2",
+      "closeInterval()": "f0deeda6",
+      "credits(address)": "fe5ff468",
+      "fund()": "b60d4288",
+      "lastRecordID()": "c75955fc",
+      "nextStart()": "25ce3eee",
+      "rateCursor()": "b780cacb",
+      "recordCursor()": "ca01c983",
+      "segmentAt(uint256)": "c10f28c1",
+      "segmentCount()": "9789001c",
+      "segmentCursor()": "6c593dbd",
+      "surplus()": "13888565",
+      "totalCredits()": "b5bd3eb9"
     }
   },
   "SelectionEngine": {

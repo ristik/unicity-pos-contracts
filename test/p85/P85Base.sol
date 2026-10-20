@@ -52,6 +52,16 @@ abstract contract P85Base is Test {
     address internal governanceAuthority = makeAddr("governance-authority");
     /// @dev 1 UCT per 1,000 progress units (design t8-p7 section 3).
     uint128 internal constant DEFAULT_REWARD_RATE = 1 ether;
+    /// @dev The initial reward pool allocation (design t8-p7 section 3: 10,000 UCT).
+    uint256 internal constant REWARD_FUNDING = 10_000 ether;
+
+    function _rewardRate() internal view virtual returns (uint128) {
+        return DEFAULT_REWARD_RATE;
+    }
+
+    function _rewardFunding() internal view virtual returns (uint256) {
+        return REWARD_FUNDING;
+    }
     address internal reporter = makeAddr("reporter");
 
     uint256 internal constant N_GENESIS = 4;
@@ -168,13 +178,14 @@ abstract contract P85Base is Test {
                 firstRound: 1
             }),
             policy: policy,
-            rewardRate: DEFAULT_REWARD_RATE,
+            rewardRate: _rewardRate(),
             governanceAuthority: governanceAuthority,
+            rewardFunding: _rewardFunding(),
             electionParams: _electionParams(),
             identities: ids
         });
-        vm.deal(address(this), N_GENESIS * GENESIS_BOND);
-        factory = new PosFactory{value: N_GENESIS * GENESIS_BOND}(c);
+        vm.deal(address(this), N_GENESIS * GENESIS_BOND + _rewardFunding());
+        factory = new PosFactory{value: N_GENESIS * GENESIS_BOND + _rewardFunding()}(c);
         custody = factory.CUSTODY();
         election = factory.ELECTION();
         evidence = factory.EVIDENCE();
@@ -267,7 +278,7 @@ abstract contract P85Base is Test {
         return 0x1100 + i;
     }
 
-    function payeePk(uint256 i) internal pure returns (uint256) {
+    function payeePk(uint256 i) internal pure virtual returns (uint256) {
         return 0x1200 + i;
     }
 

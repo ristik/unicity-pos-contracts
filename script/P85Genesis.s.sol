@@ -111,6 +111,7 @@ contract P85Genesis is Script {
             }),
             rewardRate: uint128(vm.envOr("P85_REWARD_RATE", uint256(1 ether))),
             governanceAuthority: vm.envAddress("P85_GOVERNANCE_AUTHORITY"),
+            rewardFunding: vm.envOr("P85_REWARD_FUNDING", uint256(10_000 ether)),
             identities: ids
         });
         // The election reads the record source's clock when it is initialized, so a record source with code must exist at the address the
@@ -120,7 +121,7 @@ contract P85Genesis is Script {
         // The creations run as a fixed deployer account (a script contract may not rely on its own address): the first five are the three
         // modules, the engine and the reader, the sixth is the factory, so the modules can be constructed with its future address.
         address deployer = address(uint160(uint256(keccak256("p85-genesis-deployer"))));
-        vm.deal(deployer, total);
+        vm.deal(deployer, total + c.rewardFunding);
         vm.startPrank(deployer);
         address f = vm.computeCreateAddress(deployer, vm.getNonce(deployer) + 5);
         // The genesis implementation is created by its own fixed account, so it does not move the nonce the module and factory addresses are
@@ -135,7 +136,7 @@ contract P85Genesis is Script {
         c.evidence = address(new Evidence(f));
         c.selection = address(new SelectionEngine());
         c.reader = address(new EligibilityReader(c.custody, c.evidence));
-        PosFactory factory = new PosFactory{value: total}(c);
+        PosFactory factory = new PosFactory{value: total + c.rewardFunding}(c);
         vm.stopPrank();
         require(address(factory) == f, "factory address");
 
@@ -148,6 +149,7 @@ contract P85Genesis is Script {
         vm.serializeAddress(d, "selection", address(factory.ELECTION().selection()));
         vm.serializeAddress(d, "reader", address(factory.ELECTION().reader()));
         vm.serializeAddress(d, "policy", address(factory.POLICY()));
+        vm.serializeAddress(d, "rewardPool", address(factory.REWARDS()));
         vm.serializeBytes32(d, "manifestHash", factory.MANIFEST_HASH());
         vm.serializeBytes32(d, "networkWord", c.network);
         vm.serializeUint(d, "rootNetwork", c.rootNetwork);

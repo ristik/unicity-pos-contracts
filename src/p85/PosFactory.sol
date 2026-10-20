@@ -17,6 +17,7 @@ import {StakeCustody} from "./StakeCustody.sol";
 import {ElectionPolicy} from "./ElectionPolicy.sol";
 import {Evidence} from "./Evidence.sol";
 import {GovernanceParams} from "./GovernanceParams.sol";
+import {RewardPool} from "./RewardPool.sol";
 import {Quantize} from "./Quantize.sol";
 
 /// @title PosFactory
@@ -46,6 +47,7 @@ contract PosFactory {
         Policy policy;
         uint128 rewardRate; // the genesis operator reward rate, base units per 1,000 progress units (T8)
         address governanceAuthority; // the fixed development authority that may queue and cancel a policy proposal (T8)
+        uint256 rewardFunding; // the initial reward pool funding, sent with the factory's value in addition to the bonds (T8)
         GenesisIdentity[] identities;
     }
 
@@ -58,6 +60,7 @@ contract PosFactory {
     ElectionPolicy public immutable ELECTION;
     Evidence public immutable EVIDENCE;
     GovernanceParams public immutable POLICY;
+    RewardPool public immutable REWARDS;
 
     event Deployed(
         bytes32 manifestHash, address custody, address election, address evidence, address policy
@@ -117,9 +120,12 @@ contract PosFactory {
                 g.owner, g.withdrawal, g.rootKey, g.evmKey, g.operatorPayee
             );
         }
-        if (total != msg.value) revert GenesisValueMismatch();
+        if (total + c.rewardFunding != msg.value) revert GenesisValueMismatch();
         if (weight > Quantize.WEIGHT_CAP_B) revert GenesisWeightAboveCap();
         CUSTODY.sealGenesis();
+        REWARDS = new RewardPool{value: c.rewardFunding}(
+            c.roots, c.custody, c.election, address(POLICY), c.genesis.assignmentID
+        );
         ELECTION.initialize(h, m);
         EVIDENCE.initialize(h, m);
         emit Deployed(h, address(CUSTODY), address(ELECTION), address(EVIDENCE), address(POLICY));

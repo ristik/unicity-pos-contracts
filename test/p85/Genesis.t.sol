@@ -487,6 +487,7 @@ contract GenesisTest is P85Base {
             policy: _defaultPolicy(),
             rewardRate: DEFAULT_REWARD_RATE,
             governanceAuthority: governanceAuthority,
+            rewardFunding: 0,
             electionParams: _electionParams(),
             identities: ids
         });
