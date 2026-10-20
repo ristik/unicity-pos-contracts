@@ -1,44 +1,35 @@
 // SPDX-License-Identifier: MIT
 pragma solidity 0.8.37;
 
-import {CertGroups} from "./CertGroups.sol";
-
-/// @notice The named bounds and the shared gas gate of the any-age composing verifier (bridge protocol 4,
-///         briefs/b1-any-age-contract.md sections 4 and 5). This file is the one place the contract names them: the oracle (bft-core
-///         `bridgeprofile`), the plug-ins and `native-bridge-plugins` carry the same numbers. They bound the parsers; the gate below
-///         decides each bundle against the 7,000,000 ordinary transaction capacity; a later profile version changes them together
-///         with the budget. The native batch's price is `CertGroups.batchGas` (one formula for the Solidity gate and the precompile).
+/// @notice The one resource policy and the published gas estimate of the any-age composing verifier (owner §36,
+///         bft-core briefs/b7-direct-uncapped-design.md section 1). This file is the one place the contract names them: the oracle
+///         (bft-core `bridgeprofile`) and `native-bridge-plugins` carry the same numbers. There is no gas ceiling and no bridge-specific
+///         history cap: the aggregate bounds are the native kernels' own (B2 transfers and history, B1 claims) and the envelope bound is
+///         an ingress bound; the rest are per-object shape bounds. The estimate below is what a wallet sets its gas limit from; the
+///         contract never compares it with a budget, and a call given too little gas runs out of gas and reverts. The native batch's
+///         price is `CertGroups.batchGas` (one formula for the estimate and the precompile).
 library BridgeBounds {
-    // ---- profile parameters ---------------------------------------------------------------------
+    // ---- resource policy ------------------------------------------------------------------------
     /// @dev Distinct UC anchors of one redemption (one per distinct complete UC), and at most the leaves: B1's claim ceiling (K <= 16).
     uint256 internal constant MAX_ANCHORS = 16;
-    /// @dev Visited transaction/leaf occurrences L across the whole supported recursive verification (mint, transfers, burn and
-    ///      embedded dependencies), counted before any deduplication. 24 since #526 step 5 (profile v5, artifact 7): above
-    ///      MAX_ANCHORS, so a history whose leaves each carry their own certificate can need one anchor too many (refused).
-    uint256 internal constant MAX_LEAVES = 24;
+    /// @dev The kernel's own leaf output bound (ureth b2 `MAX_TRANSFERS` 64 plus the mint): visited transaction/leaf occurrences L
+    ///      across the whole recursive verification (mint, transfers, burn and embedded dependencies). It also sizes the returndata
+    ///      buffer. A history whose leaves each carry their own certificate can need more than MAX_ANCHORS anchors (refused).
+    uint256 internal constant KERNEL_MAX_LEAVES = 65;
+    uint256 internal constant MAX_LEAVES = KERNEL_MAX_LEAVES;
     uint256 internal constant MAX_ANCHOR_UC_BYTES = 8 * 1024;
     uint256 internal constant MAX_RSMT_SIBLINGS = 32;
-    uint256 internal constant MAX_SEMANTIC_BYTES = 16 * 1024;
-    uint256 internal constant MAX_ENVELOPE_BYTES = 64 * 1024;
-    /// @dev Cumulative path work: certificate steps (shard-tree siblings plus unicity-tree steps) over the DISTINCT anchors plus RSMT
-    ///      siblings over all required leaf occurrences.
-    uint256 internal constant MAX_PATH_STEPS = 2048;
-    /// @dev The Solidity CBOR preflight budget: items across all UCs and the other CBOR objects Solidity traverses (Cfg, policy, IR
-    ///      openings), counted per occurrence before reuse. Stricter than the native batch's 32,768 on purpose: a dense request is
-    ///      refused with BudgetExceeded before any native call (arch's ruling of 2026-10-14).
-    uint256 internal constant MAX_SOLIDITY_ITEMS = CertGroups.MAX_ITEMS;
+    /// @dev ureth b2 `MAX_HISTORY`.
+    uint256 internal constant MAX_SEMANTIC_BYTES = 128 * 1024;
+    /// @dev The ingress bound: above every envelope the native bounds admit; the pool and RPC are configured to carry it.
+    uint256 internal constant MAX_ENVELOPE_BYTES = 512 * 1024;
     /// @dev Items of the fixed-shape objects the verifier opens itself: Cfg (array head and 16 fields), the policy (array head and 3
-    ///      fields) and each anchor's InputRecord opening (tag, array head and 10 fields).
+    ///      fields) and each anchor's InputRecord opening (tag, array head and 10 fields). They are part of the estimate's J.
     uint256 internal constant CFG_ITEMS = 17;
     uint256 internal constant POLICY_ITEMS = 4;
     uint256 internal constant IR_ITEMS = 12;
-    /// @dev The kernel's own leaf output bound (ureth `MaxTransfers` 64 plus the mint); it sizes the
-    ///      returndata buffer only. A result above `MAX_LEAVES` is `BudgetExceeded`.
-    uint256 internal constant KERNEL_MAX_LEAVES = 65;
 
-    // ---- gate -----------------------------------------------------------------------------------
-    /// @dev DN-B ordinary transaction capacity (`maxGas` minus system gas).
-    uint256 internal constant TX_GAS_BUDGET = 7_000_000;
+    // ---- gas estimate ---------------------------------------------------------------------------
     uint256 internal constant GAS_RESERVE = 1_000_000;
     /// @dev `G_items = 1000*J`: the executed EVM overhead per CBOR item occurrence Solidity traverses (arch's ruling of 2026-10-14). It is
     ///      composition work, never forwarded to a precompile.

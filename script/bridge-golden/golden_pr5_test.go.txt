@@ -105,7 +105,7 @@ func composed(t *testing.T, d *Deployment, op uint8, history []byte, res *Result
 			"result": x(b1ref.Output(true)), "txHashRequest": x(MemberInput(a.ExpectedStateRoot, l.SID, l.TxHash, p)),
 			"txHashResult": x(b1ref.Output(false))})
 	}
-	gate, err := GateOf(d.F.Cfg, op, eb, TxGasBudget)
+	gate, err := GateOf(d.F.Cfg, op, eb)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -113,7 +113,7 @@ func composed(t *testing.T, d *Deployment, op uint8, history []byte, res *Result
 	return map[string]any{"bytes": x(eb), "anchors": anchors, "irTime": irTime, "leaves": len(res.Leaves),
 		"batch": map[string]any{"request": x(batchReq), "result": x(b1ref.Output(true))},
 		"members": members, "gate": map[string]any{"intrinsic": gate.Intrinsic, "b2": gate.B2, "batch": gate.Batch, "rsmt": gate.RSMT,
-			"steps": gate.Steps, "reserve": GasReserve, "total": gate.Total(), "budget": TxGasBudget,
+			"steps": gate.Steps, "reserve": GasReserve, "total": gate.Total(),
 			"grouping": map[string]any{"c": gr.C, "k": gr.K, "e": gr.E, "s": gr.S, "q": gr.Q, "a": gr.A, "p": gr.P}}}
 }
 

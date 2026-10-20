@@ -41,12 +41,12 @@ import {
 ///         immutable cfg equals the result's cfg may act on it.
 ///
 ///         Order of checks: Cfg and environment, envelope framing and bounds, policy opening, the Solidity CBOR preflight
-///         (every anchor's UC scanned and grouped, the shared 4,096 item budget), kernel, result shape, anchor table (one
+///         (every anchor's UC scanned and grouped under the native batch's own bounds), kernel, result shape, anchor table (one
 ///         anchor per distinct complete UC in first-use leaf order, each leaf covered by the anchor whose shard prefix it
-///         carries), the shared gas gate, ONE batch call for the table, per-leaf time against the leaf's own anchor, one RSMT
-///         path per leaf. Everything is a STATICCALL or pure; every native
-///         call is forwarded exactly its computed charge; failure reverts with a named error and no
-///         state effect. The bounds and the gate formula live in `BridgeBounds`.
+///         carries), ONE batch call for the table, per-leaf time against the leaf's own anchor, one RSMT path per leaf.
+///         Everything is a STATICCALL or pure; every native call is forwarded exactly its computed charge; failure reverts
+///         with a named error and no state effect. There is no gas ceiling (owner §36): a call given too little gas runs out
+///         of gas and reverts. The bounds and the published gas estimate live in `BridgeBounds`.
 contract TokenVerifier {
     uint8 internal constant OP_PREPARE_LOCK = 0;
     uint8 internal constant OP_MINT = 1;
@@ -123,33 +123,19 @@ contract TokenVerifier {
         // admission.
         Policy memory pol = _checkPolicyBody(c, policyBody, anchors.length);
         if (history.length > BridgeBounds.MAX_SEMANTIC_BYTES) revert BudgetExceeded();
-        // The Solidity CBOR preflight, before any native call: every UC scanned and grouped under the shared item budget, which the Cfg,
-        // the policy and the IR openings have already used a part of. Counts E, S, Q, A, P are what the batch is priced by.
-        uint256 spentItems = BridgeBounds.CFG_ITEMS + BridgeBounds.POLICY_ITEMS
-            + BridgeBounds.IR_ITEMS * anchors.length;
-        CertGroups.Counts memory counts = CertGroups.measure(anchors, spentItems);
+        // The Solidity CBOR preflight, before any native call: every UC scanned and grouped under the native batch's own bounds. Counts E,
+        // S, Q, A, P are what the batch is priced by.
+        CertGroups.Counts memory counts = CertGroups.measure(anchors);
         r = _kernel(op, cfgBytes, history);
         _checkShape(op, r, c, ch);
         Plan memory plan = _planAnchors(pol, anchors, r, paths);
-        uint256 steps = counts.p;
         plan.leafGas = new uint256[](paths.length);
-        uint256 leafGas = 0;
         for (uint256 i = 0; i < paths.length; ++i) {
             uint256 pop = BridgeBounds.popcount(uint256(paths[i].bitmap));
             if (pop != paths[i].siblings.length) revert PathBitmapMismatch(i);
-            steps += pop;
             plan.leafGas[i] = BridgeBounds.rsmtGas(pop);
-            leafGas += plan.leafGas[i];
         }
-        if (steps > BridgeBounds.MAX_PATH_STEPS) revert BudgetExceeded();
         plan.batchGas = CertGroups.batchGas(counts);
-        // The gate is computed from complete bounded scans before any native call (the kernel's own call above is charged its maximum).
-        uint256 total = BridgeBounds.intrinsicGas(cfgBytes.length, proof.length)
-            + BridgeBounds.b2Gas(
-                BridgeBounds.kernelRequestBytes(cfgBytes.length, history.length), r.leaves.length
-            ) + plan.batchGas + leafGas + BridgeBounds.ITEM_GAS * (spentItems + counts.items)
-            + BridgeBounds.GAS_RESERVE;
-        if (total > BridgeBounds.TX_GAS_BUDGET) revert BudgetExceeded();
 
         // One batch call over the whole anchor table, forwarded exactly G_batch. The registry authenticates each claim's expected shard
         // configuration, state root and IR hash together under its own epoch's quorum; only then does the opening carry weight: it must
@@ -291,8 +277,7 @@ contract TokenVerifier {
         uint256 base = off + 32;
         pos = base + 32 * n;
         if (pos > b.length) revert EnvelopeFraming();
-        // The cumulative step bound (`MAX_PATH_STEPS`) is implied by the per-leaf bound and the leaf
-        // and anchor bounds; `BridgeBounds` pins that inequality.
+        // Path steps are bounded per leaf only; there is no cumulative step budget (owner §36).
         for (uint256 i = 0; i < n; ++i) {
             if (_word(b, base + 32 * i) != pos - base) revert EnvelopeFraming();
             uint256 t = pos;
@@ -395,7 +380,7 @@ contract TokenVerifier {
         returns (KernelResult memory)
     {
         // The charge depends on the result's leaf count, known only afterwards: the forwarded gas is
-        // the charge at the kernel's own output bound, the gate below prices the actual count.
+        // the charge at the kernel's own output bound; the estimate prices the actual count.
         bytes memory out = B1Calls.staticCall(
             B1Calls.KERNEL,
             abi.encode(op, cfgBytes, payload),
@@ -427,8 +412,6 @@ contract TokenVerifier {
         uint256 releaseTo = _mw(out, 320);
         if (releaseTo > type(uint160).max) revert KernelBadOutput();
         if (valid == 0) revert KernelRejected();
-        // A valid result above the profile's leaf bound is a budget refusal, never a truncation.
-        if (k > BridgeBounds.MAX_LEAVES) revert BudgetExceeded();
         r.cfg = bytes32(_mw(out, 96));
         r.nonce = _mw(out, 128);
         r.amount = _mw(out, 160);

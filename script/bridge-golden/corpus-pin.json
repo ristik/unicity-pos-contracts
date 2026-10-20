@@ -8,11 +8,11 @@
   },
   "oracle": {
     "repository": "https://github.com/ristik/bft-core",
-    "commit": "ed4b71fbd047139bdd585c9dc50fe106dd83cdb3"
+    "commit": "73ea998a50f41e1d7670bb5e9534f4d85de442ea"
   },
   "golden": {
     "file": "test/bridge/golden.json",
-    "sha256": "c202ae21a4d64cb82329fb5fc8a9eb89023c293e0aa7dc6ec216d1529be29a7f",
+    "sha256": "75507451d3dfe8843e6036f3a5c9209add92fbb54a666daa0cb839c34d2f07b8",
     "sharedPaths": [
       "/cfg/aggregatorPolicyHash",
       "/cfg/aid",

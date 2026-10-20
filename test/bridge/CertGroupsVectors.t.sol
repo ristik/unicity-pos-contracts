@@ -6,7 +6,7 @@ import {CertGroups} from "../../src/bridge/CertGroups.sol";
 import {Anchor} from "../../src/bridge/BridgeTypes.sol";
 
 contract CertGroupsVectorsHarness {
-    /// the native batch's own item budget (32,768), not the bridge's 4,096: the corpus is native-side
+    /// the native batch's own item bound (32,768), which the verifier uses too (owner §36)
     function measure(Anchor[] memory a) external pure returns (CertGroups.Counts memory) {
         return CertGroups.measure(a, type(uint256).max, 32_768);
     }

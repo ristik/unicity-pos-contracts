@@ -34,10 +34,9 @@ library CertGroups {
     uint256 internal constant MAX_UNICITY_STEPS = 32; // per claim
     uint256 internal constant MAX_RAW_STEPS = 4_608; // over all occurrences, before deduplication
     uint256 internal constant MAX_NESTING = 16;
-    /// @dev The bridge's cumulative CBOR item budget for everything Solidity traverses (contract §4, arch's ruling of 2026-10-14): UC occurrences here,
-    ///      and the policy and IR openings the verifier counts against the same budget. The native batch keeps its own 32,768; this is the stricter
-    ///      bridge admission limit, so a dense request is refused with BudgetExceeded before any native call.
-    uint256 internal constant MAX_ITEMS = 4_096;
+    /// @dev The native batch's CBOR item bound over all UC occurrences of one request (ureth b1 `cbor::scan`). There is no stricter bridge
+    ///      budget (owner §36): every item Solidity traverses is charged, and the scan refuses only what the native call would.
+    uint256 internal constant MAX_ITEMS = 32_768;
     uint256 internal constant CLAIM_FIXED = 106; // partition 4 + shardLen 2 + three hashes 96 + ucLen 4
 
     // ---- the frozen price schedule (contract §5) ----
@@ -65,7 +64,7 @@ library CertGroups {
         uint256 q;
         uint256 a;
         uint256 p;
-        uint256 items; // CBOR items traversed over all occurrences, before deduplication: the verifier subtracts them from its shared budget
+        uint256 items; // CBOR items traversed over all occurrences, before deduplication
     }
 
     /// @dev What the scan reads of one occurrence.
@@ -81,7 +80,7 @@ library CertGroups {
 
     /// @dev Cumulative budgets over all occurrences of one request.
     struct Budget {
-        uint256 limit; // items this scan may still use in total (MAX_ITEMS less what the caller already spent)
+        uint256 limit; // items this scan may use in total (MAX_ITEMS)
         uint256 items;
         uint256 steps;
         uint256[] stack; // the nesting stack of the skip, allocated once
@@ -101,12 +100,6 @@ library CertGroups {
     /// @notice Scan and group the claims of one batch.
     function measure(Anchor[] memory anchors) internal pure returns (Counts memory) {
         return measure(anchors, type(uint256).max, MAX_ITEMS);
-    }
-
-    /// @dev With the items the caller has already spent on other CBOR (the policy, the IR openings) taken from the shared budget.
-    function measure(Anchor[] memory anchors, uint256 spent) internal pure returns (Counts memory) {
-        if (spent > MAX_ITEMS) revert BudgetExceeded();
-        return measure(anchors, type(uint256).max, MAX_ITEMS - spent);
     }
 
     /// @dev `indexMask` is ANDed into the index digests. Production passes all ones; the tests pass 0 to force every
