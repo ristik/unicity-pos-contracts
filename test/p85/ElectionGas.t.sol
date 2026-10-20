@@ -5,6 +5,7 @@ import {P85Flow} from "./P85Flow.sol";
 import {MockRootRecords} from "./MockRootRecords.sol";
 import {ElectionPolicy} from "../../src/p85/ElectionPolicy.sol";
 import {Quantize} from "../../src/p85/Quantize.sol";
+import {GovernanceParams} from "../../src/p85/GovernanceParams.sol";
 import {StakeCustody} from "../../src/p85/StakeCustody.sol";
 import {CustodyStorage} from "../../src/p85/CustodyStorage.sol";
 import {
@@ -14,7 +15,8 @@ import {
     DelegationRequest,
     ReserveInput,
     ReserveMember,
-    RecordKind
+    RecordKind,
+    Policy
 } from "../../src/p85/P85Types.sol";
 
 /// @notice The election's gas at the profile ceilings: 128 identities of 8 lots each, a committed committee of 16, and 112 outsiders that
@@ -157,6 +159,19 @@ contract ElectionGasTest is P85Flow {
         _populate();
         _commitFirstC();
         assertEq(election.liveCount(), V);
+        // The worst case of the hook is governance plus election: a scheduled policy snapshot that this very election activates (T8). The
+        // price pinned from this measurement therefore covers the activation, which writes a new snapshot and captures it.
+        {
+            GovernanceParams gov = factory.POLICY();
+            Policy memory next = _defaultPolicy();
+            next.penaltyBps = 150;
+            next.timeFloor = 7_200;
+            bytes32 h = gov.currentPolicyHash();
+            vm.prank(governanceAuthority);
+            uint64 n = gov.queue(next, 3 ether, h, 1);
+            clock(roots.progress() + 2_000, roots.ucTime() + 3_600);
+            gov.execute(n);
+        }
         clock(1_000_000, 10_000_000);
 
         vm.pauseGasMetering();

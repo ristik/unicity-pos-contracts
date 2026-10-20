@@ -5,6 +5,7 @@ import {P85Flow} from "./P85Flow.sol";
 import {MockRootRecords} from "./MockRootRecords.sol";
 import {ElectionPolicy} from "../../src/p85/ElectionPolicy.sol";
 import {Quantize} from "../../src/p85/Quantize.sol";
+import {GovernanceParams} from "../../src/p85/GovernanceParams.sol";
 import {
     ElectionParams,
     Limits,
@@ -13,7 +14,8 @@ import {
     ReserveInput,
     ReserveMember,
     RecordKind,
-    RecoveryAckData
+    RecoveryAckData,
+    Policy
 } from "../../src/p85/P85Types.sol";
 
 /// @notice COLD gas of the records the mandatory hook applies and of the election, at the deployment's own caps (limits.vMax, limits.lMax, election
@@ -25,6 +27,7 @@ import {
 ///   stage     the closure of the Reserved J, staged (pending-J path)
 ///   closure   the closure of an Active J (every member's every lot)
 ///   recovery  the RecoveryAck of J whose closure is pending: activates J, derives K (an exposure per incumbent member) and applies the saved closure
+///   elect-gov the election's hook step that also activates a scheduled governance snapshot (governance plus election, T8);
 ///   elect     the election's hook step; elect-heavy: the same with the raw total above the weight cap (every trial quantized and measured)
 contract HookGasColdTest is P85Flow {
     address internal constant SYS = address(0xff00000000000000000000000000000000000001);
@@ -102,11 +105,25 @@ contract HookGasColdTest is P85Flow {
                 RecordKind.RecoveryAck,
                 abi.encode(RecoveryAckData(RES_J2, ASG_K, 100, 101, 130, 130, 131, 3, 3))
             );
-        } else if (k == keccak256("elect") || k == keccak256("elect-heavy")) {
+        } else if (
+            k == keccak256("elect") || k == keccak256("elect-heavy") || k == keccak256("elect-gov")
+        ) {
             _reserve(RES_J, ASG_J, 0, 1);
             clock(120, 1_000);
             pushRecord(RecordKind.Ack, ackData(RES_J, H_ROUND, 100, 101));
             applyAll();
+            if (k == keccak256("elect-gov")) {
+                // a scheduled governance snapshot that the election activates: the worst case of governance plus election
+                GovernanceParams gov = factory.POLICY();
+                bytes32 h = gov.currentPolicyHash();
+                Policy memory p = gov.policy();
+                p.penaltyBps = 150;
+                p.timeFloor = 7_200;
+                vm.prank(governanceAuthority);
+                uint64 n = gov.queue(p, 3 ether, h, 1);
+                clock(2_200, 5_000);
+                gov.execute(n);
+            }
             clock(1_000_000, 10_000_000);
         } else {
             revert("unknown P85_GAS_KIND");
@@ -119,6 +136,7 @@ contract HookGasColdTest is P85Flow {
         if (
             keccak256(bytes(kind)) == keccak256("elect")
                 || keccak256(bytes(kind)) == keccak256("elect-heavy")
+                || keccak256(bytes(kind)) == keccak256("elect-gov")
         ) {
             vm.prank(SYS);
             uint256 b = gasleft();
