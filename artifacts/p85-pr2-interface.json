@@ -193,6 +193,50 @@
       "policyAt(uint32)": "7019a82b"
     }
   },
+  "GovernanceParams": {
+    "errors": {
+      "DelayNotElapsed()": "27836e1f",
+      "NoProposal()": "0dc5fde9",
+      "NotAuthority()": "31212686",
+      "NotElection()": "d9670c25",
+      "PolicyIDExhausted()": "65943c12",
+      "PolicyOutOfBounds(bytes32)": "d4ee72af",
+      "ProposalPending()": "b06a8bf2",
+      "RewardRateOutOfBounds()": "bd0b31b0",
+      "StaleNonce(uint64)": "956838e6",
+      "StalePredecessor()": "65ca9989",
+      "UnknownPolicy()": "36c7cc3f",
+      "WrongState()": "de4168ba",
+      "ZeroAddress()": "d92e233d"
+    },
+    "events": {
+      "Activated(uint32,uint64,bytes32,uint64)": "0x9921a0f66129fbd721631c20ebdd4dd7b5aa53d835930fd4fce7bf52ea462caa",
+      "Cancelled(uint64)": "0xea912aaa84ceee371022de11846330ce7c6acee6621e1c18501842356239efea",
+      "Executed(uint64)": "0xb6a27bc179a4657dc152b6b67c49e174d2ebebbda9e6c65e61378177c5bf35b2",
+      "Queued(uint64,bytes32,bytes32,uint64,uint64)": "0x53522a5bdfd4a791d77a4ee57c604a4947351f8564d6b902110305943c9ca99d"
+    },
+    "methodIdentifiers": {
+      "AUTHORITY()": "89fcd796",
+      "DELAY_ROUNDS()": "30a11791",
+      "DELAY_SECONDS()": "707fb6a6",
+      "ELECTION()": "45d4fbc3",
+      "MAX_REWARD_RATE()": "718dc3c3",
+      "ROOTS()": "145a1a4d",
+      "activateDue(uint64,uint64)": "2995331c",
+      "cancel(uint64)": "4c125e79",
+      "currentPolicyHash()": "7f080b27",
+      "currentPolicyID()": "01a59fd5",
+      "currentRewardRate()": "f51ace70",
+      "execute(uint64)": "b590be77",
+      "nextNonce()": "d69c3d30",
+      "pending()": "e20ccec3",
+      "policy()": "0505c8c9",
+      "policyAt(uint32)": "7019a82b",
+      "queue((uint16,uint16,uint16,uint128,uint64,uint64,uint64,uint64,uint64,uint64),uint128,bytes32,uint64)": "d8c306c9",
+      "rewardRateAt(uint32)": "ffe28a81",
+      "snapshotAt(uint32)": "6e667d3a"
+    }
+  },
   "PosFactory": {
     "errors": {
       "GenesisValueMismatch()": "7abf8529",
