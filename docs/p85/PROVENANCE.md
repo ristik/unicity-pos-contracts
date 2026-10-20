@@ -7,7 +7,11 @@ Scope: the contracts under `src/p85/` and the tests under `test/p85/` (issue
 
 Clean-room direction, as chosen in the P85 design (section 8): the contracts were written from the
 written specification only, namely `p85-design-v5.md` (including its "Review fixes 2026-10-07"
-changelog and review) and `docs/design/pos-architecture.md` on bft-core PR #415. No upstream staking
+changelog and review) and the then-proposed `docs/design/pos-architecture.md` on bft-core PR #415.
+The reconciled canonical publication is bft-core's `docs/design/pos-architecture.md`
+(docs branch `docs/pos-design-reconciliation`, proposed replacement for #415).
+That publication preserves the provenance boundary; it does not rewrite the
+implementation's original inputs or imply owner acceptance of the full architecture. No upstream staking
 source, storage layout, algorithm implementation or test was opened, copied or translated while
 writing this code. The tests were written from the design's acceptance table (section 9), not from
 any upstream test suite.
