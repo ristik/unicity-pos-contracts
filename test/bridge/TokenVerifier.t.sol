@@ -696,7 +696,7 @@ contract TokenVerifierTest is TopologyFixtures {
         Scenario memory s = _returnScenario();
         bytes memory p = _copy(_proof(s));
         uint256 offLeaves = _getWord(p, 96);
-        p = _setWord(p, offLeaves, 17);
+        p = _setWord(p, offLeaves, BridgeBounds.MAX_LEAVES + 1);
         _rejectsRaw(s, p, abi.encodeWithSelector(BudgetExceeded.selector));
     }
 
