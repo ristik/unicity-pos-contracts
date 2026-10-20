@@ -45,12 +45,12 @@ contract HookGasColdTest is P85Flow {
         c = vm.envOr("P85_GAS_C", uint256(8));
     }
 
-    function _manifestLimits() internal view override returns (Limits memory) {
+    function _manifestLimits() internal view virtual override returns (Limits memory) {
         (, uint256 v, uint256 l,) = _env();
         return Limits({vMax: uint32(v), lMax: uint32(l), rMax: 4, maxBatch: 32});
     }
 
-    function _electionParams() internal view override returns (ElectionParams memory) {
+    function _electionParams() internal view virtual override returns (ElectionParams memory) {
         (,,, uint256 c) = _env();
         return ElectionParams({
             nMin: 4,
@@ -64,7 +64,7 @@ contract HookGasColdTest is P85Flow {
         });
     }
 
-    function setUp() public override {
+    function setUp() public virtual override {
         (kind, V, L, C) = _env();
         if (bytes(kind).length == 0) return;
         if (keccak256(bytes(kind)) == keccak256("elect-heavy")) {
@@ -130,7 +130,7 @@ contract HookGasColdTest is P85Flow {
         }
     }
 
-    function test_measureCold() public {
+    function test_measureCold() public virtual {
         if (bytes(kind).length == 0) return; // not a measurement run
         uint256 used;
         if (

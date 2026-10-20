@@ -27,6 +27,9 @@ authority and its succession are not set here (they belong to the production rev
 - **Conservation:** `balance = available + unclaimed credits + surplus`. Value that arrives other than through `fund()` or the genesis allocation (a forced
   transfer) is surplus and is never allocated. Principal, custody credits, treasury credits, bridge backing and `FeeCollector.rewardPot` are never touched.
 - **Exhaustion:** when `available` is spent, budgets shrink to what is left and then to zero. Principal is unaffected, as the pool holds none.
+- **Gas.** The pool is ordinary EVM work, not part of the mandatory hook. At the largest committee (16 members of one lot) a cold `advanceRecords(2)` costs
+  about 198,000 gas and a cold `closeInterval` about 685,000; `test/p85/RewardsGas.t.sol` asserts ceilings of 500,000 and 1,700,000 (about 2.5 times) so a
+  change that makes either several times dearer fails.
 - Claims are pull payments, `claim(amount, to)` by the payee; a recipient that reverts fails only its own claim.
 
 ## Governance of the economic parameters
