@@ -41,6 +41,17 @@ contract XRepoGenesisTest is Test {
         new P85Genesis().run();
 
         string memory dep = vm.readFile(string.concat(out, "/deployment.json"));
+        // T8: the deployment records the governed policy source and the funded reward pool by address, code hash and allocation
+        assertEq(vm.parseJsonAddress(dep, ".governanceAuthority"), address(0xfd));
+        assertEq(vm.parseJsonUint(dep, ".rewardRate"), 1 ether);
+        assertEq(vm.parseJsonUint(dep, ".rewardFunding"), 10_000 ether);
+        address pool = vm.parseJsonAddress(dep, ".rewardPool");
+        assertEq(pool.balance, 10_000 ether, "the pool holds its funding from genesis");
+        assertEq(vm.parseJsonBytes32(dep, ".rewardPoolCodeHash"), pool.codehash);
+        assertEq(
+            vm.parseJsonBytes32(dep, ".policyCodeHash"),
+            vm.parseJsonAddress(dep, ".policy").codehash
+        );
         StakeCustody custody = StakeCustody(vm.parseJsonAddress(dep, ".custody"));
         bytes32 assignment = vm.parseJsonBytes32(json, ".assignmentId");
         assertTrue(assignment != bytes32(0), "the file names an assignment");
