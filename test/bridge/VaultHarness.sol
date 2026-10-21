@@ -3,7 +3,7 @@ pragma solidity 0.8.37;
 
 import {Test} from "forge-std/Test.sol";
 import {BridgeVault} from "../../src/bridge/BridgeVault.sol";
-import {Deployment, KernelResult, Leaf} from "../../src/bridge/BridgeTypes.sol";
+import {Deployment, KernelResult} from "../../src/bridge/BridgeTypes.sol";
 import "../../src/bridge/BridgeErrors.sol";
 
 /// @notice TEST DOUBLE for the composing verifier: returns the programmed kernel result for each
@@ -186,7 +186,7 @@ abstract contract VaultHarness is Test {
         r.salt = keccak256(abi.encode("salt", n));
         r.firstPredicateHash = keccak256(abi.encode("rcpt", n));
         r.lockDigest = _digest(n, amount);
-        r.leaves = new Leaf[](0);
+        r.leafCount = 0;
     }
 
     function _returnResult(uint256 n, uint256 amount, address to, bytes32 eta)
@@ -197,7 +197,7 @@ abstract contract VaultHarness is Test {
         r = _prepareResult(n, amount);
         r.releaseTo = to;
         r.nullifier = eta;
-        r.leaves = new Leaf[](2);
+        r.leafCount = 2;
     }
 
     function _lock(address who, uint256 amount) internal returns (uint256 n) {

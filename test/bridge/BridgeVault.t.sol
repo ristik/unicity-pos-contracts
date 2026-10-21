@@ -6,7 +6,7 @@ import {VaultHarness, VerifierDouble, Payee} from "./VaultHarness.sol";
 import {BridgeVault} from "../../src/bridge/BridgeVault.sol";
 import {TokenVerifier} from "../../src/bridge/TokenVerifier.sol";
 import {BridgeProfile} from "../../src/bridge/BridgeProfile.sol";
-import {Cfg, Deployment, KernelResult, Leaf} from "../../src/bridge/BridgeTypes.sol";
+import {Cfg, Deployment, KernelResult} from "../../src/bridge/BridgeTypes.sol";
 import "../../src/bridge/BridgeErrors.sol";
 
 /// @notice Vault state machine and storage tests. The verifier is a TEST DOUBLE (`VerifierDouble`) so
@@ -507,7 +507,7 @@ contract BridgeVaultTest is VaultHarness {
     function test_verifyMint_acceptsAnExistingUnspentLock() public {
         _lock(ALICE, 1 ether);
         KernelResult memory r = _prepareResult(1, 1 ether);
-        r.leaves = new Leaf[](1);
+        r.leafCount = 1;
         vd.setMint(r);
         assertEq(vault.verifyMint(""), 1);
     }
