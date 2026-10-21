@@ -125,7 +125,7 @@ GUARDS = [
     g("T-shape-amountZero", T, "|| r.amount == 0", "|| false", "test_shape_amountZero", TT),
     g("T-shape-digestZero", T, "|| r.lockDigest == bytes32(0)", "|| false", "test_shape_lockDigestZero", TT),
     g("T-ker-prepareNoLeaves", T, "|| _mw(out, 416) != 0", "", "test_prepare_everyNoncanonicalKernelOutputIsBad", TT),
-    g("T-shape-prepareRelease", T, "if (n != 0 || r.releaseTo != address(0) || r.nullifier != bytes32(0)) {", "if (n != 0 || r.nullifier != bytes32(0)) {", "test_shape_prepareWithLeavesOrRelease", TT),
+    g("T-shape-prepareRelease", T, "if (r.releaseTo != address(0) || r.nullifier != bytes32(0)) {", "if (r.nullifier != bytes32(0)) {", "test_shape_prepareWithLeavesOrRelease", TT),
     g("T-shape-mintLeaves", T, "if (n != 1 || r.releaseTo != address(0) || r.nullifier != bytes32(0)) {", "if (r.releaseTo != address(0) || r.nullifier != bytes32(0)) {", "test_shape_mintWithTwoLeaves", TT),
     g("T-shape-mintRelease", T, "if (n != 1 || r.releaseTo != address(0) || r.nullifier != bytes32(0)) {", "if (n != 1 || r.nullifier != bytes32(0)) {", "test_shape_mintWithReleaseFields", TT),
     g("T-shape-mintNullifier", T, "if (n != 1 || r.releaseTo != address(0) || r.nullifier != bytes32(0)) {", "if (n != 1 || r.releaseTo != address(0)) {", "test_shape_mintWithReleaseFields", TT),
