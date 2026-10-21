@@ -145,7 +145,7 @@ GUARDS = [
     # ---- verifier: gas gate -------------------------------------------------------------------
     g("T-gate-bitmap", T, "if (pop != paths[i].siblings.length) revert PathBitmapMismatch(i);", "", "test_gate_bitmapPopcountMustEqualTheSiblingCount", TT),
     g("T-gate-leafGas", T, "plan.leafGas[i] = BridgeBounds.rsmtGas(pop);", "plan.leafGas[i] = 0;", "test_gas_everyNativeCallIsForwardedExactlyItsCharge", TT),
-    g("T-gate-kernelGas", T, "BridgeBounds.KERNEL_MAX_LEAVES\n            )\n        );", "BridgeBounds.MAX_LEAVES\n            )\n        );", "test_gas_everyNativeCallIsForwardedExactlyItsCharge", TT),
+    g("T-gate-kernelGas", T, "BridgeBounds.KERNEL_MAX_LEAVES\n            )\n        );", "BridgeBounds.KERNEL_MAX_LEAVES - 1\n            )\n        );", "test_gas_everyNativeCallIsForwardedExactlyItsCharge", TT),
     g("BB-rsmtPerSibling", BB, "+ PER_STEP * (1 + siblings);", "+ PER_STEP * siblings;", "test_gate_everyGoldenComponentEqualsTheOracleGate", TT),
     g("BB-b2PerLeaf", BB, "B2_PER_LEAF = 14_000;", "B2_PER_LEAF = 13_999;", "test_gate_everyGoldenComponentEqualsTheOracleGate", TT),
     # ---- UC scan ------------------------------------------------------------------------------
