@@ -11,6 +11,8 @@ error PolicyMalformed();
 error EnvelopeFraming();
 error BudgetExceeded();
 error KernelBadOutput();
+/// @dev The native composition (0x0105) refused the redemption; `status` is bft-core `ComposeStatus`.
+error BridgeRejected(uint256 status);
 
 // Configuration.
 error ChainIdMismatch(uint256 expected, uint256 actual);

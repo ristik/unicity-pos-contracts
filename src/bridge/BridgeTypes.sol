@@ -30,18 +30,8 @@ struct Policy {
     uint32 partition;
 }
 
-/// @notice One inclusion obligation exported by the semantics kernel. It is not an assertion that
-///         the leaf is included. `leafValue = H(C(b(txHash), referenceTime))` is the raw 32-byte RSMT
-///         value (SDK 3.0.1); `referenceTime` is untrusted until the leaf is proven under an admitted
-///         root and compared with the authenticated InputRecord timestamp.
-struct Leaf {
-    bytes32 sid;
-    bytes32 txHash;
-    uint64 referenceTime;
-    bytes32 leafValue;
-}
-
-/// @notice Kernel `Result`, in the ABI order of the 0x0104 output.
+/// @notice The relation result: the kernel `Result` without its leaf obligations (proven natively by 0x0105), and how many
+///         leaves were proven. A prepare result has none.
 struct KernelResult {
     bytes32 cfg;
     uint256 nonce;
@@ -52,10 +42,11 @@ struct KernelResult {
     bytes32 lockDigest;
     address releaseTo;
     bytes32 nullifier;
-    Leaf[] leaves;
+    uint256 leafCount;
 }
 
-/// @notice Aggregator claim of the proof envelope; the claim fields are B1's view-free claim.
+/// @notice Aggregator claim of the proof envelope `abi.encode(bytes policyBody, bytes history, Anchor[], LeafProof[])`, which
+///         0x0105 decodes; the claim fields are B1's view-free claim.
 ///         `inputRecord` is the exact canonical native InputRecord opening committed by
 ///         `expectedIRHash`: the only source of the anchor timestamp, meaningful only after B1 0x0100
 ///         has authenticated `(expectedStateRoot, expectedIRHash)`.

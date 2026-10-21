@@ -7,48 +7,55 @@ import {BridgeVault} from "../../src/bridge/BridgeVault.sol";
 import {B1Calls} from "../../src/bridge/B1Calls.sol";
 import {BridgeProfile} from "../../src/bridge/BridgeProfile.sol";
 import {Cbor} from "../../src/bridge/Cbor.sol";
-import {
-    Anchor,
-    Cfg,
-    Deployment,
-    KernelResult,
-    Leaf,
-    LeafProof
-} from "../../src/bridge/BridgeTypes.sol";
+import {Anchor, Cfg, Deployment, KernelResult, LeafProof} from "../../src/bridge/BridgeTypes.sol";
 
 /// @notice Shared fixture: the golden vectors of the merged Go oracle, the precompile doubles, and
 ///         builders that are written independently of the library under test.
 abstract contract BridgeBase is Test {
-    // The precompile doubles. B1 0x0100/0x0102 and the B2 kernel 0x0104 are NOT the native
-    // implementation (B1 ships in ureth, inactive here); they are `vm.mockCall` answers keyed by the
-    // exact request bytes, over code that reverts. An unprogrammed input therefore reverts, so a test
-    // that programs only the exact expected bytes proves the caller built exactly those bytes. Mocks
-    // cost no EVM gas: the verifier forwards each native call exactly its computed charge (a single
-    // RSMT member call is about six thousand gas), which a storage-backed double cannot meet.
+    // The precompile doubles. The B2 kernel 0x0104 and the composition 0x0105 are NOT the native
+    // implementation (they ship in ureth); they are `vm.mockCall` answers keyed by the exact request
+    // bytes, over code that reverts. An unprogrammed input therefore reverts, so a test that programs
+    // only the exact expected bytes proves the caller built exactly those bytes.
     bytes internal constant REVERT_CODE = hex"5f5ffd"; // PUSH0 PUSH0 REVERT
 
     bytes32 internal constant MARKER = bytes32("UNICITY_TOKEN_SEMANTICS");
+    bytes32 internal constant COMPOSE_MARKER = bytes32("UNICITY_BRIDGE_COMPOSE_V1");
+
+    /// @dev The 0x0104 output's `Result`, with its leaf obligations (the verifier reads only prepare results, which have none).
+    struct B2Leaf {
+        bytes32 sid;
+        bytes32 txHash;
+        uint64 referenceTime;
+        bytes32 leafValue;
+    }
+
+    struct B2Result {
+        bytes32 cfg;
+        uint256 nonce;
+        uint256 amount;
+        bytes32 tokenId;
+        bytes32 salt;
+        bytes32 firstPredicateHash;
+        bytes32 lockDigest;
+        address releaseTo;
+        bytes32 nullifier;
+        B2Leaf[] leaves;
+    }
 
     string internal G;
-    /// @dev The B1 vector file is large (the any-age corpus): tests that need it read it themselves, once.
-    string internal constant B1V_PATH = "test/bridge/b1-vectors.json";
 
     function _loadGolden() internal {
         G = vm.readFile("test/bridge/golden.json");
     }
 
     function _etchDoubles() internal {
-        address[3] memory targets = [B1Calls.CERT_BATCH, B1Calls.RSMT_VERIFIER, B1Calls.KERNEL];
-        for (uint256 i = 0; i < targets.length; ++i) {
-            vm.etch(targets[i], REVERT_CODE);
-        }
+        vm.etch(B1Calls.KERNEL, REVERT_CODE);
+        vm.etch(B1Calls.COMPOSE, REVERT_CODE);
     }
 
-    /// @dev The calldata prefix of a target's default answer: the batch header (version 2, flags 0), the RSMT header (version 1, flags 0,
-    ///      count 1), or any call to the kernel.
-    function _selectorOf(address target) internal pure returns (bytes memory) {
-        if (target == B1Calls.KERNEL) return hex"00000000";
-        return target == B1Calls.CERT_BATCH ? bytes(hex"0200") : bytes(hex"01000001");
+    /// @dev The calldata prefix of a target's default answer: any call.
+    function _selectorOf(address) internal pure returns (bytes memory) {
+        return hex"";
     }
 
     function _prog(address target, bytes memory req, bytes memory out) internal {
@@ -115,17 +122,7 @@ abstract contract BridgeBase is Test {
         r.nullifier = _b32(string.concat(prefix, ".nullifier"));
         uint256 n = 0;
         while (vm.keyExistsJson(G, string.concat(prefix, ".leaves[", vm.toString(n), "]"))) ++n;
-        r.leaves = new Leaf[](n);
-        for (uint256 i = 0; i < n; ++i) {
-            string memory p = string.concat(prefix, ".leaves[", vm.toString(i), "]");
-            r.leaves[i] = Leaf({
-                sid: _b32(string.concat(p, ".sid")),
-                txHash: _b32(string.concat(p, ".txHash")),
-                // forge-lint: disable-next-line(unsafe-typecast)
-                referenceTime: uint64(_u(string.concat(p, ".referenceTime"))),
-                leafValue: _b32(string.concat(p, ".leafValue"))
-            });
-        }
+        r.leafCount = n;
     }
 
     /// @dev Paths of the golden envelope of `op` ("mint" or "return"), one per exported leaf.
@@ -235,27 +232,46 @@ abstract contract BridgeBase is Test {
         return abi.encode(op, cfgBytes, payload);
     }
 
+    /// @dev The 0x0104 output of `r`, with `r.leafCount` zero leaf obligations.
     function _kernelOut(bool valid, KernelResult memory r) internal pure returns (bytes memory) {
-        return abi.encode(MARKER, valid, r);
+        B2Result memory b = B2Result(
+            r.cfg,
+            r.nonce,
+            r.amount,
+            r.tokenId,
+            r.salt,
+            r.firstPredicateHash,
+            r.lockDigest,
+            r.releaseTo,
+            r.nullifier,
+            new B2Leaf[](r.leafCount)
+        );
+        return abi.encode(MARKER, valid, b);
     }
 
-    /// @dev The CERT_BATCH_V2 request over a table of anchors, written byte by byte rather than through the library: `02 00 | K | claims`.
-    function _expectedBatch(Anchor[] memory as_) internal pure returns (bytes memory out) {
-        out = bytes.concat(hex"0200", bytes2(uint16(as_.length)));
-        for (uint256 i = 0; i < as_.length; ++i) {
-            Anchor memory a = as_[i];
-            out = bytes.concat(
-                out,
-                bytes4(a.partition),
-                bytes2(uint16(a.shard.length)),
-                a.shard,
-                a.shardConfHash,
-                a.expectedStateRoot,
-                a.expectedIRHash,
-                bytes4(uint32(a.uc.length)),
-                a.uc
-            );
+    /// @dev The composition input `abi.encode(uint8 op, bytes cfg, bytes envelope)`.
+    function _composeInput(uint8 op, bytes memory cfgBytes, bytes memory proof)
+        internal
+        pure
+        returns (bytes memory)
+    {
+        return abi.encode(op, cfgBytes, proof);
+    }
+
+    /// @dev The composition's 384-byte result, written word by word: marker, status, the nine fields, the leaf count. A
+    ///      nonzero status carries zero fields.
+    function _composeOut(uint256 status, KernelResult memory r)
+        internal
+        pure
+        returns (bytes memory)
+    {
+        if (status != 0) {
+            return bytes.concat(COMPOSE_MARKER, bytes32(status), new bytes(320));
         }
+        return bytes.concat(
+            abi.encode(COMPOSE_MARKER, status, r.cfg, r.nonce, r.amount, r.tokenId, r.salt),
+            abi.encode(r.firstPredicateHash, r.lockDigest, r.releaseTo, r.nullifier, r.leafCount)
+        );
     }
 
     /// @dev The policy body `["UNICITY_BR_AGG_PARTITION", 2, partition]`, written byte by byte (a 24-byte text-as-bytes domain).
@@ -263,21 +279,4 @@ abstract contract BridgeBase is Test {
         return
             bytes.concat(hex"83", hex"5818", "UNICITY_BR_AGG_PARTITION", hex"02", _uint(partition));
     }
-
-    /// @dev RSMT request with the raw 32-byte leaf value `v = H(C(b(txHash), t))`.
-    function _expectedRSMT(bytes32 root, bytes32 sid, bytes32 leafValue, LeafProof memory p)
-        internal
-        pure
-        returns (bytes memory out)
-    {
-        out = bytes.concat(hex"01000001", root, sid, hex"00000020", leafValue, p.bitmap);
-        for (uint256 i = 0; i < p.siblings.length; ++i) {
-            out = bytes.concat(out, p.siblings[i]);
-        }
-    }
-
-    bytes internal constant TRUE_OUT = abi.encode(uint256(1), true); // RSMT membership v1
-    bytes internal constant FALSE_OUT = abi.encode(uint256(1), false);
-    bytes internal constant BATCH_TRUE = abi.encode(uint256(2), true); // CERT_BATCH_V2
-    bytes internal constant BATCH_FALSE = abi.encode(uint256(2), false);
 }
