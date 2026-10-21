@@ -21,14 +21,6 @@ contract CertGroupsHarness {
         return CertGroups.measure(a, mask, CertGroups.MAX_ITEMS);
     }
 
-    function measureAfter(Anchor[] memory a, uint256 spent)
-        external
-        pure
-        returns (CertGroups.Counts memory)
-    {
-        return CertGroups.measure(a, spent);
-    }
-
     function shardDepth(bytes memory s) external pure returns (uint256) {
         return CertGroups.shardDepth(s);
     }
@@ -333,7 +325,7 @@ contract CertGroupsTest is Test, UcBuilder {
         }
     }
 
-    // ---- the bridge's cumulative Solidity item budget: 4,096 (arch's ruling) ----------------------------------
+    // ---- the item bound: the native batch's 32,768 (owner §36) ---------------------------------------------
 
     function _denseUc(uint256 irItems) internal pure returns (bytes memory) {
         return _ucWith(
@@ -350,74 +342,56 @@ contract CertGroupsTest is Test, UcBuilder {
         return _c(_one(_uc(hex"c0", 1, 0, 4, 1, 0xaa))).items;
     }
 
-    function test_theSolidityItemBudgetIs4096_exactlyAllowedAndOneMoreRefused() public {
+    /// The scan's item bound is the native batch's 32,768 over all occurrences (owner §36: no stricter bridge budget). A UC is at most
+    /// 24,576 bytes, so the bound is reached only across anchors: exactly 32,768 is allowed, one more is refused.
+    function test_theItemBoundIsTheNativeBatchs32768_overAnchors() public {
         uint256 base = _baseItems();
-        CertGroups.Counts memory n = _c(_one(_denseUc(4096 - base)));
-        assertEq(n.items, 4096, "exactly the budget is allowed by this cap alone");
-        vm.expectRevert(BudgetExceeded.selector);
-        h.measure(_one(_denseUc(4096 - base + 1)));
-    }
-
-    function test_theBudgetIsCumulativeOverAnchors_andOccurrencesAreCountedBeforeReuse() public {
-        uint256 base = _baseItems();
-        uint256 each = 2048 - base; // two of these are exactly 4096
-        bytes memory uc = _denseUc(each);
+        uint256 each = 16_384 - base; // two of these are exactly 32,768
         Anchor[] memory two = new Anchor[](2);
-        two[0] = _claim(hex"c0", uc, bytes32(uint256(1)));
-        two[1] = _claim(hex"c0", uc, bytes32(uint256(2)));
-        assertEq(_c(two).items, 4096);
-        // an exact duplicate is the same claim for pricing but a second traversal for the budget
-        Anchor[] memory dup = new Anchor[](2);
-        dup[0] = two[0];
-        dup[1] = two[0];
-        CertGroups.Counts memory d = _c(dup);
-        assertEq(d.a, 1);
-        assertEq(d.items, 4096);
-        // one item more in the second anchor: over, though each anchor alone is far below the cap
+        two[0] = _claim(hex"c0", _denseUc(each), bytes32(uint256(1)));
+        two[1] = _claim(hex"c0", _denseUc(each), bytes32(uint256(2)));
+        assertEq(_c(two).items, 32_768, "exactly the native bound");
+        assertEq(CertGroups.MAX_ITEMS, 32_768);
         Anchor[] memory over = new Anchor[](2);
         over[0] = two[0];
         over[1] = _claim(hex"c0", _denseUc(each + 1), bytes32(uint256(2)));
         vm.expectRevert(BudgetExceeded.selector);
         h.measure(over);
-        // three anchors that each use a third
-        Anchor[] memory three = new Anchor[](3);
-        bytes memory third = _denseUc(1400 - base);
-        for (uint256 i = 0; i < 3; ++i) {
-            three[i] = _claim(hex"c0", third, bytes32(i));
-        }
-        vm.expectRevert(BudgetExceeded.selector); // 3 x 1,400 = 4,200
-        h.measure(three);
     }
 
-    function test_theBudgetIsSharedWithWhatTheCallerAlreadySpent() public {
-        Anchor[] memory a = _one(_uc(hex"c0", 1, 0, 4, 1, 0xaa));
-        uint256 items = _c(a).items;
-        assertEq(h.measureAfter(a, 4096 - items).items, items, "just fits");
-        vm.expectRevert(BudgetExceeded.selector);
-        h.measureAfter(a, 4096 - items + 1);
-        vm.expectRevert(BudgetExceeded.selector);
-        h.measureAfter(a, 4097);
+    /// Far more than the former 4,096-item bridge budget is admitted: it is charged, not capped.
+    function test_theFormerBridgeItemBudgetIsGone() public view {
+        uint256 base = _baseItems();
+        CertGroups.Counts memory n = _c(_one(_denseUc(4097 - base)));
+        assertEq(n.items, 4097);
+        // an exact duplicate is the same claim for pricing but a second traversal for the count
+        Anchor[] memory dup = new Anchor[](2);
+        dup[0] = _claim(hex"c0", _denseUc(4097 - base), bytes32(uint256(1)));
+        dup[1] = dup[0];
+        CertGroups.Counts memory d = _c(dup);
+        assertEq(d.a, 1);
+        assertEq(d.items, 2 * 4097);
     }
 
     function test_aDenseContainerIsRefusedByItsDeclaredLength_beforeItIsWalked() public {
-        // 12,000 declared children cannot fit: refused at the head. The gas shows no walk happened.
-        bytes memory uc = _denseUc(12_000);
-        Anchor[] memory a = _one(uc);
+        // One UC (at most 24,576 bytes) cannot declare more children than the native 32,768 on its own: the first anchor walks 17,000
+        // items, and the second declares 16,000, more than is left. It is refused at its head: the gas shows it was not walked.
+        uint256 base = _baseItems();
+        Anchor[] memory first = _one(_denseUc(17_000 - base));
         uint256 before = gasleft();
+        h.measure(first);
+        uint256 walkOne = before - gasleft();
+        Anchor[] memory a = new Anchor[](2);
+        a[0] = first[0];
+        a[1] = _claim(hex"c0", _denseUc(16_000), bytes32(uint256(2)));
+        before = gasleft();
         vm.expectRevert(BudgetExceeded.selector);
         h.measure(a);
         assertLt(
             before - gasleft(),
-            1_500_000,
-            "refused without walking 12,000 items (which costs about 11M)"
+            walkOne + 1_500_000,
+            "the second container is refused at its declared length, unwalked"
         );
-        // and a body that declares fewer children than it walks is caught by the running count, not trusted
-        bytes memory nested = bytes.concat(Cbor.head(4, 1), Cbor.head(4, 3000), _fill(3000, 0x00));
-        Anchor[] memory b = _one(
-            _ucWith(hex"c0", 1, 0, bytes.concat(Cbor.head(4, 2), nested, nested), _seal(4, 1, 0xaa))
-        );
-        vm.expectRevert(BudgetExceeded.selector);
-        h.measure(b);
     }
 
     function test_normalSixteenAnchorTokensAreFarBelowTheBudget() public view {
@@ -535,13 +509,15 @@ contract CertGroupsGasTest is CertGroupsTest {
         );
     }
 
-    /// The most the bridge's item budget lets the scan walk: exactly 4,096 items in one claim.
-    function test_gas_theItemBudgetFilled() public view {
+    /// The most the native batch's item bound lets the scan walk: 32,768 items over two claims.
+    function test_gas_theItemBoundFilled() public view {
         uint256 base = _c(_one(_uc(hex"c0", 1, 0, 4, 1, 0xaa))).items;
-        Anchor[] memory a = _one(_denseUc(4096 - base));
+        Anchor[] memory a = new Anchor[](2);
+        a[0] = _claim(hex"c0", _denseUc(16_384 - base), bytes32(uint256(1)));
+        a[1] = _claim(hex"c0", _denseUc(16_384 - base), bytes32(uint256(2)));
         uint256 before = gasleft();
         CertGroups.Counts memory n = CertGroups.measure(a);
-        console.log("one claim filling the 4,096 item budget");
+        console.log("two claims filling the 32,768 item bound");
         console.log("  solidity gas %d for %d items", before - gasleft(), n.items);
     }
 
@@ -565,7 +541,7 @@ contract CertGroupsGasTest is CertGroupsTest {
             a[i] = _claim(hex"c0", uc, bytes32(i));
         }
         uint256 before = gasleft();
-        CertGroups.Counts memory n = CertGroups.measure(a, 0);
+        CertGroups.Counts memory n = CertGroups.measure(a, 0, CertGroups.MAX_ITEMS);
         console.log("16 near-identical seals, all digests forced to collide");
         console.log("  solidity gas %d  S %d A %d", before - gasleft(), n.s, n.a);
         before = gasleft();

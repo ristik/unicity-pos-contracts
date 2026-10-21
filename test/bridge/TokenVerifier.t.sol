@@ -700,7 +700,7 @@ contract TokenVerifierTest is TopologyFixtures {
         _rejectsRaw(s, p, abi.encodeWithSelector(BudgetExceeded.selector));
     }
 
-    function test_envelope_cumulativePathStepsIsBudget() public {
+    function test_envelope_aPathOverThePerLeafSiblingBoundIsBudget() public {
         Scenario memory s = _returnScenario();
         bytes memory p = _copy(_proof(s));
         uint256 offLeaves = _getWord(p, 96);
@@ -712,7 +712,7 @@ contract TokenVerifierTest is TopologyFixtures {
         _rejectsRaw(s, p, abi.encodeWithSelector(BudgetExceeded.selector));
     }
 
-    function test_envelope_cumulativeAcrossPaths() public {
+    function test_envelope_twoPathsOverThePerLeafSiblingBound() public {
         // Two paths each far over the per-leaf sibling bound.
         Scenario memory s = _returnScenario();
         bytes memory p = _copy(_proof(s));
@@ -727,19 +727,24 @@ contract TokenVerifierTest is TopologyFixtures {
 
     function test_envelope_oversizeIsBudget() public {
         Scenario memory s = _returnScenario();
-        bytes memory p = new bytes(64 * 1024 + 32);
+        bytes memory p = new bytes(BridgeBounds.MAX_ENVELOPE_BYTES + 32);
         _rejectsRaw(s, p, abi.encodeWithSelector(BudgetExceeded.selector));
     }
 
     function test_envelope_atTheCapIsNotBudget() public {
-        // 64 KiB exactly is within budget; it then fails as framing, not as a budget error.
+        // MAX_ENVELOPE_BYTES (512 KiB) exactly is within the bound; it then fails as framing, not as a budget error.
         Scenario memory s = _returnScenario();
-        _rejectsRaw(s, new bytes(64 * 1024), abi.encodeWithSelector(EnvelopeFraming.selector));
+        assertEq(BridgeBounds.MAX_ENVELOPE_BYTES, 512 * 1024);
+        _rejectsRaw(
+            s,
+            new bytes(BridgeBounds.MAX_ENVELOPE_BYTES),
+            abi.encodeWithSelector(EnvelopeFraming.selector)
+        );
     }
 
     function test_envelope_historyOverCapIsBudget() public {
         Scenario memory s = _returnScenario();
-        s.history = new bytes(16 * 1024 + 1);
+        s.history = new bytes(BridgeBounds.MAX_SEMANTIC_BYTES + 1);
         // the kernel never runs; the cap is checked on the opened history
         _rejects(s, abi.encodeWithSelector(BudgetExceeded.selector));
     }
@@ -1246,7 +1251,7 @@ contract TokenVerifierTest is TopologyFixtures {
 
     function test_prepare_p0OverCapIsBudget() public {
         vm.expectRevert(abi.encodeWithSelector(BudgetExceeded.selector));
-        v.prepareLock(cfgB, 1, 1, new bytes(16 * 1024 + 1));
+        v.prepareLock(cfgB, 1, 1, new bytes(BridgeBounds.MAX_SEMANTIC_BYTES + 1));
     }
 
     function test_prepare_cfgMismatchInResult() public {
@@ -1810,7 +1815,10 @@ contract TokenVerifierTest is TopologyFixtures {
         assertEq(_kernelOut(true, s.result).length, 448 + 128 * n);
     }
 
-    function test_kernel_aValidResultOverTheProfileLeafBoundIsBudgetExceeded() public {
+    /// The profile's leaf bound is the kernel's own (owner §36): a result above it does not fit the returndata buffer and is refused as a
+    /// bad return, never truncated.
+    function test_kernel_aResultOverTheKernelLeafBoundIsABadReturn() public {
+        assertEq(BridgeBounds.MAX_LEAVES, BridgeBounds.KERNEL_MAX_LEAVES);
         Scenario memory s = _returnScenario();
         uint256 n = BridgeBounds.MAX_LEAVES + 1;
         Leaf[] memory ls = new Leaf[](n);
@@ -1818,7 +1826,7 @@ contract TokenVerifierTest is TopologyFixtures {
             ls[i] = s.result.leaves[i % 3];
         }
         s.result.leaves = ls;
-        _rejects(s, abi.encodeWithSelector(BudgetExceeded.selector));
+        _rejects(s, abi.encodeWithSelector(PrecompileBadReturn.selector, B1Calls.KERNEL));
     }
 
     function _sidInRow(bytes32 sid, uint256 row) internal pure returns (bytes32) {
@@ -2005,16 +2013,9 @@ contract TokenVerifierTest is TopologyFixtures {
         }
     }
 
-    /// The cumulative path-step bound (certificate steps over the distinct anchors plus RSMT siblings) is defence in depth: every step is a
-    /// 32-byte hash (34 in a UC) of the envelope, so the 64 KiB envelope bound reaches the step bound first. The check in `_verify` stays,
-    /// and this test states why it cannot be the one that fires.
-    function test_bounds_cumulativeStepsCannotBind() public pure {
-        assertLe(BridgeBounds.MAX_ENVELOPE_BYTES / 32, BridgeBounds.MAX_PATH_STEPS); // equal, and the envelope also carries every other byte
-    }
-
-    /// Depth-200 certificates are 200 siblings of 34 bytes each: whatever the count, the bundle is either admitted and verified, or refused
-    /// by the envelope or gas bound before any batch call. It never half-runs.
-    function test_bounds_deepShardsReachTheEnvelopeBoundNotTheStepBound() public {
+    /// Depth-200 certificates are 200 siblings of 34 bytes each: there is no cumulative step budget and no gas ceiling (owner §36), so the
+    /// bundle is admitted and verified whenever the envelope fits its ingress bound. It never half-runs.
+    function test_bounds_deepShardsAreBoundedOnlyByTheEnvelope() public {
         for (uint256 k = 7; k <= 8; ++k) {
             bytes[] memory shards = new bytes[](k);
             for (uint256 i = 0; i < k; ++i) {
@@ -2023,12 +2024,8 @@ contract TokenVerifierTest is TopologyFixtures {
                 shards[i][25] = 0x80; // 200 prefix bits, then the terminator
             }
             Scenario memory s = _topology(shards);
-            (uint256 gate,,) = _gateOfScenario(s);
-            if (
-                _proof(s).length <= BridgeBounds.MAX_ENVELOPE_BYTES
-                    && gate <= BridgeBounds.TX_GAS_BUDGET
-            ) {
-                assertTrue(_sameResult(_run(s), s.result), "inside both bounds");
+            if (_proof(s).length <= BridgeBounds.MAX_ENVELOPE_BYTES) {
+                assertTrue(_sameResult(_run(s), s.result), "inside the envelope bound");
             } else {
                 _arm(s);
                 vm.expectRevert(abi.encodeWithSelector(BudgetExceeded.selector));
@@ -2043,7 +2040,7 @@ contract TokenVerifierTest is TopologyFixtures {
         _rejects(s, abi.encodeWithSelector(BudgetExceeded.selector));
     }
 
-    // ---- the Solidity CBOR preflight: 4,096 items, before any native call --------------------------
+    // ---- the Solidity CBOR preflight: the native batch's bounds, before any native call -----------------
 
     function _denseSlot(uint256 k) internal pure returns (bytes memory) {
         return bytes.concat(Cbor.head(4, k), _fill(k, 0));
@@ -2062,33 +2059,25 @@ contract TokenVerifierTest is TopologyFixtures {
         return CertGroups.measure(s.anchors).items;
     }
 
-    function test_preflight_theBudgetIsSharedWithTheCfgPolicyAndIrOpenings() public {
-        // spent before the UCs: 17 (Cfg) + 4 (policy) + 12 per anchor
-        uint256 k0 = 10;
-        uint256 base = _itemsOf(_denseTwo(k0));
-        uint256 spent =
-            BridgeBounds.CFG_ITEMS + BridgeBounds.POLICY_ITEMS + BridgeBounds.IR_ITEMS * 2;
-        // the UCs may use 4096 - spent items in total: grow each anchor's slot until exactly that is reached
-        uint256 room = BridgeBounds.MAX_SOLIDITY_ITEMS - spent;
-        uint256 extra = (room - base) / 2;
-        Scenario memory exact = _denseTwo(k0 + extra);
-        uint256 used = _itemsOf(exact);
-        assertEq(used, room - ((room - base) % 2), "within one item of the room");
-        assertTrue(_sameResult(_run(exact), exact.result), "at the budget");
-        // one more item in total than the room
-        Scenario memory over = _denseTwo(k0 + extra);
-        over.anchors[0] =
-            _synthAnchor(_uniform(1)[0], 0, 3, _denseSlot(k0 + extra + 1 + ((room - base) % 2)));
-        assertEq(_itemsOf(over), room + 1);
-        _noNativeCalls();
-        vm.expectRevert(abi.encodeWithSelector(BudgetExceeded.selector));
-        v.verifyReturn(over.cfgB, _proof(over));
+    /// There is no shared bridge item budget (owner §36): two anchors whose UCs carry far more than the former 4,096 items, with the Cfg,
+    /// policy and IR openings on top, are admitted and charged.
+    function test_preflight_itemsAreChargedNotBudgeted() public {
+        Scenario memory s = _denseTwo(3000);
+        assertGt(_itemsOf(s), 4096);
+        assertTrue(_sameResult(_run(s), s.result), "over the former budget");
     }
 
+    /// A slot that declares more children than the native batch's item bound has left is refused by its declared length before any
+    /// native call.
     function test_preflight_aDenseCertificateIsRefusedByItsDeclaredLengthBeforeAnyNativeCall()
         public
     {
-        Scenario memory s = _denseTwo(3000); // 3000 declared children in one slot: more than the budget has left
+        // eight anchors of 7,000 dense items each: the fifth crosses the native 32,768 and is refused at its declared length
+        bytes[] memory shards = _uniform(3);
+        Scenario memory s = _topology(shards);
+        for (uint256 i = 0; i < 8; ++i) {
+            s.anchors[i] = _synthAnchor(shards[i], i, 3, _denseSlot(7000));
+        }
         _noNativeCalls();
         vm.expectRevert(abi.encodeWithSelector(BudgetExceeded.selector));
         v.verifyReturn(s.cfgB, _proof(s));
@@ -2181,8 +2170,9 @@ contract TokenVerifierTest is TopologyFixtures {
         v.verifyReturn(s.cfgB, _proof(s));
     }
 
-    // ---- the gate: components against the oracle, the exact boundary, forwarded gas ------------------
+    // ---- the gas estimate: components against the oracle, no ceiling, forwarded gas --------------------
 
+    /// @dev The fixed-shape items the verifier opens itself: Cfg, policy and one IR opening per anchor (part of J, never budgeted).
     function _spentItems(uint256 anchors) internal pure returns (uint256) {
         return BridgeBounds.CFG_ITEMS + BridgeBounds.POLICY_ITEMS + BridgeBounds.IR_ITEMS * anchors;
     }
@@ -2192,7 +2182,7 @@ contract TokenVerifierTest is TopologyFixtures {
         pure
         returns (uint256 total, uint256 batch, uint256 rsmt)
     {
-        batch = CertGroups.batchGas(CertGroups.measure(s.anchors, _spentItems(s.anchors.length)));
+        batch = CertGroups.batchGas(CertGroups.measure(s.anchors));
         for (uint256 i = 0; i < s.paths.length; ++i) {
             rsmt += BridgeBounds.rsmtGas(s.paths[i].siblings.length);
         }
@@ -2205,8 +2195,7 @@ contract TokenVerifierTest is TopologyFixtures {
 
     /// @dev `J`: Cfg, policy, one IR opening per anchor and every UC occurrence's items.
     function _items(Scenario memory s) internal pure returns (uint256) {
-        return _spentItems(s.anchors.length)
-            + CertGroups.measure(s.anchors, _spentItems(s.anchors.length)).items;
+        return _spentItems(s.anchors.length) + CertGroups.measure(s.anchors).items;
     }
 
     function test_gate_everyGoldenComponentEqualsTheOracleGate() public view {
@@ -2214,8 +2203,7 @@ contract TokenVerifierTest is TopologyFixtures {
         for (uint256 o = 0; o < 2; ++o) {
             Scenario memory s = o == 0 ? _mintScenario() : _returnScenario();
             string memory g = string.concat(".", ops[o], ".envelope.gate");
-            CertGroups.Counts memory n =
-                CertGroups.measure(s.anchors, _spentItems(s.anchors.length));
+            CertGroups.Counts memory n = CertGroups.measure(s.anchors);
             assertEq(
                 BridgeBounds.intrinsicGas(s.cfgB.length, _proof(s).length),
                 vm.parseJsonUint(G, string.concat(g, ".intrinsic")),
@@ -2242,7 +2230,6 @@ contract TokenVerifierTest is TopologyFixtures {
             assertEq(n.q, vm.parseJsonUint(G, string.concat(g, ".grouping.q")), "Q");
             assertEq(n.a, vm.parseJsonUint(G, string.concat(g, ".grouping.a")), "A");
             assertEq(n.c, vm.parseJsonUint(G, string.concat(g, ".grouping.c")), "C");
-            assertEq(vm.parseJsonUint(G, string.concat(g, ".budget")), BridgeBounds.TX_GAS_BUDGET);
             assertEq(vm.parseJsonUint(G, string.concat(g, ".reserve")), BridgeBounds.GAS_RESERVE);
         }
     }
@@ -2306,51 +2293,21 @@ contract TokenVerifierTest is TopologyFixtures {
         (t,,) = _gateOfScenario(s);
     }
 
-    function test_gate_theExactBoundaryIsDecidedByTheGateBeforeAnyBatchCall() public {
-        // the anchor count at which the bundle is under the budget with no padding and over it with the largest padding
-        uint256 k = 0;
-        for (uint256 c = 2; c <= 16 && k == 0; ++c) {
-            Scenario memory probe = _heavy(c, 16, 0);
-            if (
-                _total(probe, 0) <= BridgeBounds.TX_GAS_BUDGET
-                    && _total(probe, BridgeBounds.MAX_SEMANTIC_BYTES - 3)
-                        > BridgeBounds.TX_GAS_BUDGET
-            ) {
-                k = c;
-            }
-        }
-        assertGt(k, 1, "some anchor count straddles the budget");
-        Scenario memory s = _heavy(k, 16, 0);
-        uint256 lo = 0;
-        uint256 hi = BridgeBounds.MAX_SEMANTIC_BYTES - 3;
-        while (lo < hi) {
-            uint256 mid = (lo + hi + 1) / 2;
-            if (_total(s, mid) <= BridgeBounds.TX_GAS_BUDGET) lo = mid;
-            else hi = mid - 1;
-        }
-        assertLe(_total(s, lo), BridgeBounds.TX_GAS_BUDGET);
-        assertGt(_total(s, lo + 1), BridgeBounds.TX_GAS_BUDGET);
-        s.history = new bytes(lo + 3);
-        assertTrue(_sameResult(_run(s), s.result), "the last passing padding is admitted");
-        s.history = new bytes(lo + 4);
-        _arm(s);
-        vm.expectCall(B1Calls.CERT_BATCH, bytes(""), 0);
-        vm.expectCall(B1Calls.RSMT_VERIFIER, bytes(""), 0);
-        vm.expectRevert(abi.encodeWithSelector(BudgetExceeded.selector));
-        v.verifyReturn(s.cfgB, _proof(s));
+    /// No ceiling (owner §36): sixteen 16-signature anchors with the largest history are estimated far above the former 7,000,000 and
+    /// are admitted and verified; the estimate only tells the caller how much gas to give.
+    function test_gate_anEstimateAboveTheFormerCeilingIsAdmitted() public {
+        Scenario memory s = _heavy(16, 16, 0);
+        uint256 t = _total(s, BridgeBounds.MAX_SEMANTIC_BYTES - 3);
+        assertGt(t, 7_000_000);
+        s.history = new bytes(BridgeBounds.MAX_SEMANTIC_BYTES);
+        assertTrue(_sameResult(_run(s), s.result), "admitted above the former ceiling");
     }
 
-    function test_gate_sixteenSignatureAnchorsAtTheCapAreAdmittedOrPricedOutNeverHalfRun() public {
+    function test_gate_sixteenSignatureAnchorsAreAlwaysAdmitted() public {
         for (uint256 k = 2; k <= 16; ++k) {
             Scenario memory s = _heavy(k, 16, 0);
-            (uint256 t,,) = _gateOfScenario(s);
             _arm(s);
-            if (t <= BridgeBounds.TX_GAS_BUDGET) {
-                assertTrue(_sameResult(_call(s), s.result));
-            } else {
-                vm.expectRevert(abi.encodeWithSelector(BudgetExceeded.selector));
-                v.verifyReturn(s.cfgB, _proof(s));
-            }
+            assertTrue(_sameResult(_call(s), s.result));
         }
     }
 
@@ -2398,28 +2355,18 @@ contract TokenVerifierTest is TopologyFixtures {
         assertLe(u3, a3);
         assertLe(u4, a4);
         assertLe(u5, a5);
-        // the heaviest signature-bound shape the gate admits: the most 16-signature anchors that fit the budget
-        uint256 k = 2;
-        for (uint256 c = 2; c <= 16; ++c) {
-            (uint256 t,,) = _gateOfScenario(_heavy(c, 16, 0));
-            if (t <= BridgeBounds.TX_GAS_BUDGET) k = c;
-        }
-        (uint256 u6, uint256 a6) =
-            _measure("the most 16-signature anchors the gate admits", _heavy(k, 16, 0));
+        // the heaviest signature-bound shape: sixteen 16-signature anchors
+        (uint256 u6, uint256 a6) = _measure("sixteen 16-signature anchors", _heavy(16, 16, 0));
         assertLe(u6, a6);
-        // the compact dense shape arch asked to see published: two anchors that fill the whole 4,096 item budget. Its allowance is small
-        // (few bytes), its scan is not: the margin may be negative, which is a finding, not a failure of the fixture.
-        Scenario memory dense = _denseTwo(1);
-        uint256 room = BridgeBounds.MAX_SOLIDITY_ITEMS - _spentItems(2);
-        uint256 per = (room - _itemsOf(dense)) / 2 + 1;
-        dense = _denseTwo(per);
+        // the compact dense shape arch asked to see published: two anchors with dense input-record slots near the UC byte cap. Its
+        // allowance is small (few bytes), its scan is not: the margin may be negative, which is a finding, not a failure of the fixture.
+        Scenario memory dense = _denseTwo(7000);
         emit log_named_uint("dense: items traversed by the UC scan", _itemsOf(dense));
         emit log_named_uint(
             "dense: items in total (with Cfg, policy, IR openings)",
             _itemsOf(dense) + _spentItems(2)
         );
-        (uint256 u7, uint256 a7) =
-            _measure("two dense anchors filling the 4,096 item budget", dense);
+        (uint256 u7, uint256 a7) = _measure("two dense anchors near the UC byte cap", dense);
         emit log_named_uint("dense: used / allowance (permille)", u7 * 1000 / a7);
     }
 
