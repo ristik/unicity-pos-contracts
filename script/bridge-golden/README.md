@@ -9,7 +9,7 @@ composed relation itself runs natively (0x0105) and is pinned by the oracle's `n
 
 ## Sealed corpus pin
 
-`corpus-pin.json` pins the shared corpus (native-bridge-plugins `protocol/vectors`, commit `a6ca6e12…` (nbp#36, B7 direct PR 2: the
+`corpus-pin.json` pins the shared corpus (native-bridge-plugins `protocol/vectors`, commit `fd8fc786…` (nbp#36 merged, B7 direct PR 2: the
 `native-compose` cases and the status table), manifest digest `7fcd03e9…`, `trustBaseId` (the trust-base genesis EntryID) `cde64957…`), the oracle
 commit, the SHA-256 of `golden.json` and the list of golden values the corpus also contains.
 `python3 script/bridge-golden/check-corpus.py <corpus checkout>` verifies the corpus files and digest, that
