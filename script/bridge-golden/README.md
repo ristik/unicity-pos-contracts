@@ -52,3 +52,12 @@ Slots 0 to 5 and 7 are unchanged (the lock digest stays at slot 5 where the lock
 (nonce => amount), slot 9 `spentPart` (nonce => partId => nullifier). Readers of the old spent word (the plug-ins' `spentSlot` and
 `spentNullifier(nonce)`) must move to `spentPart(nonce, partId)` and `redeemedAmount(nonce)`; this is a fresh deployment, nothing
 upgrades in place.
+
+Consumers of the old layout and event, to be moved in lockstep with the fresh deployment (the break list):
+
+- native-bridge-plugins: `spentSlot`, `SLOT_SPENT_NULLIFIER`, `RedeemTransport.spentNullifier(nonce)` (PR4);
+- bft-core `bridgeprofile/lock.go` (`SlotSpentNullifier`, `SpentSlot`: the slot is now `redeemedAmount[n]`) and the amendment
+  `docs/pos/specification/amendments/b2-whole-token-bridge-profile.md` (replay guard text, slot table);
+- bft-core `deploy/testnet/bridge/rehearse_bridge.py`: the event `RedemptionCredited(uint256,bytes32,address,uint256)` is now
+  `RedemptionCredited(uint256,bytes32,address,bytes32,uint256,uint256)` (topics: nonce, partId, recipient) and its
+  `spentNullifier(uint256)` calls become `spentPart(uint256,bytes32)` and `redeemedAmount(uint256)`.
