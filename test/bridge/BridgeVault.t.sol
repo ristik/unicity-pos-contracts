@@ -28,7 +28,12 @@ contract BridgeVaultTest is VaultHarness {
         bytes p0
     );
     event RedemptionCredited(
-        uint256 indexed nonce, bytes32 indexed nullifier, address indexed recipient, uint256 amount
+        uint256 indexed nonce,
+        bytes32 indexed partId,
+        address indexed recipient,
+        bytes32 nullifier,
+        uint256 amount,
+        uint256 remaining
     );
     event Claimed(address indexed recipient, address indexed to, uint256 amount);
     event Received(address indexed from, uint256 amount);
@@ -251,24 +256,26 @@ contract BridgeVaultTest is VaultHarness {
 
     function test_layout_compilerSlots() public view {
         string memory j = vm.readFile("out/BridgeVault.sol/BridgeVault.json");
-        string[8] memory labels = [
+        string[10] memory labels = [
             "lastNonce",
             "locked",
             "credited",
             "paid",
             "entered",
             "lockDigest",
-            "spentNullifier",
-            "claimable"
+            "redeemedAmount",
+            "claimable",
+            "lockedAmount",
+            "spentPart"
         ];
-        for (uint256 i = 0; i < 8; ++i) {
+        for (uint256 i = 0; i < 10; ++i) {
             string memory p = string.concat(".storageLayout.storage[", vm.toString(i), "]");
             assertEq(vm.parseJsonString(j, string.concat(p, ".label")), labels[i]);
             assertEq(vm.parseJsonString(j, string.concat(p, ".slot")), vm.toString(i));
             assertEq(vm.parseJsonString(j, string.concat(p, ".offset")), "0");
         }
-        // exactly eight storage variables: configuration lives in immutables and a code-only contract
-        assertEq(vm.keyExistsJson(j, ".storageLayout.storage[8]"), false);
+        // exactly ten storage variables: configuration lives in immutables and a code-only contract
+        assertEq(vm.keyExistsJson(j, ".storageLayout.storage[10]"), false);
     }
 
     function test_layout_lockedStateInTheDeclaredSlots() public {
@@ -289,8 +296,24 @@ contract BridgeVaultTest is VaultHarness {
             vm.load(address(vault), keccak256(abi.encode(uint256(2), uint256(5)))),
             _digest(2, 7 ether)
         );
-        assertEq(vm.load(address(vault), keccak256(abi.encode(uint256(1), uint256(6)))), _eta(1, 0));
-        assertEq(vm.load(address(vault), keccak256(abi.encode(uint256(2), uint256(6)))), bytes32(0));
+        // slot 6: redeemed amount by nonce; slot 8: locked amount by nonce; slot 9: nullifier by nonce and part ID
+        assertEq(
+            uint256(vm.load(address(vault), keccak256(abi.encode(uint256(1), uint256(6))))), 5 ether
+        );
+        assertEq(uint256(vm.load(address(vault), keccak256(abi.encode(uint256(2), uint256(6))))), 0);
+        assertEq(
+            uint256(vm.load(address(vault), keccak256(abi.encode(uint256(1), uint256(8))))), 5 ether
+        );
+        assertEq(
+            uint256(vm.load(address(vault), keccak256(abi.encode(uint256(2), uint256(8))))), 7 ether
+        );
+        assertEq(
+            vm.load(
+                address(vault),
+                keccak256(abi.encode(_partId(1), keccak256(abi.encode(uint256(1), uint256(9)))))
+            ),
+            _eta(1, 0)
+        );
         assertEq(
             uint256(vm.load(address(vault), keccak256(abi.encode(CAROL, uint256(7))))),
             5 ether,
@@ -558,13 +581,15 @@ contract BridgeVaultTest is VaultHarness {
         _lock(ALICE, 4 ether);
         vd.setReturn(_returnResult(1, 4 ether, BOB, _eta(1, 0)));
         vm.expectEmit(true, true, true, true, address(vault));
-        emit RedemptionCredited(1, _eta(1, 0), BOB, 4 ether);
+        emit RedemptionCredited(1, _partId(1), BOB, _eta(1, 0), 4 ether, 0);
         vm.prank(CAROL); // an arbitrary submitter
-        assertEq(vault.redeem("hex"), 1);
+        (uint256 got, bytes32 gotPart) = vault.redeem("hex");
+        assertEq(got, 1);
+        assertEq(gotPart, _partId(1));
         assertEq(vault.claimable(BOB), 4 ether);
         assertEq(vault.claimable(CAROL), 0);
         assertEq(vault.credited(), 4 ether);
-        assertEq(vault.spentNullifier(1), _eta(1, 0));
+        assertEq(vault.spentPart(1, _partId(1)), _eta(1, 0));
         assertEq(address(vault).balance, 4 ether, "redeem pays nothing");
         assertEq(vault.paid(), 0);
         assertEq(vault.outstanding(), 0);
@@ -584,7 +609,7 @@ contract BridgeVaultTest is VaultHarness {
         _lock(ALICE, 1 ether);
         _redeem(1, 1 ether, BOB, _eta(1, 0));
         vd.setReturn(_returnResult(1, 1 ether, BOB, _eta(1, 0)));
-        vm.expectRevert(abi.encodeWithSelector(AlreadyRedeemed.selector, 1));
+        vm.expectRevert(abi.encodeWithSelector(PartAlreadyRedeemed.selector, 1, _partId(1)));
         vault.redeem("");
         assertEq(vault.claimable(BOB), 1 ether);
         assertEq(vault.credited(), 1 ether);
@@ -595,9 +620,9 @@ contract BridgeVaultTest is VaultHarness {
         _redeem(1, 1 ether, BOB, _eta(1, 0));
         // a second certified history of the same lock, with another eta and another recipient
         vd.setReturn(_returnResult(1, 1 ether, CAROL, _eta(1, 1)));
-        vm.expectRevert(abi.encodeWithSelector(AlreadyRedeemed.selector, 1));
+        vm.expectRevert(abi.encodeWithSelector(PartAlreadyRedeemed.selector, 1, _partId(1)));
         vault.redeem("");
-        assertEq(vault.spentNullifier(1), _eta(1, 0), "the first nullifier stays");
+        assertEq(vault.spentPart(1, _partId(1)), _eta(1, 0), "the first nullifier stays");
         assertEq(vault.claimable(CAROL), 0);
     }
 
@@ -606,7 +631,7 @@ contract BridgeVaultTest is VaultHarness {
         _lock(ALICE, 1 ether);
         vd.setReturn(_returnResult(1, 1 ether, BOB, _eta(1, 0)));
         vault.redeem(hex"01");
-        vm.expectRevert(abi.encodeWithSelector(AlreadyRedeemed.selector, 1));
+        vm.expectRevert(abi.encodeWithSelector(PartAlreadyRedeemed.selector, 1, _partId(1)));
         vault.redeem(hex"0202");
     }
 
@@ -682,29 +707,34 @@ contract BridgeVaultTest is VaultHarness {
     ///      its own lock rests on the kernel result's `lockDigest` (checked against `lockDigest[nonce]`), i.e. on the
     ///      external kernel being correct; see `test_redeem_creditNeverExceedsLockedCumulatively` for what a kernel
     ///      bug that inflates one lock can and cannot do (owner question Q9, option b: documented, layout unchanged).
-    function test_redeem_creditNeverExceedsLockedGlobally() public {
+    /// A kernel result whose ROOT amount is not the stored one cannot inflate the lock, even with the lock's real digest.
+    function test_redeem_rootAmountMustBeTheStoredOne() public {
         _lock(ALICE, 1 ether);
         KernelResult memory r = _returnResult(1, 2 ether, BOB, _eta(1, 0));
         r.lockDigest = vault.lockDigest(1); // digest of the real lock, inflated amount
         vd.setReturn(r);
-        vm.expectRevert(abi.encodeWithSelector(CreditExceedsLocked.selector, 0, 2 ether, 1 ether));
+        vm.expectRevert(abi.encodeWithSelector(KernelRootAmountMismatch.selector, 1 ether, 2 ether));
         vault.redeem("");
+        assertEq(vault.credited(), 0);
     }
 
-    function test_redeem_creditNeverExceedsLockedCumulatively() public {
-        _lock(ALICE, 1 ether);
-        _lock(ALICE, 1 ether);
-        // a kernel bug inflating lock 1 passes the global bound once, then lock 2 hits it
-        KernelResult memory r = _returnResult(1, 2 ether, BOB, _eta(1, 0));
-        r.lockDigest = vault.lockDigest(1);
-        vd.setReturn(r);
+    /// A kernel bug inflating a part passes no bound: the lock has only its own remainder to give.
+    function test_redeem_partCannotExceedWhatTheLockHasLeft() public {
+        _lock(ALICE, 10 ether);
+        _lock(ALICE, 10 ether);
+        vd.setReturn(_partResult(1, 10 ether, keccak256("a"), 4 ether, 1, BOB, _eta(1, 0)));
         vault.redeem("");
-        r = _returnResult(2, 1 ether, BOB, _eta(2, 0));
-        vd.setReturn(r);
-        vm.expectRevert(
-            abi.encodeWithSelector(CreditExceedsLocked.selector, 2 ether, 1 ether, 2 ether)
-        );
+        vd.setReturn(_partResult(1, 10 ether, keccak256("b"), 7 ether, 1, BOB, _eta(1, 1)));
+        vm.expectRevert(abi.encodeWithSelector(PartExceedsRemaining.selector, 1, 6 ether, 7 ether));
         vault.redeem("");
+        // lock 2's backing is untouched by lock 1's attempt
+        vd.setReturn(_partResult(2, 10 ether, keccak256("c"), 10 ether, 1, BOB, _eta(2, 0)));
+        vault.redeem("");
+        assertEq(vault.credited(), 14 ether);
+        assertEq(vault.redeemedAmount(1), 4 ether);
+        assertEq(vault.remaining(1), 6 ether);
+        assertTrue(vault.lockComplete(2));
+        assertFalse(vault.lockComplete(1));
     }
 
     function test_redeem_verifierFailureBubblesUnchanged() public {
@@ -716,7 +746,7 @@ contract BridgeVaultTest is VaultHarness {
         vd.setFailure(abi.encodeWithSelector(LeafNotIncluded.selector, 7));
         vm.expectRevert(abi.encodeWithSelector(LeafNotIncluded.selector, 7));
         vault.redeem("");
-        assertEq(vault.spentNullifier(1), bytes32(0));
+        assertEq(vault.spentPart(1, _partId(1)), bytes32(0));
     }
 
     // ---------------------------------------------------------------------------------------------
@@ -934,9 +964,9 @@ contract BridgeVaultTest is VaultHarness {
         _lock(ALICE, amount);
         _redeem(1, amount, BOB, eta1);
         vd.setReturn(_returnResult(1, amount, r2, eta2));
-        vm.expectRevert(abi.encodeWithSelector(AlreadyRedeemed.selector, 1));
+        vm.expectRevert(abi.encodeWithSelector(PartAlreadyRedeemed.selector, 1, _partId(1)));
         vault.redeem("");
-        assertEq(vault.spentNullifier(1), eta1);
+        assertEq(vault.spentPart(1, _partId(1)), eta1);
         assertEq(vault.credited(), amount);
     }
 

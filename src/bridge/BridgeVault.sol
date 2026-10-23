@@ -8,14 +8,16 @@ import {
     AlreadyRedeemed,
     BadEvmShard,
     BadRecipient,
-    CreditExceedsLocked,
     InsufficientCredit,
     KernelAmountMismatch,
     KernelCfgMismatch,
     KernelNonceMismatch,
+    KernelRootAmountMismatch,
     LockDigestMismatch,
     LockDigestZero,
     NonceExhausted,
+    PartAlreadyRedeemed,
+    PartExceedsRemaining,
     PayoutFailed,
     PolicyPartitionIsEvm,
     Reentrancy,
@@ -26,25 +28,27 @@ import {
     ZeroNullifier
 } from "./BridgeErrors.sol";
 
-/// @notice Non-upgradeable native-UCT vault of the whole-token bridge profile (design
-///         `bridge-b2b4-design-v2.md`, "Vault state, nullifiers and claims").
+/// @notice Non-upgradeable native-UCT vault of the native bridge profile (design `bridge-b2b4-design-v2.md`, "Vault state,
+///         nullifiers and claims"; protocol 6 split lineage, bft-core docs/design/bridge-split-lineage-spec.md).
 ///
-///         One whole token per lock. `lock` records a permanent digest and raises L; `redeem` verifies
-///         one burn through the immutable `TokenVerifier`, spends the lock's nonce once and credits the
-///         burn's recipient (D); `claim` is the only native transfer (P). No owner, no setter, no
+///         One lock per token minted at lock time, redeemable in WHOLE PARTS: the token may be split any number of times off
+///         chain and each part burned for its own amount. `lock` records a permanent digest and the locked amount and raises L;
+///         `redeem` verifies one burn through the immutable `TokenVerifier`, pays out of the lock's remaining amount once per
+///         part and credits the burn's recipient (D); `claim` is the only native transfer (P). No owner, no setter, no
 ///         delegatecall, no refund, no fee, no upgrade path, no way to move a donation.
 ///
-///         Storage is exactly slots 0..7 below, as full 32-byte words. No base contract adds
-///         storage ahead of them; configuration lives in immutables and a code-only data contract.
-///         The design's accounting holds after every successful call:
-///         `0 <= P <= D <= L`, `claimable` sums to `D - P`, `balance = L - P + X`, `X >= 0`.
+///         Storage is exactly slots 0..9 below, as full 32-byte words (slot 5, the lock digest, is where the lock-proof readers
+///         expect it). No base contract adds storage ahead of them; configuration lives in immutables and a code-only data
+///         contract. The accounting holds after every successful call: `0 <= P <= D <= L`, for every lock `0 <= redeemed[n] <=
+///         lockedAmount[n]`, `sum_n redeemed[n] = D`, `sum_n lockedAmount[n] = L`, `claimable` sums to `D - P`,
+///         `balance = L - P + X`, `X >= 0`.
 contract BridgeVault {
     // ---- storage layout (do not reorder, insert or resize) -------------------------------------
     /// @dev slot 0: last allocated lock nonce; runtime bound u64.
     uint256 public lastNonce;
     /// @dev slot 1: cumulative L, the sum of every lock amount.
     uint256 public locked;
-    /// @dev slot 2: cumulative D, the sum of every redeemed lock amount.
+    /// @dev slot 2: cumulative D, the sum of every redeemed part amount.
     uint256 public credited;
     /// @dev slot 3: cumulative P, the sum of every paid claim.
     uint256 public paid;
@@ -52,10 +56,15 @@ contract BridgeVault {
     uint256 private entered;
     /// @dev slot 5: permanent lock digest by nonce; never deleted or overwritten.
     mapping(uint256 => bytes32) public lockDigest;
-    /// @dev slot 6: zero until the nonce is redeemed, then the burn nullifier eta, once.
-    mapping(uint256 => bytes32) public spentNullifier;
+    /// @dev slot 6: per lock, the sum of the part amounts redeemed so far (`<= lockedAmount`).
+    mapping(uint256 => uint256) public redeemedAmount;
     /// @dev slot 7: pull credit by recipient.
     mapping(address => uint256) public claimable;
+    /// @dev slot 8: the amount locked under each nonce, fixed at lock time.
+    mapping(uint256 => uint256) public lockedAmount;
+    /// @dev slot 9: zero until a part of a lock is redeemed, then that part's burn nullifier, once. The key is the part's token
+    ///      ID from the verified result, so the same part cannot be paid twice whatever burn or witnesses are presented.
+    mapping(uint256 => mapping(bytes32 => bytes32)) public spentPart;
     // --------------------------------------------------------------------------------------------
 
     /// @notice `cfg = H(Cfg)`, the immutable configuration hash every kernel result must carry.
@@ -84,8 +93,15 @@ contract BridgeVault {
         bytes32 rcpt,
         bytes p0
     );
+    /// @dev One part of lock `nonce` was redeemed: `partId` is its token ID, `nullifier` its burn's, `amount` its whole amount and
+    ///      `remaining` what the lock has left after it (zero completes the lock).
     event RedemptionCredited(
-        uint256 indexed nonce, bytes32 indexed nullifier, address indexed recipient, uint256 amount
+        uint256 indexed nonce,
+        bytes32 indexed partId,
+        address indexed recipient,
+        bytes32 nullifier,
+        uint256 amount,
+        uint256 remaining
     );
     event Claimed(address indexed recipient, address indexed to, uint256 amount);
     event Received(address indexed from, uint256 amount);
@@ -165,6 +181,7 @@ contract BridgeVault {
 
         lastNonce = nonce;
         locked += amount;
+        lockedAmount[nonce] = amount;
         lockDigest[nonce] = r.lockDigest;
         emit Locked(
             nonce,
@@ -185,45 +202,57 @@ contract BridgeVault {
     // Mint view
     // ---------------------------------------------------------------------------------------------
 
-    /// @notice Verifies that `proof` proves a mint of an existing, unspent lock of this vault. It
-    ///         creates no state; the token exists off EVM. Returns the lock nonce.
+    /// @notice Verifies that `proof` proves a mint of an existing lock of this vault that is not complete (some of it is still
+    ///         unredeemed). It creates no state; the token exists off EVM. Returns the lock nonce.
     function verifyMint(bytes calldata proof) external view returns (uint256 nonce) {
         KernelResult memory r = VERIFIER.verifyMint(cfgBytes(), proof);
         if (r.cfg != CFG) revert KernelCfgMismatch(CFG, r.cfg);
         nonce = r.nonce;
         if (nonce == 0 || nonce > lastNonce) revert UnknownLock(nonce);
         if (lockDigest[nonce] != r.lockDigest) revert LockDigestMismatch(nonce);
-        if (spentNullifier[nonce] != bytes32(0)) revert AlreadyRedeemed(nonce);
+        if (redeemedAmount[nonce] == lockedAmount[nonce]) revert AlreadyRedeemed(nonce);
     }
 
     // ---------------------------------------------------------------------------------------------
     // Redeem
     // ---------------------------------------------------------------------------------------------
 
-    /// @notice Redeems one burn. Anyone may submit; every release field comes from the certified
-    ///         burn, never from `msg.sender`. Credits the recipient and pays nothing: payment is `claim`.
-    /// @dev Conservation is enforced globally (`credited + amount <= locked`); the vault stores no per-lock
-    ///      amount. That `amount` is the amount of THIS lock rests on the kernel result's `lockDigest`, which
-    ///      must equal `lockDigest[nonce]`: a kernel bug that inflated one redemption would be bounded by the
-    ///      pool, not by its own lock. The storage layout (slots 0..7) is unchanged on purpose.
-    function redeem(bytes calldata proof) external nonReentrant returns (uint256 nonce) {
+    /// @notice Redeems one burn of one part of a lock. Anyone may submit; every release field comes from the certified burn, never
+    ///         from `msg.sender`. Credits the recipient and pays nothing: payment is `claim`. The part is redeemed whole, once,
+    ///         for its own amount, out of what the lock has left; siblings redeem independently until the lock is complete.
+    /// @dev The lock's identity is the root's (`r.lockDigest` against the stored digest, `r.amount` against the stored amount);
+    ///      the part comes from the verified lineage. Conservation is enforced per lock (`redeemed + partAmount <= lockedAmount`)
+    ///      (hence `credited <= locked`). Returns the lock nonce and the part's token ID.
+    function redeem(bytes calldata proof)
+        external
+        nonReentrant
+        returns (uint256 nonce, bytes32 partId)
+    {
         KernelResult memory r = VERIFIER.verifyReturn(cfgBytes(), proof);
         if (r.cfg != CFG) revert KernelCfgMismatch(CFG, r.cfg);
         nonce = r.nonce;
         if (nonce == 0 || nonce > lastNonce) revert UnknownLock(nonce);
         if (lockDigest[nonce] != r.lockDigest) revert LockDigestMismatch(nonce);
-        if (spentNullifier[nonce] != bytes32(0)) revert AlreadyRedeemed(nonce);
+        uint256 total = lockedAmount[nonce];
+        if (r.amount != total) revert KernelRootAmountMismatch(total, r.amount);
         if (r.nullifier == bytes32(0)) revert ZeroNullifier();
         if (r.releaseTo == address(0) || r.releaseTo == address(this)) revert BadRecipient();
+        partId = r.partTokenId;
+        uint256 amount = r.partAmount;
+        if (partId == bytes32(0) || amount == 0) revert ZeroAmount();
+        if (spentPart[nonce][partId] != bytes32(0)) revert PartAlreadyRedeemed(nonce, partId);
 
-        uint256 amount = r.amount;
-        uint256 d = credited;
-        if (d + amount > locked) revert CreditExceedsLocked(d, amount, locked);
+        uint256 done = redeemedAmount[nonce];
+        uint256 left = total - done;
+        if (amount > left) revert PartExceedsRemaining(nonce, left, amount);
 
-        spentNullifier[nonce] = r.nullifier;
-        credited = d + amount;
+        // `credited <= locked` needs no check of its own: the sum of the per-lock amounts is `locked` and each lock stays within
+        // its own.
+        spentPart[nonce][partId] = r.nullifier;
+        redeemedAmount[nonce] = done + amount;
+        credited += amount;
         claimable[r.releaseTo] += amount;
-        emit RedemptionCredited(nonce, r.nullifier, r.releaseTo, amount);
+        emit RedemptionCredited(nonce, partId, r.releaseTo, r.nullifier, amount, left - amount);
     }
 
     // ---------------------------------------------------------------------------------------------
@@ -268,6 +297,17 @@ contract BridgeVault {
         assembly ("memory-safe") {
             extcodecopy(data, add(out, 32), 1, sub(size, 1))
         }
+    }
+
+    /// @notice What lock `nonce` has left to redeem: `lockedAmount - redeemedAmount`.
+    function remaining(uint256 nonce) external view returns (uint256) {
+        return lockedAmount[nonce] - redeemedAmount[nonce];
+    }
+
+    /// @notice Whether lock `nonce` exists and every unit of it has been redeemed.
+    function lockComplete(uint256 nonce) external view returns (bool) {
+        uint256 total = lockedAmount[nonce];
+        return total != 0 && redeemedAmount[nonce] == total;
     }
 
     /// @notice O = L - D, the backing of locks not yet redeemed.

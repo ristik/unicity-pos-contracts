@@ -6,8 +6,8 @@ import {BridgeVault} from "../../src/bridge/BridgeVault.sol";
 import {KernelResult} from "../../src/bridge/BridgeTypes.sol";
 import "../../src/bridge/BridgeErrors.sol";
 
-/// @notice Drives the vault with random locks, redemptions (including replays, conflicting burns,
-///         wrong amounts and unknown nonces), claims (to EOAs, to a reverting payee and to a reentrant
+/// @notice Drives the vault with random locks, redemptions of random parts of them (including replays of a part, conflicting
+///         burns of a part, parts larger than what the lock has left, wrong amounts and unknown nonces), claims (to EOAs, to a reverting payee and to a reentrant
 ///         payee), donations and forced value, and checks the accounting identities after every step.
 ///         The verifier is a TEST DOUBLE; every expected refusal is matched by selector, so a handler
 ///         step that refuses for another reason fails the run (`fail_on_revert` is on and unexpected
@@ -18,8 +18,11 @@ contract VaultHandler is VaultHarness {
     address[] public recipients; // every address that can hold credit
 
     mapping(uint256 => uint256) public lockAmount;
-    mapping(uint256 => bytes32) public firstEta;
-    mapping(uint256 => bool) public redeemed;
+    /// @dev ghost model: per lock, the part IDs redeemed (in order), each part's first nullifier and amount, and the sum.
+    mapping(uint256 => bytes32[]) internal partIds;
+    mapping(uint256 => mapping(bytes32 => bytes32)) public firstEta;
+    mapping(uint256 => mapping(bytes32 => uint256)) public partAmountOf;
+    mapping(uint256 => uint256) public ghostRedeemed;
 
     uint256 public ghostLocked;
     uint256 public ghostCredited;
@@ -28,6 +31,8 @@ contract VaultHandler is VaultHarness {
     uint256 public locks;
     uint256 public okRedeems;
     uint256 public refusedReplays;
+    uint256 public refusedOver;
+    uint256 public splitRedeems;
     uint256 public okClaims;
     uint256 public failedPayouts;
 
@@ -70,26 +75,69 @@ contract VaultHandler is VaultHarness {
         ++locks;
     }
 
-    function redeem(uint256 nSeed, uint256 recSeed, uint256 etaSeed) external {
+    function partCount(uint256 n) external view returns (uint256) {
+        return partIds[n].length;
+    }
+
+    function partAt(uint256 n, uint256 i) external view returns (bytes32) {
+        return partIds[n][i];
+    }
+
+    /// @dev Redeems part `partSeed % 4` of lock `n` for a random amount in 1..lockAmount (so parts overlap, repeat and overshoot).
+    ///      The expected outcome follows the vault's rules: a part paid before is refused whatever burn it carries; otherwise a
+    ///      part larger than what is left is refused; otherwise it is credited.
+    function redeem(
+        uint256 nSeed,
+        uint256 partSeed,
+        uint256 recSeed,
+        uint256 etaSeed,
+        uint256 amountSeed
+    ) external {
         uint256 last = vault.lastNonce();
         if (last == 0) return;
         uint256 n = bound(nSeed, 1, last);
         address to = recipients[recSeed % recipients.length];
         bytes32 eta = keccak256(abi.encode(etaSeed)) | bytes32(uint256(1));
-        vd.setReturn(_returnResult(n, lockAmount[n], to, eta));
+        bytes32 partId = keccak256(abi.encode("part", n, partSeed % 4));
+        uint256 amount = bound(amountSeed, 1, lockAmount[n]);
+        uint256 depth = partSeed % 3;
+        vd.setReturn(_partResult(n, lockAmount[n], partId, amount, depth, to, eta));
         (bool ok, bytes memory err) =
             address(vault).call(abi.encodeCall(BridgeVault.redeem, (hex"")));
-        if (redeemed[n]) {
-            assertFalse(ok, "replay accepted");
-            assertEq(bytes4(err), AlreadyRedeemed.selector, "replay refused for another reason");
+        if (firstEta[n][partId] != bytes32(0)) {
+            assertFalse(ok, "replayed part accepted");
+            assertEq(bytes4(err), PartAlreadyRedeemed.selector, "replay refused for another reason");
             ++refusedReplays;
+        } else if (amount > lockAmount[n] - ghostRedeemed[n]) {
+            assertFalse(ok, "overshooting part accepted");
+            assertEq(
+                bytes4(err), PartExceedsRemaining.selector, "overshoot refused for another reason"
+            );
+            ++refusedOver;
         } else {
-            assertTrue(ok, "first redemption refused");
-            redeemed[n] = true;
-            firstEta[n] = eta;
-            ghostCredited += lockAmount[n];
+            assertTrue(ok, "first redemption of a part refused");
+            partIds[n].push(partId);
+            firstEta[n][partId] = eta;
+            partAmountOf[n][partId] = amount;
+            ghostRedeemed[n] += amount;
+            ghostCredited += amount;
             ++okRedeems;
+            if (amount < lockAmount[n]) ++splitRedeems;
         }
+    }
+
+    /// @dev A result whose ROOT amount is not the stored one but whose digest is: refused by the amount check.
+    function redeemWrongRootAmount(uint256 nSeed, uint256 deltaSeed) external {
+        uint256 last = vault.lastNonce();
+        if (last == 0) return;
+        uint256 n = bound(nSeed, 1, last);
+        KernelResult memory r = _returnResult(n, lockAmount[n], ALICE, _eta(n, 98));
+        r.amount = lockAmount[n] + bound(deltaSeed, 1, 10 ether);
+        vd.setReturn(r);
+        (bool ok, bytes memory err) =
+            address(vault).call(abi.encodeCall(BridgeVault.redeem, (hex"")));
+        assertFalse(ok, "wrong root amount accepted");
+        assertEq(bytes4(err), KernelRootAmountMismatch.selector);
     }
 
     function redeemWrongAmount(uint256 nSeed, uint256 deltaSeed) external {
@@ -168,7 +216,7 @@ contract BridgeVaultInvariantTest is VaultHarness {
         h = new VaultHandler();
         v = h.getVault();
         targetContract(address(h));
-        bytes4[] memory sel = new bytes4[](7);
+        bytes4[] memory sel = new bytes4[](8);
         sel[0] = VaultHandler.lock.selector;
         sel[1] = VaultHandler.redeem.selector;
         sel[2] = VaultHandler.redeemWrongAmount.selector;
@@ -176,6 +224,7 @@ contract BridgeVaultInvariantTest is VaultHarness {
         sel[4] = VaultHandler.claim.selector;
         sel[5] = VaultHandler.donate.selector;
         sel[6] = VaultHandler.force.selector;
+        sel[7] = VaultHandler.redeemWrongRootAmount.selector;
         targetSelector(FuzzSelector({addr: address(h), selectors: sel}));
     }
 
@@ -206,19 +255,32 @@ contract BridgeVaultInvariantTest is VaultHarness {
         assertEq(v.lastNonce(), h.locks());
     }
 
-    function invariant_everyNonceIsSpentAtMostOnceWithItsFirstNullifier() public view {
+    function invariant_everyPartIsSpentAtMostOnceWithItsFirstNullifier() public view {
         uint256 last = v.lastNonce();
         uint256 redeemedSum;
+        uint256 lockedSum;
         for (uint256 n = 1; n <= last; ++n) {
-            if (h.redeemed(n)) {
-                assertEq(v.spentNullifier(n), h.firstEta(n));
-                redeemedSum += h.lockAmount(n);
-            } else {
-                assertEq(v.spentNullifier(n), bytes32(0));
+            uint256 sum;
+            uint256 count = h.partCount(n);
+            for (uint256 i = 0; i < count; ++i) {
+                bytes32 id = h.partAt(n, i);
+                assertEq(v.spentPart(n, id), h.firstEta(n, id), "a part keeps its first nullifier");
+                sum += h.partAmountOf(n, id);
             }
+            // a part that was never redeemed is unspent
+            assertEq(v.spentPart(n, keccak256("never redeemed")), bytes32(0));
+            assertEq(v.redeemedAmount(n), sum, "per-lock redeemed is the sum of its parts");
+            assertEq(v.redeemedAmount(n), h.ghostRedeemed(n));
+            assertLe(v.redeemedAmount(n), v.lockedAmount(n), "no lock redeems more than it locked");
+            assertEq(v.remaining(n), v.lockedAmount(n) - v.redeemedAmount(n));
+            assertEq(v.lockComplete(n), v.redeemedAmount(n) == v.lockedAmount(n));
+            assertEq(v.lockedAmount(n), h.lockAmount(n));
+            redeemedSum += v.redeemedAmount(n);
+            lockedSum += v.lockedAmount(n);
             assertTrue(v.lockDigest(n) != bytes32(0), "digest is permanent");
         }
-        assertEq(redeemedSum, v.credited(), "credited is exactly the redeemed locks");
+        assertEq(redeemedSum, v.credited(), "credited is exactly the redeemed parts");
+        assertEq(lockedSum, v.locked(), "locked is exactly the locks");
     }
 
     function invariant_guardIsReleased() public view {
@@ -231,6 +293,8 @@ contract BridgeVaultInvariantTest is VaultHarness {
         if (h.locks() < 100) return;
         assertGt(h.okRedeems(), 0, "redemptions");
         assertGt(h.refusedReplays(), 0, "refused replays");
+        assertGt(h.refusedOver(), 0, "refused overshooting parts");
+        assertGt(h.splitRedeems(), 0, "partial-lock redemptions");
         assertGt(h.okClaims(), 0, "paid claims");
         assertGt(h.failedPayouts(), 0, "failed payouts");
     }

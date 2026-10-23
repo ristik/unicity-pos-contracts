@@ -19,7 +19,7 @@ abstract contract BridgeBase is Test {
     bytes internal constant REVERT_CODE = hex"5f5ffd"; // PUSH0 PUSH0 REVERT
 
     bytes32 internal constant MARKER = bytes32("UNICITY_TOKEN_SEMANTICS");
-    bytes32 internal constant COMPOSE_MARKER = bytes32("UNICITY_BRIDGE_COMPOSE_V1");
+    bytes32 internal constant COMPOSE_MARKER = bytes32("UNICITY_BRIDGE_COMPOSE_V2");
 
     /// @dev The 0x0104 output's `Result`, with its leaf obligations (the verifier reads only prepare results, which have none).
     struct B2Leaf {
@@ -123,6 +123,9 @@ abstract contract BridgeBase is Test {
         uint256 n = 0;
         while (vm.keyExistsJson(G, string.concat(prefix, ".leaves[", vm.toString(n), "]"))) ++n;
         r.leafCount = n;
+        // The golden results are protocol 5 whole-token results: the part is the root.
+        r.partTokenId = r.tokenId;
+        r.partAmount = r.amount;
     }
 
     /// @dev Paths of the golden envelope of `op` ("mint" or "return"), one per exported leaf.
@@ -258,19 +261,20 @@ abstract contract BridgeBase is Test {
         return abi.encode(op, cfgBytes, proof);
     }
 
-    /// @dev The composition's 384-byte result, written word by word: marker, status, the nine fields, the leaf count. A
-    ///      nonzero status carries zero fields.
+    /// @dev The composition's 480-byte result, written word by word: marker, status, the nine fields, the leaf count, the part's
+    ///      token ID and amount and the split depth. A nonzero status carries zero fields.
     function _composeOut(uint256 status, KernelResult memory r)
         internal
         pure
         returns (bytes memory)
     {
         if (status != 0) {
-            return bytes.concat(COMPOSE_MARKER, bytes32(status), new bytes(320));
+            return bytes.concat(COMPOSE_MARKER, bytes32(status), new bytes(416));
         }
         return bytes.concat(
             abi.encode(COMPOSE_MARKER, status, r.cfg, r.nonce, r.amount, r.tokenId, r.salt),
-            abi.encode(r.firstPredicateHash, r.lockDigest, r.releaseTo, r.nullifier, r.leafCount)
+            abi.encode(r.firstPredicateHash, r.lockDigest, r.releaseTo, r.nullifier, r.leafCount),
+            abi.encode(r.partTokenId, r.partAmount, r.splitDepth)
         );
     }
 

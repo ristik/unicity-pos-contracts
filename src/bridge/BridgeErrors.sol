@@ -56,8 +56,14 @@ error KernelNonceMismatch(uint256 expected, uint256 actual);
 error KernelAmountMismatch(uint256 expected, uint256 actual);
 error UnknownLock(uint256 nonce);
 error LockDigestMismatch(uint256 nonce);
+/// @dev The lock is complete: every unit locked has been redeemed (the mint view of a finished lock).
 error AlreadyRedeemed(uint256 nonce);
+/// @dev This part of this lock was already paid (whatever burn or witnesses it is presented with).
+error PartAlreadyRedeemed(uint256 nonce, bytes32 partId);
+/// @dev The part's amount exceeds what the lock has left.
+error PartExceedsRemaining(uint256 nonce, uint256 remaining, uint256 amount);
+/// @dev The result's root amount is not the amount stored at lock time.
+error KernelRootAmountMismatch(uint256 expected, uint256 actual);
 error ZeroNullifier();
-error CreditExceedsLocked(uint256 credited, uint256 amount, uint256 locked);
 error InsufficientCredit(uint256 have, uint256 want);
 error PayoutFailed();
