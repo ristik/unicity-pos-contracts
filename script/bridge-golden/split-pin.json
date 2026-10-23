@@ -1,14 +1,16 @@
 {
   "corpus": {
-    "repository": "https://github.com/ristik/bft-core",
-    "directory": "bridgeprofile/testdata/split-corpus",
+    "repository": "https://github.com/ristik/native-bridge-plugins",
+    "commit": "432519640defa9bec4a23856d4bf19fd2b536e4e",
+    "directory": "protocol/vectors/split",
+    "manifestSha256": "57a44dc29fe0ac7550ce02150ca10470da30eabaad11aaeede4445107d936d21",
     "files": {
       "lineage/cases.json": "ac34a9c4e44021eab868300c023bd700ab02cca310100604da49d84096ff0074",
       "native/cases.json": "f36e946826e06594d523bb66192f5a44183be7d7c3df72af300303f4a99f1362",
       "config/fixtures.json": "6ee57ede59ea7e196a9310ac413dc037b7fb7d194ab80bba83d17204b07d71d8",
       "config/compose-status-v2.json": "83315ab435bee998652a82919b0b0ed42812307cd33c53aabb0b80b4e14de3d0"
     },
-    "status": "unsealed development corpus (PR5 imports the sealed one)"
+    "status": "sealed: the split/ family of the shared corpus (native-bridge-plugins protocol/vectors, one manifest); the files are byte-identical to the oracle commit below"
   },
   "oracle": {
     "repository": "https://github.com/ristik/bft-core",
