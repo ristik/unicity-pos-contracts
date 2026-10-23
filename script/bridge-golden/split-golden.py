@@ -1,0 +1,117 @@
+#!/usr/bin/env python3
+"""Extract (or check) test/bridge/split-golden.json from the oracle's split corpus (protocol 6).
+
+usage: split-golden.py extract <checkout of bft-core>   write test/bridge/split-golden.json
+       split-golden.py check   <checkout of bft-core>   verify the pin and that the file is exactly the extraction
+
+The source is bridgeprofile/testdata/split-corpus of the pinned bft-core commit (split-pin.json): the BRIDGE_COMPOSE_V2 native
+cases (the compose input, the 480-byte output, the status and the gas, as the oracle's NativeComposeV2 gives them) and, for each,
+the lineage result. Nothing in the output is written by hand.
+"""
+import hashlib
+import json
+import pathlib
+import subprocess
+import sys
+
+HERE = pathlib.Path(__file__).resolve().parent
+REPO = HERE.parent.parent
+OUT = REPO / "test/bridge/split-golden.json"
+
+# The cases the Solidity tests replay: the success paths of the lineage (depth 0, siblings, nested, fan-out) and one case per
+# split status of the V2 table, plus the certificate-codec statuses.
+CASES = [
+    "lineage-depth-0",
+    "lineage-depth-1-part-40",
+    "lineage-depth-1-part-60",
+    "lineage-depth-1-part-40-real-proofs",
+    "lineage-depth-2",
+    "lineage-depth-3",
+    "lineage-depth-8",
+    "lineage-fanout-16",
+    "lineage-refreshed-witnesses",
+    "lineage-neg-tree-total-under",
+    "lineage-neg-tree-understates-part",
+    "lineage-neg-parent-not-burned",
+    "lineage-neg-not-a-manifest",
+    "lineage-neg-partial-part-return",
+    "lineage-neg-repeated-token-id",
+    "lineage-neg-ancestor-certificate-outside-codec",
+    "lineage-neg-ancestor-signature-width",
+    "lineage-neg-ancestor-leaf-unwitnessed",
+]
+
+
+def sha(b):
+    return hashlib.sha256(b).hexdigest()
+
+
+def load(root, rel):
+    raw = (root / rel).read_bytes()
+    return raw, json.loads(raw)
+
+
+def extract(checkout):
+    pin = json.loads((HERE / "split-pin.json").read_text())
+    root = checkout / pin["corpus"]["directory"]
+    files = {}
+    for rel in pin["corpus"]["files"]:
+        raw, doc = load(root, rel)
+        if sha(raw) != pin["corpus"]["files"][rel]:
+            sys.exit(f"split-golden: {rel} is not the pinned bytes")
+        files[rel] = doc
+    if (checkout / ".git").exists():
+        head = subprocess.check_output(["git", "-C", str(checkout), "rev-parse", "HEAD"], text=True).strip()
+        # the corpus files are pinned by digest; the checkout may be any descendant of the pinned commit
+        subprocess.check_call(["git", "-C", str(checkout), "merge-base", "--is-ancestor", pin["oracle"]["commit"], head])
+    lineage = {c["id"]: c for c in files["lineage/cases.json"]["cases"]}
+    native = {c["id"]: c for c in files["native/cases.json"]["cases"]}
+    status = {e["code"]: e["name"] for e in files["config/compose-status-v2.json"]}
+    fixture = files["config/fixtures.json"]["fixtures"]["dev"]
+    out = {"source": pin["oracle"], "cfg": "0x" + fixture["cfg"], "cases": []}
+    for cid in CASES:
+        l, n = lineage[cid], native["native-" + cid]
+        v = n["expected"]["values"]
+        case = {
+            "id": cid,
+            "input": "0x" + n["input"],
+            "output": "0x" + n["expected"]["output"],
+            "status": int(v["status"]),
+            "statusName": status[int(v["status"])],
+            "gas": int(v["gas"]),
+        }
+        r = l["expected"].get("split")
+        if r:
+            case["result"] = {
+                "cfg": "0x" + r["cfg"],
+                "nonce": r["nonce"],
+                "amount": r["amount"],
+                "tokenId": "0x" + r["tokenId"],
+                "lockDigest": "0x" + r["lockDigest"],
+                "releaseTo": "0x" + r["releaseTo"],
+                "nullifier": "0x" + r["nullifier"],
+                "partTokenId": "0x" + r["partTokenId"],
+                "partAmount": r["partAmount"],
+                "depth": r["depth"],
+                "leaves": len(r["leaves"]),
+            }
+        out["cases"].append(case)
+    return out
+
+
+def main():
+    if len(sys.argv) != 3 or sys.argv[1] not in ("extract", "check"):
+        sys.exit(__doc__)
+    out = extract(pathlib.Path(sys.argv[2]))
+    text = json.dumps(out, indent=1) + "\n"
+    if sys.argv[1] == "extract":
+        OUT.write_text(text)
+        print(f"wrote {OUT.relative_to(REPO)}: {len(out['cases'])} cases")
+        return
+    pin = json.loads((HERE / "split-pin.json").read_text())
+    if OUT.read_text() != text or sha(text.encode()) != pin["golden"]["sha256"]:
+        sys.exit("split-golden: test/bridge/split-golden.json is not the pinned extraction")
+    print(f"ok: split-golden.json is the extraction of bft-core {pin['oracle']['commit'][:8]} ({len(out['cases'])} cases)")
+
+
+main()

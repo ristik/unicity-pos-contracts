@@ -30,8 +30,11 @@ struct Policy {
     uint32 partition;
 }
 
-/// @notice The relation result: the kernel `Result` without its leaf obligations (proven natively by 0x0105), and how many
-///         leaves were proven. A prepare result has none.
+/// @notice The relation result (protocol 6): the kernel `Result` without its leaf obligations (proven natively by 0x0105), how
+///         many leaves were proven, and the redeemed part. `nonce`, `amount`, `tokenId`, `salt`, `firstPredicateHash` and
+///         `lockDigest` are always the ROOT lock's (`amount` is the amount `lockDigest` commits, never a part's);
+///         `releaseTo` and `nullifier` are the redeemed part's final burn's. At `splitDepth` 0 the part is the root
+///         (`partTokenId == tokenId`, `partAmount == amount`). A prepare result has no leaves and the root as its part.
 struct KernelResult {
     bytes32 cfg;
     uint256 nonce;
@@ -43,6 +46,9 @@ struct KernelResult {
     address releaseTo;
     bytes32 nullifier;
     uint256 leafCount;
+    bytes32 partTokenId;
+    uint256 partAmount;
+    uint256 splitDepth;
 }
 
 /// @notice Aggregator claim of the proof envelope `abi.encode(bytes policyBody, bytes history, Anchor[], LeafProof[])`, which

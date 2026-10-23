@@ -29,3 +29,26 @@ domains are unchanged from the pre-3.0 profile. The policy is the protocol-4 bod
 
 Since B7 direct PR 2 the contract binds the configuration and checks the fixed result of 0x0105; the envelope, the anchors and
 the leaf paths of the golden are opaque inputs it forwards. The golden's gate components remain for the plug-ins' estimate.
+
+## Split lineage vectors (protocol 6)
+
+`test/bridge/split-golden.json` is the extraction of the oracle's split corpus (bft-core `bridgeprofile/testdata/split-corpus`, the
+`BRIDGE_COMPOSE_V2` native cases and the lineage results): for each of 18 cases the compose input, the 480-byte output, the status
+(`config/compose-status-v2.json`: the V1 codes, then the split reasons 63..69, then `ErrCertScan` 70 and `ErrCertSigLength` 71) and
+the gas. `split-pin.json` pins the bft-core commit (`fdb08865`, #809 + #810), the SHA-256 of every corpus file read and of the
+extraction. The corpus is an unsealed development corpus; the sealed import is plan item PR5.
+
+```
+python3 script/bridge-golden/split-golden.py check   <bft-core checkout>   # pin, file digests, extraction equals the file
+python3 script/bridge-golden/split-golden.py extract <bft-core checkout>   # rewrite the file (then update split-pin.json's sha256)
+```
+
+`SplitVerifier.t.sol` replays the cases through the real `TokenVerifier` (the 0x0105 double answers only the exact input bytes).
+
+### Vault layout (protocol 6)
+
+Slots 0 to 5 and 7 are unchanged (the lock digest stays at slot 5 where the lock-proof readers expect it). Slot 6 is no longer
+`spentNullifier` (nonce => nullifier): it is `redeemedAmount` (nonce => sum of redeemed part amounts). New: slot 8 `lockedAmount`
+(nonce => amount), slot 9 `spentPart` (nonce => partId => nullifier). Readers of the old spent word (the plug-ins' `spentSlot` and
+`spentNullifier(nonce)`) must move to `spentPart(nonce, partId)` and `redeemedAmount(nonce)`; this is a fresh deployment, nothing
+upgrades in place.

@@ -17,10 +17,11 @@ import {
     WrongVerifier
 } from "./BridgeErrors.sol";
 
-/// @notice Stateless verifier of the whole-token native bridge (B7 direct path, owner §36). The composed relation of a mint or a
-///         return (framing and the resource policy, the policy body, the 0x0104 semantics kernel, the anchor table, ONE
-///         registry-backed certificate batch, the IR openings and leaf times, one RSMT membership per leaf) runs natively in
-///         `BRIDGE_COMPOSE_V1` at 0x0105 (bft-core `bridgeprofile.NativeCompose`); this contract binds the configuration (the
+/// @notice Stateless verifier of the native bridge (B7 direct path, owner §36; protocol 6: a redeemed token may be a part of a split
+///         lock). The composed relation of a mint or a return (framing and the resource policy, the policy body, the lineage from
+///         the lock-backed root to the redeemed part, the anchor table, ONE registry-backed certificate batch, the IR openings and
+///         leaf times, one RSMT membership per leaf) runs natively in `BRIDGE_COMPOSE_V2` at 0x0105 (bft-core
+///         `bridgeprofile.NativeComposeV2`, docs/design/bridge-split-lineage-spec.md section 5); this contract binds the configuration (the
 ///         pinned verifier, the chain, the Cfg hash), forwards the call, and checks the fixed-size result. `prepareLock` calls
 ///         the kernel directly. It stores nothing and authorizes nothing: only a vault whose immutable cfg equals the result's
 ///         cfg may act on it. There is no gas ceiling: a call given too little gas runs out of gas and reverts.
@@ -32,12 +33,13 @@ contract TokenVerifier {
     // forge-lint: disable-next-line(unsafe-typecast)
     bytes32 internal constant KERNEL_MARKER = bytes32("UNICITY_TOKEN_SEMANTICS");
     // forge-lint: disable-next-line(unsafe-typecast)
-    bytes32 internal constant COMPOSE_MARKER = bytes32("UNICITY_BRIDGE_COMPOSE_V1");
+    bytes32 internal constant COMPOSE_MARKER = bytes32("UNICITY_BRIDGE_COMPOSE_V2");
 
     /// @dev The kernel's prepare result: head (3 words), Result static part (10 words) and the empty leaf array's length.
     uint256 internal constant KERNEL_FIXED_BYTES = 448;
-    /// @dev The composition's result: marker, status, nine fields and the leaf count.
-    uint256 internal constant COMPOSE_BYTES = 384;
+    /// @dev The composition's result, fifteen words: marker, status, the ROOT lock's cfg, nonce, amount, tokenId, salt, firstPredicateHash,
+    ///      lockDigest, the part's releaseTo and nullifier, the leaf count, then partTokenId, partAmount, splitDepth.
+    uint256 internal constant COMPOSE_BYTES = 480;
 
     /// @notice Validates a lock request against the kernel and returns the values the vault compares
     ///         with its own: salt, token ID, first predicate hash and lock digest.
@@ -100,6 +102,10 @@ contract TokenVerifier {
         r.releaseTo = address(uint160(releaseTo));
         r.nullifier = bytes32(_mw(out, 320));
         r.leafCount = _mw(out, 352);
+        r.partTokenId = bytes32(_mw(out, 384));
+        r.partAmount = _mw(out, 416);
+        r.splitDepth = _mw(out, 448);
+        if (r.splitDepth > type(uint64).max) revert PrecompileBadReturn(B1Calls.COMPOSE);
         _checkShape(op, r, c, ch);
     }
 
@@ -153,6 +159,9 @@ contract TokenVerifier {
         // forge-lint: disable-next-line(unsafe-typecast)
         r.releaseTo = address(uint160(releaseTo));
         r.nullifier = bytes32(_mw(out, 352));
+        // A prepared lock is whole: its part is the root.
+        r.partTokenId = r.tokenId;
+        r.partAmount = r.amount;
     }
 
     function _mw(bytes memory b, uint256 off) private pure returns (uint256 v) {
@@ -178,15 +187,28 @@ contract TokenVerifier {
                 revert KernelResultShape();
             }
         } else if (op == OP_MINT) {
-            if (n != 1 || r.releaseTo != address(0) || r.nullifier != bytes32(0)) {
+            // A mint is the root's: depth 0, the part is the root.
+            if (
+                n != 1 || r.releaseTo != address(0) || r.nullifier != bytes32(0)
+                    || r.splitDepth != 0 || r.partTokenId != r.tokenId || r.partAmount != r.amount
+            ) revert KernelResultShape();
+        } else {
+            // Every token of the lineage has its mint and at least its terminal burn: 2 * (depth + 1) leaves at least.
+            if (
+                n < 2 || r.splitDepth > (n - 2) / 2 || r.releaseTo == address(0)
+                    || r.releaseTo == c.vault || r.nullifier == bytes32(0)
+            ) revert KernelResultShape();
+            // The redeemed part: a whole positive part of the lock, the root itself at depth 0 and another token otherwise.
+            if (r.partTokenId == bytes32(0) || r.partAmount == 0 || r.partAmount > r.amount) {
                 revert KernelResultShape();
             }
-        } else {
-            // One leaf per transaction: the mint and at least the final burn.
-            if (
-                n < 2 || r.releaseTo == address(0) || r.releaseTo == c.vault
-                    || r.nullifier == bytes32(0)
-            ) revert KernelResultShape();
+            if (r.splitDepth == 0) {
+                if (r.partTokenId != r.tokenId || r.partAmount != r.amount) {
+                    revert KernelResultShape();
+                }
+            } else if (r.partTokenId == r.tokenId) {
+                revert KernelResultShape();
+            }
         }
     }
 }

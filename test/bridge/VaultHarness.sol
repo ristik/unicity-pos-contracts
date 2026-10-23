@@ -110,7 +110,7 @@ contract Payee {
             } catch (bytes memory e) {
                 errors.push(bytes4(e));
             }
-            try vault.redeem("") returns (uint256) {
+            try vault.redeem("") returns (uint256, bytes32) {
                 errors.push(0x00000000);
             } catch (bytes memory e) {
                 errors.push(bytes4(e));
@@ -187,6 +187,31 @@ abstract contract VaultHarness is Test {
         r.firstPredicateHash = keccak256(abi.encode("rcpt", n));
         r.lockDigest = _digest(n, amount);
         r.leafCount = 0;
+        r.partTokenId = r.tokenId;
+        r.partAmount = amount;
+    }
+
+    /// @dev The token ID of lock `n`'s root (and of its whole-token part).
+    function _partId(uint256 n) internal pure returns (bytes32) {
+        return keccak256(abi.encode("id", n));
+    }
+
+    /// @dev A return result of a split part: the lock `n` of `lockAmount` (the ROOT's identity), the part `partId` of `partAmount`
+    ///      redeemed at lineage depth `depth`.
+    function _partResult(
+        uint256 n,
+        uint256 lockAmount,
+        bytes32 partId,
+        uint256 partAmount,
+        uint256 depth,
+        address to,
+        bytes32 eta
+    ) internal view returns (KernelResult memory r) {
+        r = _returnResult(n, lockAmount, to, eta);
+        r.partTokenId = partId;
+        r.partAmount = partAmount;
+        r.splitDepth = depth;
+        r.leafCount = 2 * (depth + 1);
     }
 
     function _returnResult(uint256 n, uint256 amount, address to, bytes32 eta)

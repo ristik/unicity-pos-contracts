@@ -62,6 +62,8 @@ contract BridgeVaultIntegrationTest is BridgeBase {
         r.salt = keccak256(abi.encode("salt", n));
         r.firstPredicateHash = keccak256(abi.encode("rcpt", n));
         r.lockDigest = _digest(n, amount);
+        r.partTokenId = r.tokenId;
+        r.partAmount = amount;
     }
 
     function _ret(BridgeVault v, uint256 n, uint256 amount, address to, bytes32 eta)
@@ -73,6 +75,24 @@ contract BridgeVaultIntegrationTest is BridgeBase {
         r.releaseTo = to;
         r.nullifier = eta;
         r.leafCount = 3;
+    }
+
+    /// @dev A return of the part `id` (`partAmount`, at lineage `depth`) of lock `n` locked for `amount`.
+    function _part(
+        BridgeVault v,
+        uint256 n,
+        uint256 amount,
+        bytes32 id,
+        uint256 partAmount,
+        uint256 depth,
+        address to,
+        bytes32 eta
+    ) internal view returns (KernelResult memory r) {
+        r = _ret(v, n, amount, to, eta);
+        r.partTokenId = id;
+        r.partAmount = partAmount;
+        r.splitDepth = depth;
+        r.leafCount = 2 * (depth + 1);
     }
 
     function _mint(BridgeVault v, uint256 n, uint256 amount)
@@ -135,7 +155,7 @@ contract BridgeVaultIntegrationTest is BridgeBase {
         vm.expectCall(B1Calls.COMPOSE, _composeInput(2, vault.cfgBytes(), _proof(hex"aabbcc")), 2);
         vault.redeem(_proof(hex"aabbcc"));
         assertEq(vault.claimable(BOB), 5 ether);
-        assertEq(vault.spentNullifier(n), keccak256("eta"));
+        assertEq(vault.spentPart(n, keccak256(abi.encode("id", n))), keccak256("eta"));
         vm.prank(BOB);
         vault.claim(5 ether, BOB);
         assertEq(BOB.balance, 5 ether);
@@ -145,7 +165,9 @@ contract BridgeVaultIntegrationTest is BridgeBase {
         vm.expectRevert(abi.encodeWithSelector(AlreadyRedeemed.selector, n));
         vault.verifyMint(_mintProof("mint-history"));
         _composeDefault(_ret(vault, n, 5 ether, BOB, keccak256("eta")));
-        vm.expectRevert(abi.encodeWithSelector(AlreadyRedeemed.selector, n));
+        vm.expectRevert(
+            abi.encodeWithSelector(PartAlreadyRedeemed.selector, n, keccak256(abi.encode("id", n)))
+        );
         vault.redeem(_proof(hex"aabbcc"));
     }
 
@@ -159,7 +181,7 @@ contract BridgeVaultIntegrationTest is BridgeBase {
             vm.expectRevert(abi.encodeWithSelector(BridgeRejected.selector, statuses[i]));
             vault.redeem(_proof(hex"aabbcc"));
             assertEq(vault.credited(), 0);
-            assertEq(vault.spentNullifier(n), bytes32(0));
+            assertEq(vault.spentPart(n, keccak256(abi.encode("id", n))), bytes32(0));
             assertEq(vault.claimable(BOB), 0);
         }
     }
@@ -197,7 +219,7 @@ contract BridgeVaultIntegrationTest is BridgeBase {
         assertEq(out.nonce, n);
         assertEq(vault.credited(), 0);
         assertEq(vault.claimable(BOB), 0);
-        assertEq(vault.spentNullifier(n), bytes32(0));
+        assertEq(vault.spentPart(n, keccak256(abi.encode("id", n))), bytes32(0));
     }
 
     function test_redeem_unknownLockAfterAValidRelation() public {
@@ -256,15 +278,75 @@ contract BridgeVaultIntegrationTest is BridgeBase {
         KernelResult memory ra = verifier.verifyReturn(vault.cfgBytes(), after_);
         assertEq(rb.nullifier, ra.nullifier, "one nullifier");
         vault.redeem(after_);
-        assertEq(vault.spentNullifier(n), keccak256("eta-topology"));
-        vm.expectRevert(abi.encodeWithSelector(AlreadyRedeemed.selector, n));
+        assertEq(vault.spentPart(n, keccak256(abi.encode("id", n))), keccak256("eta-topology"));
+        vm.expectRevert(
+            abi.encodeWithSelector(PartAlreadyRedeemed.selector, n, keccak256(abi.encode("id", n)))
+        );
         vault.redeem(before_);
         assertEq(vault.claimable(BOB), 5 ether, "credited once");
         uint256 m = _lock(vault, ALICE, 5 ether);
         _composeDefault(_ret(vault, m, 5 ether, BOB, keccak256("eta-topology")));
         vault.redeem(before_);
-        vm.expectRevert(abi.encodeWithSelector(AlreadyRedeemed.selector, m));
+        vm.expectRevert(
+            abi.encodeWithSelector(PartAlreadyRedeemed.selector, m, keccak256(abi.encode("id", m)))
+        );
         vault.redeem(after_);
         assertEq(vault.claimable(BOB), 10 ether, "two locks, one credit each");
+    }
+
+    /// Lock 100, split 40 + 60 (the second part split again into 15 + 45): each part redeems through the real verifier against its
+    /// own result, the lock completes at exactly 100, and nothing more can be taken.
+    function test_split_partsRedeemThroughTheRealVerifier() public {
+        uint256 n = _lock(vault, ALICE, 100 ether);
+        bytes32 a = keccak256("part-40");
+        bytes32 b = keccak256("part-15");
+        bytes32 c = keccak256("part-45");
+
+        _composeDefault(_part(vault, n, 100 ether, a, 40 ether, 1, BOB, keccak256("eta-a")));
+        vm.expectCall(B1Calls.COMPOSE, _composeInput(2, vault.cfgBytes(), _proof(hex"01")), 1);
+        (uint256 got, bytes32 id) = vault.redeem(_proof(hex"01"));
+        assertEq(got, n);
+        assertEq(id, a);
+        assertEq(vault.remaining(n), 60 ether);
+
+        _composeDefault(_part(vault, n, 100 ether, b, 15 ether, 2, BOB, keccak256("eta-b")));
+        vault.redeem(_proof(hex"02"));
+        // the same part again, refreshed witnesses: refused
+        vm.expectRevert(abi.encodeWithSelector(PartAlreadyRedeemed.selector, n, b));
+        vault.redeem(_proof(hex"0202"));
+        // a verified result whose part exceeds the rest: refused
+        _composeDefault(_part(vault, n, 100 ether, c, 46 ether, 2, BOB, keccak256("eta-c0")));
+        vm.expectRevert(
+            abi.encodeWithSelector(PartExceedsRemaining.selector, n, 45 ether, 46 ether)
+        );
+        vault.redeem(_proof(hex"03"));
+        _composeDefault(
+            _part(vault, n, 100 ether, c, 45 ether, 2, address(0xCA201), keccak256("eta-c"))
+        );
+        vault.redeem(_proof(hex"03"));
+
+        assertTrue(vault.lockComplete(n));
+        assertEq(vault.credited(), 100 ether);
+        assertEq(vault.claimable(BOB), 55 ether);
+        assertEq(vault.claimable(address(0xCA201)), 45 ether);
+        vm.prank(BOB);
+        vault.claim(55 ether, BOB);
+        vm.prank(address(0xCA201));
+        vault.claim(45 ether, address(0xCA201));
+        assertEq(address(vault).balance, 0);
+        assertEq(vault.paid(), vault.locked());
+    }
+
+    /// A refusal of the split relation bubbles with its status before any vault state moves.
+    function test_split_aSplitRefusalBubblesBeforeAnyStateChange() public {
+        uint256 n = _lock(vault, ALICE, 1 ether);
+        uint256[3] memory statuses = [uint256(69), 70, 71]; // ErrSplitSum, ErrCertScan, ErrCertSigLength
+        for (uint256 i = 0; i < 3; ++i) {
+            _composeRefuses(statuses[i]);
+            vm.expectRevert(abi.encodeWithSelector(BridgeRejected.selector, statuses[i]));
+            vault.redeem(_proof(hex"aabbcc"));
+            assertEq(vault.credited(), 0);
+            assertEq(vault.redeemedAmount(n), 0);
+        }
     }
 }

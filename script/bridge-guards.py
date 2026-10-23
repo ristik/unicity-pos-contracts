@@ -34,6 +34,8 @@ CG = "src/bridge/CertGroups.sol"
 I = "src/bridge/InputRecord.sol"
 
 VT = "test/bridge/BridgeVault.t.sol"
+VS = "test/bridge/BridgeVaultSplit.t.sol"
+SV = "test/bridge/SplitVerifier.t.sol"
 VI = "test/bridge/BridgeVaultIntegration.t.sol"
 TT = "test/bridge/TokenVerifier.t.sol"
 BT = "test/bridge/B1Calls.t.sol"
@@ -48,7 +50,7 @@ def g(id, file, old, new, tests, path, occ=1):
 CFG = "if (r.cfg != CFG) revert KernelCfgMismatch(CFG, r.cfg);"
 UNK = "if (nonce == 0 || nonce > lastNonce) revert UnknownLock(nonce);"
 DIG = "if (lockDigest[nonce] != r.lockDigest) revert LockDigestMismatch(nonce);"
-SPENT = "if (spentNullifier[nonce] != bytes32(0)) revert AlreadyRedeemed(nonce);"
+SPENT = "if (redeemedAmount[nonce] == lockedAmount[nonce]) revert AlreadyRedeemed(nonce);"
 
 GUARDS = [
     # ---- vault: construction ------------------------------------------------------------------
@@ -73,23 +75,27 @@ GUARDS = [
     g("V-lock-zeroDigest", V, "if (r.lockDigest == bytes32(0)) revert LockDigestZero();", "", "test_lock_zeroDigestRejected", VT),
     g("V-lock-lastNonce", V, "lastNonce = nonce;", "", "test_lock_recordsDigestAndEmitsTheCompleteRecord|test_lock_nonceIncrementsOnlyOnSuccess", VT),
     g("V-lock-locked", V, "locked += amount;", "", "test_lock_recordsDigestAndEmitsTheCompleteRecord", VT),
+    g("V-lock-lockedAmountStore", V, "lockedAmount[nonce] = amount;", "", "test_layout_lockedStateInTheDeclaredSlots|test_siblingsRedeemIndependentlyAndCompleteTheLock", VT),
     g("V-lock-digestStore", V, "lockDigest[nonce] = r.lockDigest;", "", "test_lock_recordsDigestAndEmitsTheCompleteRecord", VT),
     # ---- vault: verifyMint --------------------------------------------------------------------
     g("V-mint-cfg", V, CFG, "", "test_verifyMint_cfgMismatch", VT, 2),
     g("V-mint-unknown", V, UNK, "", "test_verifyMint_unknownLock", VT, 1),
     g("V-mint-digest", V, DIG, "", "test_verifyMint_digestMismatch", VT, 1),
-    g("V-mint-spent", V, SPENT, "", "test_verifyMint_alreadyRedeemed", VT, 1),
+    g("V-mint-spent", V, SPENT, "", "test_verifyMint_alreadyRedeemed|test_mintViewClosesWhenTheLockIsComplete", VT, 1),
     # ---- vault: redeem ------------------------------------------------------------------------
     g("V-redeem-cfg", V, CFG, "", "test_redeem_cfgMismatch", VT, 3),
     g("V-redeem-unknown", V, UNK, "", "test_redeem_unknownNonce", VT, 2),
     g("V-redeem-digest", V, DIG, "", "test_redeem_digestMismatch|test_redeem_digestOfAnotherNonce", VT, 2),
-    g("V-redeem-spent", V, SPENT, "", "test_redeem_sameProofTwice|test_redeem_conflictingBurnWithDifferentNullifierSameNonce", VT, 2),
+    g("V-redeem-rootAmount", V, "if (r.amount != total) revert KernelRootAmountMismatch(total, r.amount);", "", "test_redeem_rootAmountMustBeTheStoredOne|test_theRootIdentityMustMatchTheLock", VT),
     g("V-redeem-zeroNullifier", V, "if (r.nullifier == bytes32(0)) revert ZeroNullifier();", "", "test_redeem_zeroNullifier", VT),
     g("V-redeem-recipientZero", V, "r.releaseTo == address(0) ||", "false ||", "test_redeem_badRecipients", VT),
     g("V-redeem-recipientVault", V, "|| r.releaseTo == address(this)", "|| false", "test_redeem_badRecipients", VT),
-    g("V-redeem-creditBound", V, "if (d + amount > locked) revert CreditExceedsLocked(d, amount, locked);", "", "test_redeem_creditNeverExceedsLockedGlobally|test_redeem_creditNeverExceedsLockedCumulatively", VT),
-    g("V-redeem-spentStore", V, "spentNullifier[nonce] = r.nullifier;", "", "test_redeem_sameProofTwice|test_redeem_creditsTheBurnRecipientNotTheSubmitter", VT),
-    g("V-redeem-creditedStore", V, "credited = d + amount;", "", "test_redeem_creditsTheBurnRecipientNotTheSubmitter", VT),
+    g("V-redeem-zeroPart", V, "if (partId == bytes32(0) || amount == 0) revert ZeroAmount();", "", "test_zeroPartIsRefused", VS),
+    g("V-redeem-partSpent", V, "if (spentPart[nonce][partId] != bytes32(0)) revert PartAlreadyRedeemed(nonce, partId);", "", "test_aPartIsPaidOnce|test_redeem_sameProofTwice", VS),
+    g("V-redeem-partExceeds", V, "if (amount > left) revert PartExceedsRemaining(nonce, left, amount);", "", "test_aPartNeverExceedsWhatTheLockHasLeft|test_redeem_partCannotExceedWhatTheLockHasLeft", VS),
+    g("V-redeem-partSpentStore", V, "spentPart[nonce][partId] = r.nullifier;", "", "test_aPartIsPaidOnce|test_siblingsRedeemIndependentlyAndCompleteTheLock", VS),
+    g("V-redeem-redeemedStore", V, "redeemedAmount[nonce] = done + amount;", "", "test_siblingsRedeemIndependentlyAndCompleteTheLock|test_aPartNeverExceedsWhatTheLockHasLeft", VS),
+    g("V-redeem-creditedStore", V, "credited += amount;", "", "test_redeem_creditsTheBurnRecipientNotTheSubmitter", VT),
     g("V-redeem-claimableStore", V, "claimable[r.releaseTo] += amount;", "", "test_redeem_creditsTheBurnRecipientNotTheSubmitter", VT),
     g("V-redeem-submitterGetsCredit", V, "claimable[r.releaseTo] += amount;", "claimable[msg.sender] += amount;", "test_redeem_creditsTheBurnRecipientNotTheSubmitter", VT),
     # ---- vault: claim -------------------------------------------------------------------------
@@ -126,11 +132,21 @@ GUARDS = [
     g("T-shape-digestZero", T, "|| r.lockDigest == bytes32(0)", "|| false", "test_shape_lockDigestZero", TT),
     g("T-ker-prepareNoLeaves", T, "|| _mw(out, 416) != 0", "", "test_prepare_everyNoncanonicalKernelOutputIsBad", TT),
     g("T-shape-prepareRelease", T, "if (r.releaseTo != address(0) || r.nullifier != bytes32(0)) {", "if (r.nullifier != bytes32(0)) {", "test_shape_prepareWithLeavesOrRelease", TT),
-    g("T-shape-mintLeaves", T, "if (n != 1 || r.releaseTo != address(0) || r.nullifier != bytes32(0)) {", "if (r.releaseTo != address(0) || r.nullifier != bytes32(0)) {", "test_shape_mintWithTwoLeaves", TT),
-    g("T-shape-mintRelease", T, "if (n != 1 || r.releaseTo != address(0) || r.nullifier != bytes32(0)) {", "if (n != 1 || r.nullifier != bytes32(0)) {", "test_shape_mintWithReleaseFields", TT),
-    g("T-shape-mintNullifier", T, "if (n != 1 || r.releaseTo != address(0) || r.nullifier != bytes32(0)) {", "if (n != 1 || r.releaseTo != address(0)) {", "test_shape_mintWithReleaseFields", TT),
+    g("T-shape-mintLeaves", T, "n != 1 ||", "false ||", "test_shape_mintWithTwoLeaves", TT),
+    g("T-shape-mintRelease", T, "|| r.releaseTo != address(0) || r.nullifier != bytes32(0)\n                    || r.splitDepth != 0", "|| r.nullifier != bytes32(0)\n                    || r.splitDepth != 0", "test_shape_mintWithReleaseFields", TT, 1),
+    g("T-shape-mintNullifier", T, "|| r.releaseTo != address(0) || r.nullifier != bytes32(0)\n                    || r.splitDepth != 0", "|| r.releaseTo != address(0)\n                    || r.splitDepth != 0", "test_shape_mintWithReleaseFields", TT, 1),
+    g("T-shape-mintDepth", T, "|| r.splitDepth != 0 || r.partTokenId != r.tokenId || r.partAmount != r.amount", "|| r.partTokenId != r.tokenId || r.partAmount != r.amount", "test_shape_aMintIsTheRootAtDepthZero", SV),
+    g("T-shape-mintPartId", T, "|| r.partTokenId != r.tokenId || r.partAmount != r.amount\n            ) revert", "|| r.partAmount != r.amount\n            ) revert", "test_shape_aMintIsTheRootAtDepthZero", SV),
+    g("T-shape-mintPartAmount", T, "|| r.partAmount != r.amount\n            ) revert", "\n            ) revert", "test_shape_aMintIsTheRootAtDepthZero", SV),
     g("T-shape-returnMin", T, "n < 2 ||", "false ||", "test_shape_returnNeedsMintAndBurnAtLeast", TT),
-    g("T-shape-returnZero", T, "|| r.releaseTo == address(0) ||", "|| false ||", "test_shape_returnReleaseToZero", TT),
+    g("T-shape-returnDepthLeaves", T, "r.splitDepth > (n - 2) / 2 ||", "false ||", "test_shape_depthNeedsItsLeaves", SV),
+    g("T-shape-partId", T, "r.partTokenId == bytes32(0) ||", "false ||", "test_shape_partTokenIdZero", SV),
+    g("T-shape-partZero", T, "|| r.partAmount == 0", "|| false", "test_shape_partAmountZero", SV),
+    g("T-shape-partOverLock", T, "|| r.partAmount > r.amount", "|| false", "test_shape_partLargerThanTheLock", SV),
+    g("T-shape-depthZeroIsRoot", T, "if (r.partTokenId != r.tokenId || r.partAmount != r.amount) {\n                    revert KernelResultShape();", "if (false) {\n                    revert KernelResultShape();", "test_shape_depthZeroPartIsTheRoot", SV),
+    g("T-shape-deepPartIsNotRoot", T, "} else if (r.partTokenId == r.tokenId) {", "} else if (false) {", "test_shape_depthZeroPartIsTheRoot", SV),
+    g("T-cmp-depthU64", T, "if (r.splitDepth > type(uint64).max) revert PrecompileBadReturn(B1Calls.COMPOSE);", "", "test_shape_depthAboveU64IsABadReturn", SV),
+    g("T-shape-returnZero", T, "(n - 2) / 2 || r.releaseTo == address(0)", "(n - 2) / 2 || false", "test_shape_returnReleaseToZero", TT),
     g("T-shape-returnVault", T, "|| r.releaseTo == c.vault", "|| false", "test_shape_returnReleaseToVault", TT),
     g("T-shape-returnNullifier", T, "|| r.nullifier == bytes32(0)\n            ) revert KernelResultShape();", "\n            ) revert KernelResultShape();", "test_shape_returnNullifierZero", TT),
     # ---- verifier: B1 outcomes ----------------------------------------------------------------
