@@ -9,7 +9,7 @@ composed relation itself runs natively (0x0105) and is pinned by the oracle's `n
 
 ## Sealed corpus pin
 
-`corpus-pin.json` pins the shared corpus (native-bridge-plugins `protocol/vectors`, the protocol 6 seal of split PR5 (native-bridge-plugins#52, candidate until the final reseal on the oracle's merge commit): the protocol 5 families regenerated at protocol 6 plus `split/`, manifest digest `57a44dc2…`, `trustBaseId` (the trust-base genesis EntryID) `cde64957…`), the oracle
+`corpus-pin.json` pins the shared corpus (native-bridge-plugins `protocol/vectors`, the protocol 6 seal of split PR5 (native-bridge-plugins#52, generator bft-core#816's merge cb4152c9): the protocol 5 families regenerated at protocol 6 plus `split/`, manifest digest `9414a435…`, `trustBaseId` (the trust-base genesis EntryID) `cde64957…`), the oracle
 commit, the SHA-256 of `golden.json` and the list of golden values the corpus also contains.
 `python3 script/bridge-golden/check-corpus.py <corpus checkout>` verifies the corpus files and digest, that
 both golden histories embed the corpus `trustBaseId`, that `golden.json` is the pinned bytes, and that each
