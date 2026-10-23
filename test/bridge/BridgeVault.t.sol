@@ -323,7 +323,9 @@ contract BridgeVaultTest is VaultHarness {
 
     function test_layout_matchesOracleSlotAndTrieKeys() public view {
         string memory g = vm.readFile("test/bridge/golden.json");
-        // oracle LockDigestSlot/SpentSlot at n=1 and u64 max, then their trie keys keccak256(slot)
+        // oracle LockDigestSlot at n=1 and u64 max, then their trie keys keccak256(slot). The oracle's `SpentSlot` (base 6) is
+        // the slot of `redeemedAmount[n]` since protocol 6 (the golden is the whole-token protocol 5 vector: the DERIVATION is
+        // unchanged, the meaning of the word is not).
         bytes32 s1 = keccak256(abi.encode(uint256(1), uint256(5)));
         bytes32 sMax = keccak256(abi.encode(uint256(type(uint64).max), uint256(5)));
         assertEq(s1, vm.parseJsonBytes32(g, ".derivations[0].lockSlot"));
@@ -332,11 +334,13 @@ contract BridgeVaultTest is VaultHarness {
         assertEq(keccak256(abi.encode(sMax)), vm.parseJsonBytes32(g, ".derivations[1].lockTrieKey"));
         assertEq(
             keccak256(abi.encode(uint256(1), uint256(6))),
-            vm.parseJsonBytes32(g, ".derivations[0].spentSlot")
+            vm.parseJsonBytes32(g, ".derivations[0].spentSlot"),
+            "slot of redeemedAmount[1]"
         );
         assertEq(
             keccak256(abi.encode(uint256(type(uint64).max), uint256(6))),
-            vm.parseJsonBytes32(g, ".derivations[1].spentSlot")
+            vm.parseJsonBytes32(g, ".derivations[1].spentSlot"),
+            "slot of redeemedAmount[u64 max]"
         );
         address a = vm.parseJsonAddress(g, ".claimable.address");
         bytes32 cs = keccak256(abi.encode(a, uint256(7)));
@@ -350,6 +354,22 @@ contract BridgeVaultTest is VaultHarness {
         assertEq(n, type(uint64).max);
         bytes32 slot = keccak256(abi.encode(uint256(type(uint64).max), uint256(5)));
         assertEq(vm.load(address(vault), slot), _digest(n, 1 ether));
+    }
+
+    function test_layout_u64MaxNonceSlotsHoldTheAmountsAndTheSpentPart() public {
+        vm.store(address(vault), bytes32(uint256(0)), bytes32(uint256(type(uint64).max) - 1));
+        uint256 n = _lock(ALICE, 3 ether);
+        _redeem(n, 3 ether, BOB, _eta(n, 0));
+        uint256 m = type(uint64).max;
+        assertEq(uint256(vm.load(address(vault), keccak256(abi.encode(m, uint256(8))))), 3 ether);
+        assertEq(uint256(vm.load(address(vault), keccak256(abi.encode(m, uint256(6))))), 3 ether);
+        assertEq(
+            vm.load(
+                address(vault),
+                keccak256(abi.encode(_partId(n), keccak256(abi.encode(m, uint256(9)))))
+            ),
+            _eta(n, 0)
+        );
     }
 
     function test_layout_rlpOfLeadingZeroDigest() public view {
