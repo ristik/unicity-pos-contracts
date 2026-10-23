@@ -195,7 +195,8 @@ func TestGenPR5Golden(t *testing.T) {
 		ders = append(ders, map[string]any{"n": new(big.Int).SetUint64(c.n).String(), "amount": c.amt.String(), "salt": x32(salt), "id": x32(id),
 			"rcpt": x32(rcpt), "record": x(k), "digest": x32(dg),
 			"lockSlot": x32(LockDigestSlot(c.n)), "lockTrieKey": x32(StorageTrieKey(LockDigestSlot(c.n))),
-			"spentSlot": x32(SpentSlot(c.n)), "spentTrieKey": x32(StorageTrieKey(SpentSlot(c.n)))})
+			// "spentSlot" keeps its protocol 5 name and bytes: the base 6 derivation is the oracle's RedeemedSlot since protocol 6 (bft-core#816)
+			"spentSlot": x32(RedeemedSlot(c.n)), "spentTrieKey": x32(StorageTrieKey(RedeemedSlot(c.n)))})
 	}
 	g["derivations"] = ders
 	var addr [20]byte
