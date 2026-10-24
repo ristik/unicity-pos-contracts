@@ -63,6 +63,22 @@ interface IRewardCustody {
 
 interface IRewardElection {
     function openResult() external view returns (bytes32);
+    /// @dev `ElectionPolicy.result`: the static fields of its `Result` struct, of which only `progress` is read.
+    function result(bytes32 resultID)
+        external
+        view
+        returns (
+            uint8 state,
+            uint8 reason,
+            uint64 attempt,
+            uint64 progress,
+            uint64 ucTime,
+            uint32 policyID,
+            bytes32 origin,
+            bytes32 predecessor,
+            bytes32 assignmentID,
+            bytes32 snapshotDigest
+        );
 }
 
 interface IRewardGovernance {
@@ -86,7 +102,11 @@ interface IRewardGovernance {
 /// Intervals are half-open [a, b). `b` is the earliest of: the owner's end, the next point of the fixed grid (every GRID progress units
 /// from the start), and the progress a later policy snapshot (a new reward rate) took effect. A caller chooses no endpoint and no length.
 /// An interval is closed only up to the current canonical progress (`b <= progress`), and the tail of the latest assignment only while the
-/// record prefix is fully applied and no election result is open, because an open result may still end the tail earlier.
+/// record prefix is fully applied, because an unread record may still end the tail earlier. While an election result is open (a reserved
+/// candidate not yet acknowledged, recovered or closed) the tail closes only up to the progress at which that candidate was reserved: the
+/// offset of its Ack or RecoveryAck is above that progress (the handover is ordered after the reservation, as for any later election), but
+/// may be below the current one. A stuck session therefore delays the intervals after its reservation until it resolves; it does not stop the
+/// ones before.
 ///
 /// For length L = b - a and the rate q in force at `a`: nominal = floor(q * L / 1000), budget = min(nominal, available). Each member of
 /// the owning assignment, in the exposures' canonical order, is credited floor(budget * weight / totalWeight) (the committed, quantized
@@ -279,15 +299,21 @@ contract RewardPool is ReentrancyGuard {
             if (s.start != start) revert TimelineMismatch();
         }
         if (start < s.start) revert TimelineMismatch();
+        uint64 limit = ROOTS.progress();
         if (!s.ended) {
-            // the tail can still be ended by a record or an open election result
-            if (
-                recordCursor != ROOTS.recordCount() || CUSTODY.recordCursor() != recordCursor
-                    || ELECTION.openResult() != bytes32(0)
-            ) revert NotCaughtUp();
+            // the tail can still be ended by a record not read yet
+            if (recordCursor != ROOTS.recordCount() || CUSTODY.recordCursor() != recordCursor) {
+                revert NotCaughtUp();
+            }
+            // ... or by an open election result, whose Ack lands above the progress it was reserved at
+            bytes32 open = ELECTION.openResult();
+            if (open != bytes32(0)) {
+                (,,, uint64 reservedAt,,,,,,) = ELECTION.result(open);
+                if (reservedAt < limit) limit = reservedAt;
+            }
         }
         end = _intervalEnd(s, start);
-        if (end <= start || end > ROOTS.progress()) revert NothingToDo();
+        if (end <= start || end > limit) revert NothingToDo();
 
         uint128 rate = GOVERNANCE.rewardRateAt(rateCursor);
         uint256 nominal = Math.mulDiv(rate, end - start, RATE_UNITS);
