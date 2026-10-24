@@ -5,12 +5,11 @@ composed relation itself runs natively (0x0105) and is pinned by the oracle's `n
 
 | File | Source | Regenerate |
 | --- | --- | --- |
-| `test/bridge/golden.json` | bft-core `bridgeprofile`, **native bridge protocol 5** (the Unicity Trust Base history as the trust input: lock proofs carry its genesis EntryID as `trustBaseId`; protocol 4's any-age verification (any-age verification: one `CERT_BATCH_V2` call over the anchor table, policy `AGG_PARTITION_V2`, the contract limits; since owner §36 the gate is an estimate with no budget), oracle revision `17dfe06becad1e3890f1f8bc233bf806d234bf02` (bft-core#741 merge: B7 PR 3, the 2 MiB envelope on the parity corpus; recorded in `corpus-pin.json`). Contents: Cfg and the unicity-native identifiers, identity-family vectors, the one-partition policy, derivations, storage slots and trie keys, RLP words, kernel inputs and outputs (`448+128*m` bytes), a canonical proof envelope per operation built on **real certified anchors** (the DN-B depth-1 topology puts the leaves of a return under two UCs: UC, native InputRecord opening, RSMT paths, the leaf-to-anchor index, the batch request and verdict the reference `b1ref.Cert` returned for the whole table, and the oracle's gas estimate components with the grouping E, S, Q, A, P) and, for every leaf, the RSMT request and verdict (`b1ref.Member`, including the verdict `false` for the pre-3.0 value `txHash`), and the native InputRecord openings produced by the SDK's own encoder | Copy `golden_pr5_test.go.txt` to `bridgeprofile/golden_pr5_test.go` in a checkout of that revision, then `BRIDGE_PR5_GOLDEN=<out.json> go test ./bridgeprofile -run TestGenPR5Golden -count=1`. The file is not part of bft-core. |
+| `test/bridge/golden.json` | bft-core `bridgeprofile`, **native bridge protocol 5** (the Unicity Trust Base history as the trust input: lock proofs carry its genesis EntryID as `trustBaseId`; protocol 4's any-age verification (any-age verification: one `CERT_BATCH_V2` call over the anchor table, policy `AGG_PARTITION_V2`, the contract limits; since owner §36 the gate is an estimate with no budget), oracle revision `cb4152c9b7fa5538e5597b91483ba30352f9d714` (bft-core#816 merge: the protocol 6 oracle, which regenerates these bytes unchanged; the base 6 slot the overlay derives as `spentSlot` is the oracle's `RedeemedSlot` since protocol 6, contracts#70; recorded in `corpus-pin.json`; first generated at `17dfe06b`, bft-core#741 merge: B7 PR 3, the 2 MiB envelope on the parity corpus). Contents: Cfg and the unicity-native identifiers, identity-family vectors, the one-partition policy, derivations, storage slots and trie keys, RLP words, kernel inputs and outputs (`448+128*m` bytes), a canonical proof envelope per operation built on **real certified anchors** (the DN-B depth-1 topology puts the leaves of a return under two UCs: UC, native InputRecord opening, RSMT paths, the leaf-to-anchor index, the batch request and verdict the reference `b1ref.Cert` returned for the whole table, and the oracle's gas estimate components with the grouping E, S, Q, A, P) and, for every leaf, the RSMT request and verdict (`b1ref.Member`, including the verdict `false` for the pre-3.0 value `txHash`), and the native InputRecord openings produced by the SDK's own encoder | Copy `golden_pr5_test.go.txt` to `bridgeprofile/golden_pr5_test.go` in a checkout of that revision, then `BRIDGE_PR5_GOLDEN=<out.json> go test ./bridgeprofile -run TestGenPR5Golden -count=1`. The file is not part of bft-core. |
 
 ## Sealed corpus pin
 
-`corpus-pin.json` pins the shared corpus (native-bridge-plugins `protocol/vectors`, commit `efb43f29…` (nbp#41 merged: the B7 PR 3 reseal with its generator on bft-core main on the nbp#38 embedded-object parity cases, after B7 direct PR 2b: the
-`native-compose` cases and the status table, the composed path without the kernels' aggregates), manifest digest `9c228e47…`, `trustBaseId` (the trust-base genesis EntryID) `cde64957…`), the oracle
+`corpus-pin.json` pins the shared corpus (native-bridge-plugins `protocol/vectors`, the protocol 6 seal of split PR5 (native-bridge-plugins#52, generator bft-core#816's merge cb4152c9): the protocol 5 families regenerated at protocol 6 plus `split/`, manifest digest `9414a435…`, `trustBaseId` (the trust-base genesis EntryID) `cde64957…`), the oracle
 commit, the SHA-256 of `golden.json` and the list of golden values the corpus also contains.
 `python3 script/bridge-golden/check-corpus.py <corpus checkout>` verifies the corpus files and digest, that
 both golden histories embed the corpus `trustBaseId`, that `golden.json` is the pinned bytes, and that each
@@ -35,12 +34,13 @@ the leaf paths of the golden are opaque inputs it forwards. The golden's gate co
 `test/bridge/split-golden.json` is the extraction of the oracle's split corpus (bft-core `bridgeprofile/testdata/split-corpus`, the
 `BRIDGE_COMPOSE_V2` native cases and the lineage results): for each of 18 cases the compose input, the 480-byte output, the status
 (`config/compose-status-v2.json`: the V1 codes, then the split reasons 63..69, then `ErrCertScan` 70 and `ErrCertSigLength` 71) and
-the gas. `split-pin.json` pins the bft-core commit (`fdb08865`, #809 + #810), the SHA-256 of every corpus file read and of the
-extraction. The corpus is an unsealed development corpus; the sealed import is plan item PR5.
+the gas. `split-pin.json` pins the sealed corpus (native-bridge-plugins `protocol/vectors/split`, the same commit and manifest digest as
+`corpus-pin.json`), the SHA-256 of every corpus file read (each checked against the sealed SHA256SUMS) and of the extraction; the
+oracle commit (`fdb08865`, #809 + #810) is the one whose bytes the extraction names as its source (the sealed files are byte-identical).
 
 ```
-python3 script/bridge-golden/split-golden.py check   <bft-core checkout>   # pin, file digests, extraction equals the file
-python3 script/bridge-golden/split-golden.py extract <bft-core checkout>   # rewrite the file (then update split-pin.json's sha256)
+python3 script/bridge-golden/split-golden.py check   <native-bridge-plugins checkout>   # pin, manifest, file digests, extraction equals the file
+python3 script/bridge-golden/split-golden.py extract <native-bridge-plugins checkout>   # rewrite the file (then update split-pin.json's sha256)
 ```
 
 `SplitVerifier.t.sol` replays the cases through the real `TokenVerifier` (the 0x0105 double answers only the exact input bytes).

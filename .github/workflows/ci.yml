@@ -38,6 +38,7 @@ jobs:
           git clone --quiet https://github.com/ristik/native-bridge-plugins "$RUNNER_TEMP/corpus"
           git -C "$RUNNER_TEMP/corpus" checkout --quiet "$(python3 -c "import json;print(json.load(open('script/bridge-golden/corpus-pin.json'))['corpus']['commit'])")"
           python3 script/bridge-golden/check-corpus.py "$RUNNER_TEMP/corpus"
+          python3 script/bridge-golden/split-golden.py check "$RUNNER_TEMP/corpus"
       - name: Shared fixtures agree with bft-core at the pinned commit
         # The cross-repository consistency suite (bft-core xrepo/README.md): every file this repository shares with bft-core, in either
         # direction, is byte-identical to bft-core's at the commit pinned in xrepo/bft-core-pin.json. The manifest and the check are
