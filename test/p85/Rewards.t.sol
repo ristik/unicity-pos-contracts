@@ -155,27 +155,62 @@ contract RewardsTest is RewardsBase {
         pool.closeInterval();
     }
 
-    function test_anOpenElectionResultKeepsTheTailOpenUntilItIsResolved() public {
+    function _reserveAtCadence() internal returns (bytes32 resultID) {
         clock(CAD_P, CAD_T);
         vm.prank(SYS);
         election.elect(keccak256("origin"));
-        bytes32 resultID = election.openResult();
+        resultID = election.openResult();
         assertTrue(resultID != bytes32(0));
+    }
+
+    function test_anOpenElectionResultLetsTheTailCloseUpToItsReservationProgressOnly() public {
+        bytes32 resultID = _reserveAtCadence();
+        assertEq(_drain(), 5, "[0,5000) closes while the result is open");
+        assertEq(pool.nextStart(), 5_000);
+        assertEq(pool.totalCredits(), 5 ether);
+        // the registry runs ahead of the reservation: nothing past 5,000 closes while the result is open
+        clock(6_100, CAD_T + 100);
+        vm.expectRevert(RewardPool.NothingToDo.selector);
+        pool.closeInterval();
+        assertEq(election.result(resultID).progress, 5_000);
+        // an unread record is still NotCaughtUp, not NothingToDo
+        pushRecord(RecordKind.SessionClosed, abi.encode(bytes32(uint256(1))));
         vm.expectRevert(RewardPool.NotCaughtUp.selector);
         pool.closeInterval();
-        // acknowledged at offset 5,050: the genesis assignment ends there
-        clock(5_100, CAD_T + 100);
+        _conserved();
+    }
+
+    function test_anAckBetweenTheReservationAndTheCurrentProgressLeavesTheTimelineConsistent()
+        public
+    {
+        bytes32 resultID = _reserveAtCadence();
+        clock(6_100, CAD_T + 100);
+        assertEq(_drain(), 5);
+        // acknowledged at offset 5,050, below the registry progress 6,100: had [5000,6000) been closed, this record would be a TimelineMismatch
         pushRecord(RecordKind.Ack, ackData(resultID, H_ROUND, 5_050, 5_051));
         applyAll();
         _advanceAll();
         assertEq(pool.segmentCount(), 2);
-        assertTrue(pool.segmentAt(0).ended);
         assertEq(pool.segmentAt(0).end, 5_050);
-        assertEq(pool.segmentAt(1).start, 5_050);
-        // [0,5000) in five grid intervals, then [5000,5050) owned by the genesis assignment
-        assertEq(_drain(), 6);
-        assertEq(pool.nextStart(), 5_050);
-        assertEq(pool.credits(payee(0)), (5 ether + 0.05 ether) / 4);
+        // [5000,5050) is the genesis assignment's, [5050,6000) the successor's
+        assertEq(_drain(), 2);
+        assertEq(pool.nextStart(), 6_000);
+        assertEq(pool.totalCredits(), 6 ether);
+        _conserved();
+    }
+
+    function test_aClosedSessionReleasesTheTailToTheCurrentProgress() public {
+        bytes32 resultID = _reserveAtCadence();
+        clock(6_100, CAD_T + 100);
+        assertEq(_drain(), 5);
+        pushRecord(RecordKind.SessionClosed, abi.encode(resultID));
+        applyAll();
+        _advanceAll();
+        assertEq(election.openResult(), bytes32(0));
+        assertEq(pool.segmentCount(), 1, "a closed session moves no boundary");
+        assertEq(_drain(), 1, "[5000,6000) now closes");
+        assertEq(pool.totalCredits(), 6 ether);
+        _conserved();
     }
 
     function test_aHandoffSplitsTheOwnersAtTheAckOffset() public {
