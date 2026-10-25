@@ -117,16 +117,25 @@ contract PublicationFixtureTest is P85Flow {
         return string.concat('{"name":"', name, '","slots":', slots, '],"words":', words, "]}");
     }
 
-    /// @dev The reads the root performs at P besides the publication itself: Election's pins and custody's session, assignment and
-    /// last-acknowledged words.
+    /// @dev The reads the root performs at P besides the publication itself: Election's pins, its open result and the result's words (a
+    /// RejectResult proves the reservation progress, its assignment and predecessor from them, bft-core#857), and custody's registry
+    /// pointer, session, assignment and last-acknowledged words.
     function _otherReads(bytes32 resultID, bytes32 assignmentID) internal returns (string memory) {
         return string.concat(
             '"electionReads":[',
             _read("network", address(election), abi.encodeCall(election.network, ())),
             ",",
             _read("custody", address(election), abi.encodeCall(election.custody, ())),
+            ",",
+            _read("roots", address(election), abi.encodeCall(election.roots, ())),
+            ",",
+            _read("openResult", address(election), abi.encodeCall(election.openResult, ())),
+            ",",
+            _read("result", address(election), abi.encodeCall(election.result, (resultID))),
             '],"custodyReads":[',
             _read("network", address(custody), abi.encodeCall(custody.network, ())),
+            ",",
+            _read("roots", address(custody), abi.encodeCall(custody.roots, ())),
             ",",
             _read("session", address(custody), abi.encodeCall(custody.session, (resultID))),
             ",",
@@ -330,6 +339,10 @@ contract PublicationFixtureTest is P85Flow {
         ElectionPolicy.Result memory r = election.result(resultID);
 
         string memory reserved = _slots(resultID);
+        // the same reservation marked lost before any publication (a RejectResult closes it at once, bft-core#857)
+        uint256 beforeLoss = vm.snapshotState();
+        string memory reservedLost = _lostSlots(resultID);
+        vm.revertToState(beforeLoss);
         string memory pops = _pops(resultID);
         ElectionPolicy.PoPInput[] memory inputs =
             new ElectionPolicy.PoPInput[](election.frozenMembers(resultID).length);
@@ -394,6 +407,8 @@ contract PublicationFixtureTest is P85Flow {
             vm.toString(p.incumbentKeyDigest),
             '"},"reserved":{',
             reserved,
+            '},"reservedLost":{',
+            reservedLost,
             '},"published":{',
             _slots(resultID),
             "},",

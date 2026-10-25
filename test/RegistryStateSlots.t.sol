@@ -7,7 +7,8 @@ import {RootRecord, RecordKind} from "../src/p85/P85Types.sol";
 
 /// @notice The registry storage the root authenticates with Ethereum storage proofs for a Retirement (briefs/p85-pr1c-control-records.md
 /// section 3): the imported record count, the authenticated target count and the retirement key of an (id, generation), as the EVM reads
-/// and writes them. bft-core derives each slot from the registry's fixed-slot rule and must land on the recorded one. Generated here,
+/// and writes them; and the canonical progress of the last import, which a RejectResult proves the age of a reservation with
+/// (bft-core#857). bft-core derives each slot from the registry's fixed-slot rule and must land on the recorded one. Generated here,
 /// compared on every run; regenerate with P85_WRITE_FIXTURES=true.
 contract RegistryStateSlotsTest is SealRegistryBase {
     string internal constant FIXTURE = "/test/p85/fixtures/registry-state-slots.json";
@@ -53,12 +54,16 @@ contract RegistryStateSlotsTest is SealRegistryBase {
             _view("recordCount", abi.encodeCall(reg.recordCount, ())),
             ",",
             _view("recordTargetCount", abi.encodeCall(reg.recordTargetCount, ())),
+            ",",
+            _view("progress", abi.encodeCall(reg.progress, ())),
             ',{"name":"retirement",',
             _slots(key),
             '}],"facts":{"count":',
             vm.toString(reg.recordCount()),
             ',"target":',
             vm.toString(reg.recordTargetCount()),
+            ',"progress":',
+            vm.toString(reg.progress()),
             ',"retirementWord":',
             vm.toString(uint256(vm.load(A_SR, key[0]))),
             "}}"
