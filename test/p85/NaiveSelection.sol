@@ -77,7 +77,7 @@ library NaiveSelection {
         }
         chosen = _committee(e, inS, count);
         (uint8 failed,) = Continuity.check(o, chosen, cfg.churn);
-        if (failed != 0) return (_churnReason(failed), new Continuity.Member[](0));
+        if (failed != 0) return _feasible(o, e, cfg, rank, incumbent, _churnReason(failed));
 
         // each remaining outsider, once, in rank order
         for (uint256 r = 0; r < n; ++r) {
@@ -103,6 +103,62 @@ library NaiveSelection {
                 inS[x] = false;
             }
         }
+    }
+
+    /// @dev The seed failed: the incumbents alone (they must pass), then each outsider in rank order kept only if the committee with it
+    /// passes; no outsider kept and the incumbents equal to `o` is no election. See `Selection._feasible`.
+    function _feasible(
+        Continuity.Member[] memory o,
+        Entry[] memory e,
+        Config memory cfg,
+        uint256[] memory rank,
+        bool[] memory incumbent,
+        Reason seedReason
+    ) private pure returns (Reason, Continuity.Member[] memory) {
+        bool[] memory inS = new bool[](e.length);
+        uint256 count = 0;
+        for (uint256 r = 0; r < e.length && count < cfg.nTarget; ++r) {
+            if (incumbent[rank[r]]) {
+                inS[rank[r]] = true;
+                ++count;
+            }
+        }
+        if (count == 0) return (seedReason, new Continuity.Member[](0));
+        uint256 kept = count;
+        Continuity.Member[] memory chosen = _committee(e, inS, count);
+        (uint8 failed,) = Continuity.check(o, chosen, cfg.churn);
+        if (failed != 0) return (_churnReason(failed), new Continuity.Member[](0));
+        Reason skipped = Reason.Cardinality;
+        bool anySkipped = false;
+        for (uint256 r = 0; r < e.length && count < cfg.nTarget; ++r) {
+            uint256 x = rank[r];
+            if (incumbent[x]) continue;
+            inS[x] = true;
+            Continuity.Member[] memory trial = _committee(e, inS, count + 1);
+            (failed,) = Continuity.check(o, trial, cfg.churn);
+            if (failed == 0) {
+                chosen = trial;
+                ++count;
+            } else {
+                inS[x] = false;
+                if (!anySkipped) skipped = _churnReason(failed);
+                anySkipped = true;
+            }
+        }
+        if (count < cfg.nMin) return (skipped, new Continuity.Member[](0));
+        if (count == kept && chosen.length == o.length) {
+            bool same = true;
+            for (uint256 i = 0; i < o.length; ++i) {
+                if (
+                    o[i].id != chosen[i].id || o[i].binding != chosen[i].binding
+                        || o[i].weight != chosen[i].weight
+                ) {
+                    same = false;
+                }
+            }
+            if (same) return (skipped, new Continuity.Member[](0));
+        }
+        return (Reason.None, chosen);
     }
 
     function _churnReason(uint8 failed) private pure returns (Reason) {
