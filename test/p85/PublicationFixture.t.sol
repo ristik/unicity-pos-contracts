@@ -117,14 +117,21 @@ contract PublicationFixtureTest is P85Flow {
         return string.concat('{"name":"', name, '","slots":', slots, '],"words":', words, "]}");
     }
 
-    /// @dev The reads the root performs at P besides the publication itself: Election's pins and custody's session, assignment and
-    /// last-acknowledged words.
+    /// @dev The reads the root performs at P besides the publication itself: Election's pins, its open result and the result's words (a
+    /// RejectResult proves the reservation progress, its assignment and predecessor from them, bft-core#857), and custody's session,
+    /// assignment and last-acknowledged words.
     function _otherReads(bytes32 resultID, bytes32 assignmentID) internal returns (string memory) {
         return string.concat(
             '"electionReads":[',
             _read("network", address(election), abi.encodeCall(election.network, ())),
             ",",
             _read("custody", address(election), abi.encodeCall(election.custody, ())),
+            ",",
+            _read("roots", address(election), abi.encodeCall(election.roots, ())),
+            ",",
+            _read("openResult", address(election), abi.encodeCall(election.openResult, ())),
+            ",",
+            _read("result", address(election), abi.encodeCall(election.result, (resultID))),
             '],"custodyReads":[',
             _read("network", address(custody), abi.encodeCall(custody.network, ())),
             ",",
