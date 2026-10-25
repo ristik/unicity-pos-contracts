@@ -339,6 +339,10 @@ contract PublicationFixtureTest is P85Flow {
         ElectionPolicy.Result memory r = election.result(resultID);
 
         string memory reserved = _slots(resultID);
+        // the same reservation marked lost before any publication (a RejectResult closes it at once, bft-core#857)
+        uint256 beforeLoss = vm.snapshotState();
+        string memory reservedLost = _lostSlots(resultID);
+        vm.revertToState(beforeLoss);
         string memory pops = _pops(resultID);
         ElectionPolicy.PoPInput[] memory inputs =
             new ElectionPolicy.PoPInput[](election.frozenMembers(resultID).length);
@@ -403,6 +407,8 @@ contract PublicationFixtureTest is P85Flow {
             vm.toString(p.incumbentKeyDigest),
             '"},"reserved":{',
             reserved,
+            '},"reservedLost":{',
+            reservedLost,
             '},"published":{',
             _slots(resultID),
             "},",
