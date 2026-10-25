@@ -14,8 +14,8 @@ import {Quantize} from "./Quantize.sol";
 ///
 ///  1. Rank eligible identities by descending weight, then ascending StakingID.
 ///  2. Seed: the best eligible incumbents up to the target (trimming the lowest ranks), then the best outsiders up to the target.
-///     The complete seed is rejected, with no alternative searched, when the eligible set is smaller than the minimum or the seed
-///     fails any continuity predicate against `o`.
+///     The election is refused when the eligible set is smaller than the minimum. When the complete seed fails a continuity predicate
+///     against `o` it is not refused for that: see `_feasible` (an outsider that breaks the bound is skipped, bft-core#854).
 ///  3. Visit each remaining outsider once, in rank order: it replaces the lowest-ranked retained incumbent only when it outranks it
 ///     and the trial committee passes every continuity predicate against the same `o`. A removed incumbent is never re-enqueued.
 ///
@@ -88,7 +88,7 @@ library Selection {
         }
         chosen = _committee(e, inS, count);
         (uint8 failed, Continuity.Measured memory r0) = Continuity.check(o, chosen, cfg.churn);
-        if (failed != 0) return (_churnReason(failed), new Continuity.Member[](0));
+        if (failed != 0) return _feasible(o, e, cfg, rank, prior, _churnReason(failed));
 
         // Each remaining outsider, once, in rank order. A trial replaces the lowest-ranked retained incumbent by the outsider. While the raw
         // total of the committee and of the trial are both within the cap B, q = x and the trial's measurement against the same `o` follows
@@ -144,6 +144,71 @@ library Selection {
             }
         }
         if (replacedAny) chosen = _committee(e, inS, count);
+    }
+
+    /// @dev The complete seed failed a continuity predicate: elect the best feasible committee instead of failing the election. Start from
+    /// the eligible incumbents alone (they must pass on their own), then visit each outsider once in rank order and keep it only if the
+    /// committee with it still passes every predicate; an outsider that would break the bound is skipped. No change is no election: when no
+    /// outsider could be kept and the incumbents are the committee `o` itself, the election stays refused with the first skipped
+    /// outsider's reason (`seedReason`), as it is when the incumbents alone fail or leave fewer than the minimum.
+    function _feasible(
+        Continuity.Member[] memory o,
+        Entry[] memory e,
+        Config memory cfg,
+        uint256[] memory rank,
+        Prior memory prior,
+        Reason seedReason
+    ) private pure returns (Reason, Continuity.Member[] memory) {
+        uint256 n = e.length;
+        bool[] memory inS = new bool[](n);
+        uint256 count = 0;
+        for (uint256 r = 0; r < n && count < cfg.nTarget; ++r) {
+            if (prior.incumbent[rank[r]]) {
+                inS[rank[r]] = true;
+                ++count;
+            }
+        }
+        if (count == 0) return (seedReason, new Continuity.Member[](0));
+        uint256 incumbents = count;
+        Continuity.Member[] memory trial = _committee(e, inS, count);
+        (uint8 failed,) = Continuity.check(o, trial, cfg.churn);
+        if (failed != 0) return (_churnReason(failed), new Continuity.Member[](0));
+        Reason skipped = Reason.None;
+        for (uint256 r = 0; r < n && count < cfg.nTarget; ++r) {
+            uint256 x = rank[r];
+            if (prior.incumbent[x]) continue;
+            inS[x] = true;
+            Continuity.Member[] memory next = _committee(e, inS, count + 1);
+            (failed,) = Continuity.check(o, next, cfg.churn);
+            if (failed == 0) {
+                trial = next;
+                ++count;
+            } else {
+                inS[x] = false;
+                if (skipped == Reason.None) skipped = _churnReason(failed);
+            }
+        }
+        if (skipped == Reason.None) skipped = Reason.Cardinality;
+        if (count < cfg.nMin) return (skipped, new Continuity.Member[](0));
+        // the incumbents alone are `o` itself unless one lost its place: a shrunk committee is a change
+        if (count == incumbents && _sameAsPrior(o, trial)) {
+            return (skipped, new Continuity.Member[](0));
+        }
+        return (Reason.None, trial);
+    }
+
+    function _sameAsPrior(Continuity.Member[] memory o, Continuity.Member[] memory c)
+        private
+        pure
+        returns (bool)
+    {
+        if (o.length != c.length) return false;
+        for (uint256 i = 0; i < o.length; ++i) {
+            if (o[i].id != c[i].id || o[i].binding != c[i].binding || o[i].weight != c[i].weight) {
+                return false;
+            }
+        }
+        return true;
     }
 
     /// @dev The running trial state of the committee `inS`, whose measurement against `o` is `m`. Valid only while the committee's raw total

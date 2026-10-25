@@ -173,4 +173,116 @@ contract SelectionTest is Test {
         assertFalse(_overlapOldSide(45), "committed overlap 120/185 is not above two thirds");
         assertTrue(_overlapOldSide(39), "committed overlap 120/179 is");
     }
+
+    // --- bft-core#854: an outsider that breaks the bound is skipped, not a veto on the whole election ----------------------------
+
+    /// @dev The testnet package's profile: committees of four to six, a distance bound of 1/2.
+    function _pkg() internal pure returns (Selection.Config memory) {
+        return Selection.Config(4, 6, 16, Continuity.Params(4, 1, 2));
+    }
+
+    function _ids(Continuity.Member[] memory c) internal pure returns (uint256 packed) {
+        for (uint256 i; i < c.length; ++i) {
+            packed = packed * 100 + c[i].id;
+        }
+    }
+
+    /// @dev Five unit members, plus a weight-2 outsider (identity 6) alone: the whole committee of six is D = 4/7 > 1/2 from the five, no
+    /// outsider can be kept, and the incumbents alone are the committee itself, so there is no change to elect.
+    function test_aWeightTwoOutsiderAloneLeavesNoFeasibleChange() public view {
+        Selection.Entry[] memory e = new Selection.Entry[](6);
+        for (uint64 i; i < 5; ++i) {
+            e[i] = Selection.Entry(i + 1, bytes32(uint256(i + 1)), 1);
+        }
+        e[5] = Selection.Entry(6, bytes32(uint256(6)), 2);
+        Continuity.Member[] memory o = _members(_uniform(1, 5, 1));
+        (Selection.Reason reason, Continuity.Member[] memory chosen) = this._select(o, e, _pkg());
+        assertEq(uint8(reason), uint8(Selection.Reason.WeightChurn));
+        assertEq(chosen.length, 0);
+    }
+
+    /// @dev The same, with a unit outsider behind the heavy one: the heavy one is skipped and the unit one joins.
+    function test_theHeavyOutsiderIsSkippedAndTheNextUnitOutsiderJoins() public view {
+        Selection.Entry[] memory e = new Selection.Entry[](7);
+        for (uint64 i; i < 5; ++i) {
+            e[i] = Selection.Entry(i + 1, bytes32(uint256(i + 1)), 1);
+        }
+        e[5] = Selection.Entry(6, bytes32(uint256(6)), 2);
+        e[6] = Selection.Entry(7, bytes32(uint256(7)), 1);
+        Continuity.Member[] memory o = _members(_uniform(1, 5, 1));
+        (Selection.Reason reason, Continuity.Member[] memory chosen) = this._select(o, e, _pkg());
+        assertEq(uint8(reason), uint8(Selection.Reason.None));
+        assertEq(_ids(chosen), 1_02_03_04_05_07);
+        for (uint256 i; i < chosen.length; ++i) {
+            assertEq(chosen[i].weight, 1);
+        }
+    }
+
+    /// @dev The overbound lane: four unit members and a weight-3 joiner alone (D = 6/7) stay refused as WeightChurn.
+    function test_theOverboundJoinerAloneIsStillRefused() public view {
+        Selection.Entry[] memory e = new Selection.Entry[](5);
+        for (uint64 i; i < 4; ++i) {
+            e[i] = Selection.Entry(i + 1, bytes32(uint256(i + 1)), 1);
+        }
+        e[4] = Selection.Entry(5, bytes32(uint256(5)), 3);
+        Continuity.Member[] memory o = _members(_uniform(1, 4, 1));
+        (Selection.Reason reason,) = this._select(o, e, _pkg());
+        assertEq(uint8(reason), uint8(Selection.Reason.WeightChurn));
+    }
+
+    /// @dev A committee that lost a member to ineligibility and meets a heavy outsider: the incumbents left are a feasible change.
+    function test_aShrunkCommitteeIsAChangeWhileTheHeavyOutsiderIsSkipped() public view {
+        Selection.Entry[] memory e = new Selection.Entry[](5);
+        for (uint64 i; i < 4; ++i) {
+            e[i] = Selection.Entry(i + 1, bytes32(uint256(i + 1)), 1);
+        }
+        e[4] = Selection.Entry(6, bytes32(uint256(6)), 3);
+        Continuity.Member[] memory o = _members(_uniform(1, 5, 1));
+        (Selection.Reason reason, Continuity.Member[] memory chosen) = this._select(o, e, _pkg());
+        assertEq(uint8(reason), uint8(Selection.Reason.None));
+        assertEq(_ids(chosen), 1_02_03_04);
+    }
+
+    /// @dev The incumbents that are left must pass on their own, and they must reach the minimum.
+    function test_theIncumbentsAloneMustPassAndReachTheMinimum() public view {
+        Selection.Entry[] memory e = new Selection.Entry[](5);
+        e[0] = Selection.Entry(1, bytes32(uint256(1)), 1);
+        e[1] = Selection.Entry(2, bytes32(uint256(2)), 1);
+        for (uint64 i = 2; i < 5; ++i) {
+            e[i] = Selection.Entry(i + 4, bytes32(uint256(i + 4)), 1);
+        }
+        Continuity.Member[] memory o = _members(_uniform(1, 5, 1));
+        (Selection.Reason reason,) = this._select(o, e, _pkg());
+        assertEq(uint8(reason), uint8(Selection.Reason.MembershipChurn));
+        // three incumbents left (turnover passes at 2 of 5 only with a one-third budget), one heavy outsider: below nMin = 4 after the skip
+        e = new Selection.Entry[](4);
+        for (uint64 i; i < 3; ++i) {
+            e[i] = Selection.Entry(i + 1, bytes32(uint256(i + 1)), 1);
+        }
+        e[3] = Selection.Entry(6, bytes32(uint256(6)), 3);
+        (reason,) = this._select(o, e, _pkg());
+        assertTrue(reason != Selection.Reason.None);
+    }
+
+    /// @dev The worst case of the fallback: a full committee of 16 and 112 outsiders that are each tried and refused (the seed fails too).
+    function test_gasOfTheFallbackAtTheCeiling() public {
+        Selection.Entry[] memory e = new Selection.Entry[](128);
+        for (uint64 i; i < 128; ++i) {
+            e[i] = Selection.Entry(i + 1, bytes32(uint256(i + 1)), i < 15 ? 1 : 1000);
+        }
+        Continuity.Member[] memory o = new Continuity.Member[](15);
+        for (uint64 i; i < 15; ++i) {
+            o[i] = Continuity.Member(i + 1, bytes32(uint256(i + 1)), 1);
+        }
+        Selection.Config memory cfg = Selection.Config(4, 16, 16, Continuity.Params(4, 1, 2));
+        uint256 before = gasleft();
+        (Selection.Reason reason,) = Selection.select(o, e, cfg);
+        uint256 used = before - gasleft();
+        emit log_named_uint(
+            "fallback gas, 128 eligible, 15 incumbents, 113 refused outsiders", used
+        );
+        assertEq(uint8(reason), uint8(Selection.Reason.WeightChurn));
+        // each refused outsider is one full measurement; the whole election at these ceilings is bounded at 35M (ElectionGas.t.sol)
+        assertLt(used, 15_000_000);
+    }
 }
