@@ -139,15 +139,14 @@ contract SplitVerifierTest is BridgeBase {
 
     /// Every native refusal of the split relation reaches the caller as BridgeRejected(status) with the oracle's code.
     function test_oracle_splitRefusalsCarryTheirStatus() public {
-        string[8] memory ids = [
+        string[7] memory ids = [
             "lineage-neg-tree-total-under",
             "lineage-neg-tree-understates-part",
             "lineage-neg-parent-not-burned",
             "lineage-neg-not-a-manifest",
             "lineage-neg-partial-part-return",
             "lineage-neg-repeated-token-id",
-            "lineage-neg-ancestor-certificate-outside-codec",
-            "lineage-neg-ancestor-signature-width"
+            "lineage-neg-ancestor-certificate-outside-codec"
         ];
         for (uint256 k = 0; k < ids.length; ++k) {
             (uint256 i, bytes memory proof) = _arm(ids[k]);

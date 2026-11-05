@@ -9,7 +9,7 @@ composed relation itself runs natively (0x0105) and is pinned by the oracle's `n
 
 ## Sealed corpus pin
 
-`corpus-pin.json` pins the shared corpus (native-bridge-plugins `protocol/vectors`, the protocol 6 seal of split PR5 (native-bridge-plugins#52, generator bft-core#816's merge cb4152c9): the protocol 5 families regenerated at protocol 6 plus `split/`, manifest digest `9414a435…`, `trustBaseId` (the trust-base genesis EntryID) `cde64957…`), the oracle
+`corpus-pin.json` pins the shared corpus (native-bridge-plugins `protocol/vectors`, the protocol 7 candidate seal (native-bridge-plugins#63, the upstream seal rule, generator bft-core#921 at df8339cc; `golden.json` regenerates byte for byte at that revision): the protocol 6 families regenerated at protocol 7 plus `split/`, manifest digest `5af2f5b2…`, `trustBaseId` (the trust-base genesis EntryID) `cde64957…`), the oracle
 commit, the SHA-256 of `golden.json` and the list of golden values the corpus also contains.
 `python3 script/bridge-golden/check-corpus.py <corpus checkout>` verifies the corpus files and digest, that
 both golden histories embed the corpus `trustBaseId`, that `golden.json` is the pinned bytes, and that each
@@ -32,8 +32,8 @@ the leaf paths of the golden are opaque inputs it forwards. The golden's gate co
 ## Split lineage vectors (protocol 6)
 
 `test/bridge/split-golden.json` is the extraction of the oracle's split corpus (bft-core `bridgeprofile/testdata/split-corpus`, the
-`BRIDGE_COMPOSE_V2` native cases and the lineage results): for each of 18 cases the compose input, the 480-byte output, the status
-(`config/compose-status-v2.json`: the V1 codes, then the split reasons 63..69, then `ErrCertScan` 70 and `ErrCertSigLength` 71) and
+`BRIDGE_COMPOSE_V2` native cases and the lineage results): for each of 17 cases the compose input, the 480-byte output, the status
+(`config/compose-status-v2.json`: the V1 codes, then the split reasons 63..69, then `ErrCertScan` 70 and `ErrCertSigLength` 71, which protocol 7 no longer produces: a seal signature of any width is a well-formed witness of no weight) and
 the gas. `split-pin.json` pins the sealed corpus (native-bridge-plugins `protocol/vectors/split`, the same commit and manifest digest as
 `corpus-pin.json`), the SHA-256 of every corpus file read (each checked against the sealed SHA256SUMS) and of the extraction; the
 oracle commit (`fdb08865`, #809 + #810) is the one whose bytes the extraction names as its source (the sealed files are byte-identical).
