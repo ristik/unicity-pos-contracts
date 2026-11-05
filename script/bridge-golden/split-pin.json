@@ -1,9 +1,9 @@
 {
   "corpus": {
     "repository": "https://github.com/ristik/native-bridge-plugins",
-    "commit": "1597c66cf013e4e80cd8adb6ade4b0d4379d2168",
+    "commit": "0e250ace75cc68653bda2618f45e4e3f3ae42d4a",
     "directory": "protocol/vectors/split",
-    "manifestSha256": "50ed9459705fbae386d8cdf60d5975404cbfa59152457e8fc1fcc69eaf0de024",
+    "manifestSha256": "b5de13216acb8a7016181563c527148f543e3900ee6f5cc898277c34f2d349d1",
     "files": {
       "lineage/cases.json": "80a39e0c1bbcb4a6e2c1553697d8019e8175a24849bd229d5b8674875ff0cab4",
       "native/cases.json": "5b646788d806fd30982242caeb8dd59f7d026a5efa0599e68314b43b28a2f1f9",
@@ -14,11 +14,11 @@
   },
   "oracle": {
     "repository": "https://github.com/ristik/bft-core",
-    "commit": "435eecccc12d76631cd152e33158414ef7bc871c",
+    "commit": "c05cbefa6aa21e4a8840c0a7910e33429fe2ece2",
     "note": "#921 (protocol 7 candidate): the sealed files are byte-identical to the oracle output"
   },
   "golden": {
     "file": "test/bridge/split-golden.json",
-    "sha256": "7ed11e02d15f3b59180ce893a2f817d42be387e0b88b5f58a08a0f4051fe0932"
+    "sha256": "d75119648543cfbfb58bccaf58c807ad849e7f901f2a7219a19c87858012b191"
   }
 }
