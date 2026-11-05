@@ -1,12 +1,12 @@
 {
   "corpus": {
     "repository": "https://github.com/ristik/native-bridge-plugins",
-    "commit": "97f74161fbe0eb4921148d7fa2e4ea05e646f727",
+    "commit": "393795d1c0112c24d289f93064c7a62436809c15",
     "directory": "protocol/vectors/split",
-    "manifestSha256": "9414a435052f252585d44ebe45e4375f7f931619e5adfa6d78b8d65dfe210d97",
+    "manifestSha256": "80198fd9354c66cbe0c60483d0826d372193cf0579880940a0b8ac5a8bc42cfb",
     "files": {
-      "lineage/cases.json": "ac34a9c4e44021eab868300c023bd700ab02cca310100604da49d84096ff0074",
-      "native/cases.json": "f36e946826e06594d523bb66192f5a44183be7d7c3df72af300303f4a99f1362",
+      "lineage/cases.json": "80a39e0c1bbcb4a6e2c1553697d8019e8175a24849bd229d5b8674875ff0cab4",
+      "native/cases.json": "ec8bcd0f6ff61548d0cf1d0443fda22b3c0cb285d2134d38f2670534ad724dd9",
       "config/fixtures.json": "6ee57ede59ea7e196a9310ac413dc037b7fb7d194ab80bba83d17204b07d71d8",
       "config/compose-status-v2.json": "83315ab435bee998652a82919b0b0ed42812307cd33c53aabb0b80b4e14de3d0"
     },
@@ -14,11 +14,11 @@
   },
   "oracle": {
     "repository": "https://github.com/ristik/bft-core",
-    "commit": "fdb0886595f329b174a4d5dbf32659588ba367dc",
-    "note": "#809 4e23ffc0 + #810"
+    "commit": "084e95d2890b43706531c52ab309124bfd813b70",
+    "note": "#921 (protocol 7 candidate): the sealed files are byte-identical to the oracle output"
   },
   "golden": {
     "file": "test/bridge/split-golden.json",
-    "sha256": "6adb1bce0350f5dacf90d0f9d5ae78e1d4937092f746bb6ed2287ec2c547252b"
+    "sha256": "e8217e415426faf44df1c5f514c8be5cc294257ae1583231d741696986585c46"
   }
 }

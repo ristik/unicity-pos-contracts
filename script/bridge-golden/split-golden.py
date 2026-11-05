@@ -37,7 +37,6 @@ CASES = [
     "lineage-neg-partial-part-return",
     "lineage-neg-repeated-token-id",
     "lineage-neg-ancestor-certificate-outside-codec",
-    "lineage-neg-ancestor-signature-width",
     "lineage-neg-ancestor-leaf-unwitnessed",
 ]
 
