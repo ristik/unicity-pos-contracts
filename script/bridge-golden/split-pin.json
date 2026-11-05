@@ -19,6 +19,6 @@
   },
   "golden": {
     "file": "test/bridge/split-golden.json",
-    "sha256": "e8217e415426faf44df1c5f514c8be5cc294257ae1583231d741696986585c46"
+    "sha256": "7ed11e02d15f3b59180ce893a2f817d42be387e0b88b5f58a08a0f4051fe0932"
   }
 }
