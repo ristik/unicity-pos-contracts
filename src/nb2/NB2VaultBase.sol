@@ -1,0 +1,693 @@
+// SPDX-License-Identifier: MIT
+pragma solidity 0.8.37;
+
+import {NB2Config} from "./NB2Config.sol";
+import {NB2Gap} from "./NB2Gap.sol";
+
+/// @notice Native bridge v2 vault (bft-core docs/design/native-bridge-v2.md, protocol 9; NB2-04, bft-core#1100): native UCT
+///         custody with constant-size state, secret-committed deposits, absence-first redemption against sealed circular-gap
+///         segments and two position-tag recent buffers, sealing in the paying transaction and direct payout to the burn's
+///         signed recipient. No owner, upgrade, pause, administrative payout, receive or fallback; no per-deposit,
+///         per-payment or per-recipient record. The token verifier is pinned in Γ and called by STATICCALL only.
+///
+///         This base holds every rule. The deployable builds fix the admitted (K, B) set (section 4.1): the production build
+///         `NativeBridgeVaultV2` admits only (64, 16), the test build `NativeBridgeVaultV2Test` admits K in {4, 8} x B in
+///         {2, 4}. Both run this code unchanged; K and B are constructor immutables.
+///
+///         Storage (section 9; slot numbers are not part of the wire contract, wallets use the views and events):
+///
+///           slot 0                    A = n << 200 | c << 152 | m << 144 | Q   (56, 48, 8 and 144 bits)
+///           slot 1 + (j mod 2)        H_j, the archive heads by parity: slot 1 + (c mod 2) is H_c, the other H_{c-1}
+///           slot 3 + p                T_p, the tag word of buffer p: tag i = bucket(S_p[i]) at bit log2(B) * i
+///           slot 16 + p * K + i       S_p[i], the i-th identifier paid into buffer p (0 <= i < K)
+///
+///         p = c mod 2 is the current buffer. Every admitted (K, B) has K * log2(B) <= 256, so one tag word per buffer. Live
+///         positions are i < m (current) and i < K (previous, when c > 0); cells and tags beyond are stale and never cleared.
+///         The construction writes A = 0 (unchanged) and H_0 only. A full cycle of two segments writes at most 2K + 5 distinct
+///         words (A, two heads, two tag words, 2K identifiers) and never a new one after that. The reentrancy guard is the
+///         transient slot 0.
+abstract contract NB2VaultBase {
+    // -------------------------------------------------------------------------------------------- constants (sections 3, 13)
+    bytes32 internal constant ARCHIVE_GENESIS =
+        0x45076af3d8858f1d7a9bb6e037bb5ca4270d0b4fa90f9397eb7adb905590a339;
+    bytes32 internal constant ARCHIVE_STEP =
+        0xc68efdc45f5c9a20bf6abfda6493e8e295d8e31495fd1e744cd4c35f74785dfa;
+    bytes32 internal constant ASSET_UCT = NB2Config.ASSET_UCT;
+    bytes32 internal constant TOPIC_DEPOSITED =
+        0x853a9d825910065273b44cf4f0ad33d2525f875d3da0a53f967ae40b7508d2b8;
+    bytes32 internal constant TOPIC_PAID =
+        0x606160394df2742a67735645b7e783304d61d2dbc5b550e8c6acfaf27b6291d7;
+    bytes32 internal constant TOPIC_SEALED =
+        0x06e724201a1c72937156cbdb3b9522d26b3818ee33ace10cd7cda65bb9cae916;
+
+    uint256 internal constant SLOT_A = 0;
+    uint256 internal constant SLOT_HEAD = 1;
+    uint256 internal constant SLOT_TAGS = 3;
+    uint256 internal constant SLOT_IDS = 16;
+
+    uint256 internal constant Q_MASK = (1 << 144) - 1;
+    uint256 internal constant N_MAX = (1 << 56) - 1;
+    uint256 internal constant C_MAX = (1 << 48) - 1;
+    uint256 internal constant M_SHIFT = 144;
+    uint256 internal constant C_SHIFT = 152;
+    uint256 internal constant N_SHIFT = 200;
+
+    /// @dev The largest verifier revert data the vault copies into VerifierRefused (section 11.1 step 5).
+    uint256 internal constant MAX_VERIFIER_REVERT = 1024;
+
+    // -------------------------------------------------------------------------------------------- immutables
+    bytes32 internal immutable D;
+    address internal immutable VERIFIER;
+    uint256 internal immutable QMAX;
+    uint256 internal immutable K;
+    uint256 internal immutable LOGK;
+    uint256 internal immutable LOGB;
+    uint256 internal immutable GLEN;
+    bytes32 internal immutable G0;
+    bytes32 internal immutable G1;
+    bytes32 internal immutable G2;
+    bytes32 internal immutable G3;
+    bytes32 internal immutable G4;
+    bytes32 internal immutable G5;
+    bytes32 internal immutable G6;
+    bytes32 internal immutable G7;
+    bytes32 internal immutable G8;
+    bytes32 internal immutable G9;
+    bytes32 internal immutable G10;
+    bytes32 internal immutable G11;
+
+    // -------------------------------------------------------------------------------------------- errors (section 13.3)
+    error ZeroValue();
+    error BadFirstOwner();
+    error LiabilityCap(uint256 outstanding, uint256 amount, uint256 cap);
+    error DepositCounterExhausted();
+    error Reentrancy();
+    error BadHistoryLength(uint256 length);
+    error FutureIndex(uint64 start, uint64 current);
+    error StaleEndpoint(uint64 endpoint, uint64 current);
+    error BadGapProof(uint256 position);
+    error ChainMismatch();
+    error AlreadyPaid(bytes32 eta);
+    error VerifierRefused(bytes reason);
+    error VerifierBadReturn();
+    error DomainMismatch();
+    error AssetMismatch();
+    error ClaimMismatch();
+    error BadRecipient();
+    error ZeroAmount();
+    error LiabilityUnderflow(uint256 outstanding, uint256 amount);
+    error SegmentCounterExhausted();
+    error PayoutFailed();
+
+    // -------------------------------------------------------------------------------------------- events (section 13.2)
+    event Deposited(
+        uint64 indexed nonce, bytes32 domain, uint256 amount, bytes32 rho, bytes firstOwner
+    );
+    event Paid(bytes32 indexed eta, address indexed recipient, uint256 amount);
+    event SegmentSealed(uint64 indexed segment, bytes32 headBefore, bytes32 headAfter, bytes ids);
+
+    /// @param gamma the exact Γ bytes (section 4.1)
+    /// @param kSet the build's admitted K values as a bit mask (bit k set: K = k admitted)
+    /// @param bSet the build's admitted B values as a bit mask
+    constructor(bytes memory gamma, uint256 kSet, uint256 bSet) {
+        NB2Config.Config memory c = NB2Config.decode(gamma, kSet, bSet);
+        NB2Config.checkEnvironment(c, address(this));
+        uint256 logk = 0;
+        while ((1 << logk) < c.k) logk++;
+        uint256 logb = 0;
+        while ((1 << logb) < c.b) logb++;
+        // One tag word per buffer (section 9.2); holds for every admitted pair, checked so a new build cannot break it.
+        if (c.k * logb > 256) revert NB2Config.BadConfig(17);
+        bytes32 d = sha256(gamma);
+        D = d;
+        VERIFIER = c.verifier;
+        QMAX = c.qmax;
+        K = c.k;
+        LOGK = logk;
+        LOGB = logb;
+        // A decoded Γ is at most 378 bytes: twelve words hold it (config()).
+        uint256 glen = gamma.length;
+        GLEN = glen;
+        bytes32[12] memory w;
+        assembly ("memory-safe") {
+            mcopy(w, add(gamma, 32), glen)
+        }
+        G0 = w[0];
+        G1 = w[1];
+        G2 = w[2];
+        G3 = w[3];
+        G4 = w[4];
+        G5 = w[5];
+        G6 = w[6];
+        G7 = w[7];
+        G8 = w[8];
+        G9 = w[9];
+        G10 = w[10];
+        G11 = w[11];
+        // H_0 = H_E(ARCHIVE_GENESIS || D || u16(K)) (section 10.3); A stays 0.
+        uint256 k = c.k;
+        assembly ("memory-safe") {
+            let p := mload(0x40)
+            mstore(p, ARCHIVE_GENESIS)
+            mstore(add(p, 0x20), d)
+            mstore(add(p, 0x40), shl(240, k))
+            sstore(SLOT_HEAD, keccak256(p, 66))
+        }
+    }
+
+    // -------------------------------------------------------------------------------------------- views (section 13.1)
+
+    /// @notice The deployment domain D = H_U(Γ).
+    function domain() external view returns (bytes32) {
+        return D;
+    }
+
+    /// @notice The exact Γ bytes the vault was constructed with.
+    function config() external view returns (bytes memory g) {
+        g = new bytes(GLEN);
+        bytes32[12] memory w = [G0, G1, G2, G3, G4, G5, G6, G7, G8, G9, G10, G11];
+        uint256 glen = GLEN;
+        assembly ("memory-safe") {
+            mcopy(add(g, 32), w, glen)
+        }
+    }
+
+    /// @notice The current state: deposit count n, segment c, population m, liability Q, H_c and H_{c-1} (zero at c = 0).
+    function state()
+        external
+        view
+        returns (
+            uint64 deposits,
+            uint64 segment,
+            uint16 population,
+            uint256 outstanding,
+            bytes32 head,
+            bytes32 previousHead
+        )
+    {
+        uint256 acc = _loadA();
+        uint256 c = (acc >> C_SHIFT) & C_MAX;
+        // n is a 56-bit field
+        // forge-lint: disable-next-line(unsafe-typecast)
+        deposits = uint64(acc >> N_SHIFT);
+        // c is a 48-bit field
+        // forge-lint: disable-next-line(unsafe-typecast)
+        segment = uint64(c);
+        population = uint16((acc >> M_SHIFT) & 0xff);
+        outstanding = acc & Q_MASK;
+        assembly ("memory-safe") {
+            head := sload(add(SLOT_HEAD, and(c, 1)))
+            if c { previousHead := sload(add(SLOT_HEAD, and(sub(c, 1), 1))) }
+        }
+    }
+
+    // -------------------------------------------------------------------------------------------- deposit (section 5.2)
+
+    /// @notice Locks msg.value for the first owner `firstOwner` (the 42-byte tagged signature predicate) under the secret
+    ///         commitment `rho`. Allocates the next deposit number and emits Deposited; stores nothing per deposit.
+    function deposit(bytes calldata firstOwner, bytes32 rho) external payable {
+        _enter();
+        if (msg.value == 0) revert ZeroValue();
+        _checkOwner(firstOwner);
+        uint256 acc = _loadA();
+        uint256 q = acc & Q_MASK;
+        uint256 qmax = QMAX;
+        if (q > qmax || msg.value > qmax - q) revert LiabilityCap(q, msg.value, qmax);
+        uint256 n = acc >> N_SHIFT;
+        if (n >= N_MAX) revert DepositCounterExhausted();
+        n += 1;
+        // Masked update: n and Q change, c and m are kept; q + msg.value <= Qmax < 2^144.
+        acc = (n << N_SHIFT) | (acc & (((1 << 56) - 1) << M_SHIFT)) | (q + msg.value);
+        bytes32 d = D;
+        assembly ("memory-safe") {
+            sstore(SLOT_A, acc)
+            let p := mload(0x40)
+            mstore(p, d)
+            mstore(add(p, 0x20), callvalue())
+            mstore(add(p, 0x40), rho)
+            mstore(add(p, 0x60), 0x80)
+            mstore(add(p, 0x80), 42)
+            mstore(add(p, 0xa0), 0)
+            mstore(add(p, 0xc0), 0)
+            calldatacopy(add(p, 0xa0), firstOwner.offset, 42)
+            log2(p, 224, TOPIC_DEPOSITED, n)
+        }
+        _exit();
+    }
+
+    // -------------------------------------------------------------------------------------------- redeem (section 11.1)
+
+    /// @notice Pays a returned token part once. `evidence` is C(1, Token) for the verifier; `claimedEta` and `claimedStart` are
+    ///         an untrusted header for the cheap checks and must equal the verifier's verdict; `history` is empty or
+    ///         startHead || proof_0 .. proof_{P-1}, one circular-gap proof per sealed segment a .. a+P-1.
+    function redeem(
+        bytes calldata evidence,
+        bytes32 claimedEta,
+        uint64 claimedStart,
+        bytes calldata history
+    ) external {
+        // 1. Guard and history length.
+        _enter();
+        uint256 plen = 65 + (LOGK << 5);
+        uint256 len = history.length;
+        uint256 np = 0;
+        if (len != 0) {
+            if (len < 32 + plen || (len - 32) % plen != 0) revert BadHistoryLength(len);
+            np = (len - 32) / plen;
+        }
+        // 2. Range: a <= c, e = a + P in {c, c - 1}.
+        uint256 acc = _loadA();
+        uint256 c = (acc >> C_SHIFT) & C_MAX;
+        uint256 a = claimedStart;
+        // forge-lint: disable-next-line(unsafe-typecast)
+        if (a > c) revert FutureIndex(claimedStart, uint64(c));
+        uint256 e = a + np;
+        // forge-lint: disable-next-line(unsafe-typecast)
+        if (e != c && (c == 0 || e != c - 1)) revert StaleEndpoint(uint64(e), uint64(c));
+        uint256 eta = uint256(claimedEta);
+        // 3. Historical absence, folded to the stored H_e.
+        if (np != 0) _fold(eta, a, e, np, history);
+        // 4. Recent buffers: the current one, and the previous one for e = c - 1.
+        uint256 m = (acc >> M_SHIFT) & 0xff;
+        uint256 p = c & 1;
+        uint256 bucket = eta >> (256 - LOGB);
+        _scan(p, m, bucket, eta);
+        if (e != c) _scan(p ^ 1, K, bucket, eta);
+        // 5, 6. The verifier and the verdict.
+        uint256 q = acc & Q_MASK;
+        (address recipient, uint256 amount) = _verify(evidence, eta, a, q);
+        // 7. Effects: record eta at position m with its tag, debit Q, emit Paid, seal a full segment.
+        _insert(p, m, bucket, eta);
+        q -= amount;
+        _emitPaid(eta, recipient, amount);
+        m += 1;
+        if (m == K) {
+            if (c >= C_MAX) revert SegmentCounterExhausted();
+            _seal(p, c, eta);
+            c += 1;
+            m = 0;
+        }
+        acc = (acc & (N_MAX << N_SHIFT)) | (c << C_SHIFT) | (m << M_SHIFT) | q;
+        assembly ("memory-safe") {
+            sstore(SLOT_A, acc)
+        }
+        // 8. Payout to the signed recipient; any failure reverts everything, the seal and the logs included.
+        _pay(recipient, amount);
+        _exit();
+    }
+
+    // -------------------------------------------------------------------------------------------- internals
+
+    function _loadA() internal view returns (uint256 acc) {
+        assembly ("memory-safe") {
+            acc := sload(SLOT_A)
+        }
+    }
+
+    function _enter() internal {
+        assembly ("memory-safe") {
+            if tload(0) {
+                mstore(0, shl(224, 0xab143c06)) // Reentrancy()
+                revert(0, 4)
+            }
+            tstore(0, 1)
+        }
+    }
+
+    function _exit() internal {
+        assembly ("memory-safe") {
+            tstore(0, 0)
+        }
+    }
+
+    /// @dev firstOwner = d9 9878 83 01 41 01 58 21 || key33 with key33[0] in {02, 03} (section 5.2 step 2).
+    function _checkOwner(bytes calldata firstOwner) internal pure {
+        bool ok;
+        assembly ("memory-safe") {
+            let w := calldataload(firstOwner.offset)
+            ok := and(
+                eq(firstOwner.length, 42),
+                and(eq(shr(184, w), 0xd99878830141015821), or(eq(byte(9, w), 2), eq(byte(9, w), 3)))
+            )
+        }
+        if (!ok) revert BadFirstOwner();
+    }
+
+    /// @dev Section 11.1 step 3: folds proofs 0 .. np-1 for eta from startHead through j = a .. e-1,
+    ///      H_{j+1} = H_E(ARCHIVE_STEP || D || u64(j) || H_j || M_j) with M_j from proof j - a, and requires the stored H_e.
+    ///      A proof that is not a gap of eta is BadGapProof(j - a).
+    function _fold(uint256 eta, uint256 a, uint256 e, uint256 np, bytes calldata history)
+        internal
+        view
+    {
+        uint256 h = LOGK;
+        uint256 plen = 65 + (h << 5);
+        bytes32 d = D;
+        bytes32 x;
+        uint256 o;
+        uint256 st;
+        assembly ("memory-safe") {
+            x := calldataload(history.offset)
+            o := add(history.offset, 32)
+            st := mload(0x40)
+            mstore(st, ARCHIVE_STEP)
+        }
+        unchecked {
+            for (uint256 q = 0; q < np; ++q) {
+                (bool ok, bytes32 mj) = NB2Gap.rootAt(eta, o, h, st + 0xa0);
+                if (!ok) revert BadGapProof(q);
+                assembly ("memory-safe") {
+                    mstore(add(st, 0x28), add(a, q))
+                    mstore(add(st, 0x20), d)
+                    mstore(add(st, 0x48), x)
+                    mstore(add(st, 0x68), mj)
+                    x := keccak256(st, 136)
+                }
+                o += plen;
+            }
+        }
+        bytes32 he;
+        assembly ("memory-safe") {
+            he := sload(add(SLOT_HEAD, and(e, 1)))
+        }
+        if (x != he) revert ChainMismatch();
+    }
+
+    /// @dev Section 11.1 step 4 on buffer p with population popn: a live position tagged `bucket` holding eta is AlreadyPaid.
+    function _scan(uint256 p, uint256 popn, uint256 bucket, uint256 eta) internal view {
+        uint256 logb = LOGB;
+        uint256 sbase = SLOT_IDS + p * K;
+        assembly ("memory-safe") {
+            // shl(shift, value): B - 1
+            // forge-lint: disable-next-line(incorrect-shift)
+            let bmask := sub(shl(logb, 1), 1)
+            let word := sload(add(SLOT_TAGS, p))
+            for { let i := 0 } lt(i, popn) { i := add(i, 1) } {
+                if eq(and(word, bmask), bucket) {
+                    if eq(sload(add(sbase, i)), eta) {
+                        mstore(0, shl(224, 0xf4b76a0e)) // AlreadyPaid(bytes32)
+                        mstore(4, eta)
+                        revert(0, 36)
+                    }
+                }
+                word := shr(logb, word)
+            }
+        }
+    }
+
+    /// @dev Section 11.1 steps 5 and 6: STATICCALL verifyReturn(config(), evidence), then the verdict checks.
+    function _verify(bytes calldata evidence, uint256 eta, uint256 a, uint256 q)
+        internal
+        view
+        returns (address recipient, uint256 amount)
+    {
+        bytes32[12] memory w = [G0, G1, G2, G3, G4, G5, G6, G7, G8, G9, G10, G11];
+        uint256 glen = GLEN;
+        address verifier = VERIFIER;
+        uint256 ptr;
+        bool ok;
+        assembly ("memory-safe") {
+            ptr := mload(0x40)
+            let gpad := and(add(glen, 31), not(31))
+            mstore(ptr, shl(224, 0xdf447dca)) // verifyReturn(bytes,bytes)
+            mstore(add(ptr, 4), 0x40)
+            mstore(add(ptr, 36), add(0x60, gpad))
+            mstore(add(ptr, 68), glen)
+            mcopy(add(ptr, 100), w, gpad)
+            let ep := add(add(ptr, 100), gpad)
+            mstore(ep, evidence.length)
+            let epad := and(add(evidence.length, 31), not(31))
+            calldatacopy(add(ep, 32), evidence.offset, evidence.length)
+            mstore(add(add(ep, 32), evidence.length), 0)
+            ok := staticcall(gas(), verifier, ptr, sub(add(add(ep, 32), epad), ptr), 0, 0)
+        }
+        if (!ok) {
+            // A refusal is VerifierRefused(reason) for reason <= MAX_VERIFIER_REVERT bytes. Longer revert data is
+            // VerifierBadReturn(), decided from returndatasize() before anything is copied.
+            bytes memory reason;
+            assembly ("memory-safe") {
+                if gt(returndatasize(), MAX_VERIFIER_REVERT) {
+                    mstore(0, shl(224, 0xf659e897)) // VerifierBadReturn()
+                    revert(0, 4)
+                }
+                reason := mload(0x40)
+                mstore(reason, returndatasize())
+                returndatacopy(add(reason, 32), 0, returndatasize())
+                mstore(0x40, add(add(reason, 32), and(add(returndatasize(), 31), not(31))))
+            }
+            revert VerifierRefused(reason);
+        }
+        bytes32 vdom;
+        uint256 veta;
+        uint256 vmin;
+        bytes32 vasset;
+        uint256 vrec;
+        assembly ("memory-safe") {
+            if iszero(eq(returndatasize(), 192)) {
+                mstore(0, shl(224, 0xf659e897)) // VerifierBadReturn()
+                revert(0, 4)
+            }
+            returndatacopy(ptr, 0, 192)
+            vdom := mload(ptr)
+            veta := mload(add(ptr, 0x20))
+            vmin := mload(add(ptr, 0x40))
+            vasset := mload(add(ptr, 0x60))
+            vrec := mload(add(ptr, 0x80))
+            amount := mload(add(ptr, 0xa0))
+        }
+        if (vmin >> 64 != 0 || vrec >> 160 != 0) revert VerifierBadReturn();
+        if (vdom != D) revert DomainMismatch();
+        if (vasset != ASSET_UCT) revert AssetMismatch();
+        if (veta != eta || vmin != a) revert ClaimMismatch();
+        // vrec >> 160 == 0 was checked above
+        // forge-lint: disable-next-line(unsafe-typecast)
+        recipient = address(uint160(vrec));
+        if (recipient == address(0) || recipient == address(this)) revert BadRecipient();
+        if (amount == 0) revert ZeroAmount();
+        if (amount > q) revert LiabilityUnderflow(q, amount);
+    }
+
+    /// @dev S_p[m] <- eta and tag_p(m) <- bucket, a masked update of the tag word.
+    function _insert(uint256 p, uint256 m, uint256 bucket, uint256 eta) internal {
+        uint256 logb = LOGB;
+        uint256 slot = SLOT_IDS + p * K + m;
+        assembly ("memory-safe") {
+            let ts := add(SLOT_TAGS, p)
+            let off := mul(m, logb)
+            // shl(shift, value): B - 1
+            // forge-lint: disable-next-line(incorrect-shift)
+            let bmask := sub(shl(logb, 1), 1)
+            sstore(ts, or(and(sload(ts), not(shl(off, bmask))), shl(off, bucket)))
+            sstore(slot, eta)
+        }
+    }
+
+    function _emitPaid(uint256 eta, address recipient, uint256 amount) internal {
+        assembly ("memory-safe") {
+            mstore(0, amount)
+            log3(0, 32, TOPIC_PAID, eta, recipient)
+        }
+    }
+
+    function _pay(address recipient, uint256 amount) internal {
+        bool ok;
+        assembly ("memory-safe") {
+            ok := call(gas(), recipient, amount, 0, 0, 0, 0)
+        }
+        if (!ok) revert PayoutFailed();
+    }
+
+    // -------------------------------------------------------------------------------------------- sealing (section 10.4)
+
+    /// @dev Seals the full buffer p of segment c (its newest identifier, eta, is at position K-1): gathers the identifiers by
+    ///      tag, sorts each bucket, asserts strict order and bucket membership, computes M_c and H_{c+1}, emits SegmentSealed
+    ///      and stores H_{c+1} at its parity slot (which held H_{c-1}).
+    function _seal(uint256 p, uint256 c, uint256 eta) internal {
+        uint256 k = K;
+        uint256 logb = LOGB;
+        uint256 nb = 1 << logb;
+        uint256 sbase = SLOT_IDS + p * k;
+        uint256 ev;
+        bool ok = true;
+        assembly ("memory-safe") {
+            // layout: ev = [headBefore, headAfter, 0x60, 32K | z_0 .. z_{K-1}], then the bucket cursors cnt[0 .. B-1]
+            ev := mload(0x40)
+            let z := add(ev, 128)
+            let cnt := add(z, shl(5, k))
+            let bmask := sub(nb, 1)
+            for { let t := 0 } lt(t, nb) { t := add(t, 1) } { mstore(add(cnt, shl(5, t)), 0) }
+            let tags := sload(add(SLOT_TAGS, p))
+            // bucket sizes from the tag word
+            let word := tags
+            for { let i := 0 } lt(i, k) { i := add(i, 1) } {
+                let cp := add(cnt, shl(5, and(word, bmask)))
+                mstore(cp, add(mload(cp), 1))
+                word := shr(logb, word)
+            }
+            // exclusive prefix sums: cnt[t] = first position of bucket t
+            let run := 0
+            for { let t := 0 } lt(t, nb) { t := add(t, 1) } {
+                let cp := add(cnt, shl(5, t))
+                let v := mload(cp)
+                mstore(cp, run)
+                run := add(run, v)
+            }
+            // scatter each identifier into its bucket, checking it against its tag; the newest is not re-read
+            let last := sub(k, 1)
+            let sh := sub(256, logb)
+            word := tags
+            for { let i := 0 } lt(i, k) { i := add(i, 1) } {
+                let t := and(word, bmask)
+                let id := eta
+                if lt(i, last) { id := sload(add(sbase, i)) }
+                if iszero(eq(shr(sh, id), t)) { ok := 0 }
+                let cp := add(cnt, shl(5, t))
+                let pos := mload(cp)
+                mstore(add(z, shl(5, pos)), id)
+                mstore(cp, add(pos, 1))
+                word := shr(logb, word)
+            }
+            mstore(0x40, add(cnt, shl(5, nb)))
+        }
+        if (!ok) _sealAssertion();
+        // after the scatter cnt[t] is the end of bucket t: sort each bucket in place
+        uint256 z = ev + 128;
+        uint256 cnt = z + (k << 5);
+        uint256 start = 0;
+        for (uint256 t = 0; t < nb; t++) {
+            uint256 end;
+            assembly ("memory-safe") {
+                end := mload(add(cnt, shl(5, t)))
+            }
+            if (end - start > 1) _sortRun(z + (start << 5), end - start);
+            start = end;
+        }
+        // strict increase over the concatenation (buckets are disjoint high-bit ranges)
+        assembly ("memory-safe") {
+            let prev := mload(z)
+            for { let i := 1 } lt(i, k) { i := add(i, 1) } {
+                let v := mload(add(z, shl(5, i)))
+                if iszero(gt(v, prev)) { ok := 0 }
+                prev := v
+            }
+        }
+        if (!ok) _sealAssertion();
+        bytes32 root = _root(z, cnt, k);
+        bytes32 d = D;
+        assembly ("memory-safe") {
+            let hc := sload(add(SLOT_HEAD, and(c, 1)))
+            let st := cnt
+            mstore(st, ARCHIVE_STEP)
+            mstore(add(st, 0x28), c)
+            mstore(add(st, 0x20), d)
+            mstore(add(st, 0x48), hc)
+            mstore(add(st, 0x68), root)
+            let hnext := keccak256(st, 136)
+            mstore(ev, hc)
+            mstore(add(ev, 0x20), hnext)
+            mstore(add(ev, 0x40), 0x60)
+            mstore(add(ev, 0x60), shl(5, k))
+            log2(ev, add(128, shl(5, k)), TOPIC_SEALED, c)
+            sstore(add(SLOT_HEAD, and(add(c, 1), 1)), hnext)
+        }
+    }
+
+    /// @dev The seal's invariant checks (strict order, tagged bucket) cannot fail while AlreadyPaid holds; a failure reverts
+    ///      without a rule name (section 10.4 step 1).
+    function _sealAssertion() private pure {
+        assembly ("memory-safe") {
+            revert(0, 0)
+        }
+    }
+
+    /// @dev M = root of the complete binary tree over leaf_i = H_E(0x00 || z_i || z_{(i+1) mod K}), nodes H_E(0x01 || l || r).
+    function _root(uint256 z, uint256 scratch, uint256 k) internal pure returns (bytes32 r) {
+        assembly ("memory-safe") {
+            let s := scratch
+            let lv := add(scratch, 0x60)
+            let km1 := sub(k, 1)
+            mstore8(s, 0)
+            for { let i := 0 } lt(i, k) { i := add(i, 1) } {
+                mstore(add(s, 1), mload(add(z, shl(5, i))))
+                mstore(add(s, 33), mload(add(z, shl(5, and(add(i, 1), km1)))))
+                mstore(add(lv, shl(5, i)), keccak256(s, 65))
+            }
+            mstore8(s, 1)
+            for { let w := shr(1, k) } w { w := shr(1, w) } {
+                for { let i := 0 } lt(i, w) { i := add(i, 1) } {
+                    let src := add(lv, shl(6, i))
+                    mstore(add(s, 1), mload(src))
+                    mstore(add(s, 33), mload(add(src, 32)))
+                    mstore(add(lv, shl(5, i)), keccak256(s, 65))
+                }
+            }
+            r := mload(lv)
+        }
+    }
+
+    /// @dev Sorts n words at base ascending, O(n log n) in every arrival order (one bucket can hold all K identifiers):
+    ///      insertion sort for n <= 12, otherwise insertion-sorted chunks of 8 and bottom-up merges through scratch memory
+    ///      above the free memory pointer (the #1098 hybrid).
+    function _sortRun(uint256 base, uint256 n) internal pure {
+        assembly ("memory-safe") {
+            function ins(b, lo, hi) {
+                for { let i := add(lo, 1) } lt(i, hi) { i := add(i, 1) } {
+                    let pi := add(b, shl(5, i))
+                    let v := mload(pi)
+                    let pj := pi
+                    let pl := add(b, shl(5, lo))
+                    for {} gt(pj, pl) {} {
+                        let pv := mload(sub(pj, 32))
+                        if iszero(gt(pv, v)) { break }
+                        mstore(pj, pv)
+                        pj := sub(pj, 32)
+                    }
+                    mstore(pj, v)
+                }
+            }
+            function min(x, y) -> r {
+                r := x
+                if lt(y, x) { r := y }
+            }
+            switch gt(n, 12)
+            case 0 { ins(base, 0, n) }
+            default {
+                for { let c0 := 0 } lt(c0, n) { c0 := add(c0, 8) } {
+                    ins(base, c0, min(add(c0, 8), n))
+                }
+                let src := base
+                let dst := mload(0x40)
+                let bytesN := shl(5, n)
+                for { let w := 256 } lt(w, bytesN) { w := shl(1, w) } {
+                    for { let lo := 0 } lt(lo, bytesN) { lo := add(lo, shl(1, w)) } {
+                        let pi := add(src, lo)
+                        let pe1 := add(src, min(add(lo, w), bytesN))
+                        let pj := pe1
+                        let pe2 := add(src, min(add(lo, shl(1, w)), bytesN))
+                        let po := add(dst, lo)
+                        for {} and(lt(pi, pe1), lt(pj, pe2)) { po := add(po, 32) } {
+                            let x := mload(pi)
+                            let y := mload(pj)
+                            switch gt(x, y)
+                            case 0 {
+                                mstore(po, x)
+                                pi := add(pi, 32)
+                            }
+                            default {
+                                mstore(po, y)
+                                pj := add(pj, 32)
+                            }
+                        }
+                        mcopy(po, pi, sub(pe1, pi))
+                        po := add(po, sub(pe1, pi))
+                        mcopy(po, pj, sub(pe2, pj))
+                    }
+                    let t := src
+                    src := dst
+                    dst := t
+                }
+                if iszero(eq(src, base)) { mcopy(base, src, bytesN) }
+            }
+        }
+    }
+}
