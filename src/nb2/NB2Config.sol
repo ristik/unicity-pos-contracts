@@ -86,14 +86,12 @@ library NB2Config {
         // forge-lint: disable-next-line(unsafe-typecast)
         c.verifier = address(bytes20(_fixedN(g, fieldAt[14], 20, 14)));
         c.verifierCodeHash = _fixed32(g, fieldAt[15], 15);
+        // 16 then 17, each complete before the next field is read: K's range, power of two and build set, then B's range,
+        // power of two, B <= K and build set.
         c.k = _uintIn(g, fieldAt[16], 2, MAX_K);
-        if (c.k == 0) revert BadConfig(16);
+        if (c.k == 0 || c.k & (c.k - 1) != 0 || (kSet >> c.k) & 1 == 0) revert BadConfig(16);
         c.b = _uintIn(g, fieldAt[17], 2, MAX_K);
-        if (c.b == 0) revert BadConfig(17);
-        if (!_admits(c.k, c.b, kSet, bSet)) {
-            if ((kSet >> c.k) & 1 == 0 || c.k & (c.k - 1) != 0) revert BadConfig(16);
-            revert BadConfig(17);
-        }
+        if (c.b == 0 || !_admits(c.k, c.b, kSet, bSet)) revert BadConfig(17);
         // 18: Qmax, an Amount (section 3): 1..32 bytes, no leading zero, at most 2^144 - 1.
         (isB, off, len) = _bstr(g, fieldAt[18]);
         if (!isB || len == 0 || len > 32 || uint8(g[off]) == 0) revert BadConfig(18);

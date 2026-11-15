@@ -4,8 +4,10 @@ pragma solidity 0.8.37;
 import {Vm} from "forge-std/Test.sol";
 import {NB2VaultBase} from "../../src/nb2/NB2VaultBase.sol";
 import {NB2Config} from "../../src/nb2/NB2Config.sol";
+import {NativeBridgeVaultV2} from "../../src/nb2/NativeBridgeVaultV2.sol";
 import {NativeBridgeVaultV2Test} from "../../src/nb2/NativeBridgeVaultV2Test.sol";
 import {
+    EchoVerifierV2,
     INB2Vault,
     MockVerifierV2,
     NB2Ref,
@@ -697,6 +699,34 @@ contract NB2VaultTest is NB2TestBase {
         _ctorExpect(g, 5);
         f.verifierCodeHash = keccak256("other");
         _ctorExpect(f, 15);
+        // production build, K = 4 (not in its K set) and B = 0: K's own checks finish first, 16
+        g = fields(addr, address(mock), 4, 0, QMAX);
+        bytes memory gamma = encodeGamma(g);
+        vm.expectRevert(abi.encodeWithSelector(NB2Config.BadConfig.selector, 16));
+        new NativeBridgeVaultV2(gamma);
+        // production build, K = 64 and B = 0 or 128: 17
+        uint256[2] memory bs = [uint256(0), 128];
+        for (uint256 i = 0; i < 2; i++) {
+            gamma = encodeGamma(fields(addr, address(mock), 64, bs[i], QMAX));
+            vm.expectRevert(abi.encodeWithSelector(NB2Config.BadConfig.selector, 17));
+            new NativeBridgeVaultV2(gamma);
+        }
+    }
+
+    /// A production Γ pins the production verifier's code hash; a different (test-build) verifier deployed at verifier20 is
+    /// refused at construction with BadConfig(15), so the pairing never reaches a redemption.
+    function test_constructor_refusesOtherVerifierCode() public {
+        address prodVerifier = address(new EchoVerifierV2());
+        bytes memory testCode = address(new MockVerifierV2()).code;
+        address addr = vm.computeCreateAddress(address(this), vm.getNonce(address(this)));
+        bytes memory gamma = encodeGamma(fields(addr, prodVerifier, 64, 16, QMAX));
+        // the test-build verifier's code takes the pinned address
+        vm.etch(prodVerifier, testCode);
+        vm.expectRevert(abi.encodeWithSelector(NB2Config.BadConfig.selector, 15));
+        new NativeBridgeVaultV2(gamma);
+        // with the pinned code back, the same Γ constructs
+        vm.etch(prodVerifier, type(EchoVerifierV2).runtimeCode);
+        assertEq(address(new NativeBridgeVaultV2(gamma)), addr);
     }
 
     function _ctorExpect(GammaFields memory g, uint256 field) internal {
