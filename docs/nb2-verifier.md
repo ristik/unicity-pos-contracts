@@ -91,7 +91,7 @@ native schedules:
 
 Calldata is the evidence at 16/4 gas per byte. The larger tokens come from the same deterministic world as the vectors
 (`script/nb2/large_tokens_test.go.txt`, verified by the Go reference first; a subset is in `test/nb2/verifier/large.json`).
-Compiler: solc 0.8.37, via-IR, Cancun, `optimizer_runs = 1` (size-first, like `src/bridge`).
+Compiler: solc 0.8.37, via-IR, Cancun, `optimizer_runs = 1` (size-first, the profile foundry.toml gives `src/nb2/verifier`).
 
 | Token | Evidence bytes | Verifier exec | of which 0x0100 | of which 0x0102 | Calldata | Total |
 |---|---:|---:|---:|---:|---:|---:|

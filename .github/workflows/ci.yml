@@ -33,12 +33,6 @@ jobs:
         run: |
           python3 script/evidence-corpus-convert.py test/p85/fixtures/evidence-digest-corpus-go-v1.json test/p85/fixtures/evidence-digest-corpus-v1.json
           git diff --exit-code test/p85/fixtures/evidence-digest-corpus-v1.json
-      - name: Bridge goldens agree with the sealed shared corpus
-        run: |
-          git clone --quiet https://github.com/ristik/native-bridge-plugins "$RUNNER_TEMP/corpus"
-          git -C "$RUNNER_TEMP/corpus" checkout --quiet "$(python3 -c "import json;print(json.load(open('script/bridge-golden/corpus-pin.json'))['corpus']['commit'])")"
-          python3 script/bridge-golden/check-corpus.py "$RUNNER_TEMP/corpus"
-          python3 script/bridge-golden/split-golden.py check "$RUNNER_TEMP/corpus"
       - name: NB2 vault vectors are the conversion of the pinned shared file
         # test/nb2/vectors/nb2-vectors.json is native-bridge-plugins protocol/vectors/nb2/nb2-vectors.json verbatim; the script
         # checks it against its pinned sha256 and that the forge-shaped file the vault tests read is its exact conversion.

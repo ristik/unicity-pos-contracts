@@ -24,12 +24,10 @@ via_ir = true
 # compile under a size-first profile. The registry's settings, and so its pinned code hash, are
 # untouched: the restriction names only src/p85.
 #
-# The bridge verifiers are size-first for the same reason (the v2 token verifier, src/nb2/verifier, exceeds EIP-170 at 200 runs) (arch's ruling of 2026-10-14 on contracts#39: the any-age composition and its
-# gate were measured under optimizer_runs = 1; the gate's constants are valid for this profile only).
+# The v2 bridge verifier (src/nb2/verifier) is size-first for the same reason: it exceeds EIP-170 at 200 runs.
 additional_compiler_profiles = [{ name = "p85", optimizer_runs = 1 }]
 compilation_restrictions = [
     { paths = "src/p85/**", optimizer_runs = 1 },
-    { paths = "src/bridge/**", optimizer_runs = 1 },
     { paths = "src/nb2/verifier/**", optimizer_runs = 1 },
 ]
 
@@ -44,9 +42,7 @@ extra_output = ["storageLayout"]
 fs_permissions = [
     { access = "read-write", path = "./out" },
     { access = "read-write", path = "./artifacts" },
-    { access = "read", path = "./test/bridge" },
     { access = "read", path = "./test/nb2" },
-    { access = "read", path = "./script/bridge-deploy" },
     { access = "read-write", path = "./test/p85/fixtures" },
     { access = "read-write", path = "./script/genesis-out" },
 ]

@@ -9,11 +9,9 @@ package is assumed to exist in BFT Core."*
 [`docs/b1-registry-gas.md`](docs/b1-registry-gas.md)), WUCT native wrapper, simplified FeeCollector,
 immutable timestamp vesting vault, and the P85 custody, identity and evidence modules (`src/`,
 `src/p85/`). Nothing here is deployed, and no genesis, activation, issuance or PoS feature follows
-from merging it. The native-UCT `BridgeVault` and its composing `TokenVerifier` (`src/bridge/`, B4 #65) are
-written for the native bridge protocol v2 on the SDK 3.0.1 profile (leaf value `H(C(b(txHash),t))`, kernel result stride
-`448+128*m`, InputRecord opening and `t <= IR.timestamp` after B1 authentication). They are tested against explicit test
-doubles for the proposed 0x0104 kernel and for the B1 precompiles' answers (recorded from the A' reference oracle), and are
-not usable until the real native calls exist. `script/BridgeDeploy.s.sol` deploys them only after asserting that the vault's `rootGenesis`, `executionGenesis` and `b1ProfileHash` equal the registry genesis' (`script/bridge-deploy/README.md`). Vector provenance: `script/bridge-golden/README.md`.
+from merging it. The native bridge is v2 (`src/nb2/`: the vault and its Solidity verifier, see
+[`docs/nb2-verifier.md`](docs/nb2-verifier.md); bft-core `docs/design/native-bridge-v2.md`). The protocol 6/7
+`BridgeVault` and `TokenVerifier` (`src/bridge/`) were removed with that bridge (bft-core#1106).
 
 ## Ownership and process
 
@@ -36,7 +34,7 @@ reviewable, regardless of what it does.
 | [P4 (#32)](https://github.com/ristik/bft-core/issues/32) | Retirement queue and protected claims |
 | [T2 (#29)](https://github.com/ristik/bft-core/issues/29) | Immutable allocation and WUCT contracts |
 | [T3 (#37)](https://github.com/ristik/bft-core/issues/37) | FeeCollector and independent Treasury |
-| [B4 (#65)](https://github.com/ristik/bft-core/issues/65) | Native BridgeVault and permanent lock interface |
+| [NB2 (#1096)](https://github.com/ristik/bft-core/issues/1096) | Native bridge v2 vault and verifier (`src/nb2/`) |
 
 PoS, inbox and bridge features stay disabled until their own gates pass. Deployment, issuance,
 bridge activation and the PoS switch are separate explicit authorisations, never a consequence of
@@ -60,7 +58,6 @@ bash script/seal-registry-artifact.sh && git diff --exit-code artifacts/    # ar
 bash script/t2t3-artifact.sh && git diff --exit-code artifacts/t2t3-test-v1.json
 bash script/vesting-vault-artifact.sh && git diff --exit-code artifacts/vesting-vault-test-v1.json
 bash script/p85-interface-manifest.sh && git diff --exit-code artifacts/p85-pr2-interface.json
-python3 script/bridge-guards.py --jobs 3                                   # disable each bridge guard once
 ```
 
 OpenZeppelin Contracts is pinned as a submodule at v5.4.0 (commit recorded in `foundry.lock`). The
