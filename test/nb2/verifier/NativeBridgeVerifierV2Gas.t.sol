@@ -3,7 +3,7 @@ pragma solidity 0.8.37;
 
 import {Test, console} from "forge-std/Test.sol";
 import {CertBatchDouble, MembershipDouble} from "./Nb2Doubles.sol";
-import {Nb2Harness, Nb2Profile} from "./Nb2Harness.sol";
+import {Nb2Harness, Nb2Profile, Nb2PrimitiveProfile} from "./Nb2Harness.sol";
 
 /// @notice Gas and evidence bytes of the token verifier (NB2-05 report). The natives are doubles, so each measurement removes
 ///         the gas spent in them and adds their native schedule (b1ref limits.go: CERT_BATCH_V2 and the RSMT membership) and
@@ -131,10 +131,11 @@ contract NativeBridgeVerifierV2GasTest is Test {
         bytes memory gamma = vm.parseJsonBytes(j, ".deployments.main.gamma");
         (bytes memory ev,) = _vector(j, "ok-legacy-receipt");
         Nb2Profile p = new Nb2Profile();
-        console.log("scan", p.pScan(ev));
+        Nb2PrimitiveProfile q = new Nb2PrimitiveProfile();
+        console.log("scan", q.pScan(ev));
         console.log(
             "scan 33 items",
-            p.pScan(
+            q.pScan(
                 hex"9820000102030405060708090a0b0c0d0e0f1011121314151617181818191819181a181b181c181d181e181f"
             )
         );
@@ -144,11 +145,11 @@ contract NativeBridgeVerifierV2GasTest is Test {
         console.log("origin (J, receipt, header, trie, log; its batch claim excluded)", origin);
         assertLe(origin, 210_000, "origin receipt ceiling");
         bytes memory uc = vm.parseJsonBytes(vm.readFile("test/nb2/verifier/profile-uc.json"), ".uc");
-        console.log("uc parse", p.pUcParse(uc));
-        console.log("uc parse+valid+folds+claim", p.pUc(uc));
+        console.log("uc parse", q.pUcParse(uc));
+        console.log("uc parse+valid+folds+claim", q.pUc(uc));
         console.log(
             "key decompress",
-            p.pKey(hex"03c3c8afe64023aa65a1d8e3334437cd09852c863089db75b9456e82f5d47ede22")
+            q.pKey(hex"03c3c8afe64023aa65a1d8e3334437cd09852c863089db75b9456e82f5d47ede22")
         );
     }
 

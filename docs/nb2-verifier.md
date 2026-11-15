@@ -39,8 +39,11 @@ DepositUC for the EVM UC. This is the on-chain classification ruled on 2026-11-1
 **Unlock recovery IDs 2 and 3** are UnlockRecovery (the NB2 restriction, astra's delta review).
 
 **EIP-170.** The receipt path (EVM UC, header, trie, receipt, log) and each aggregator certificate's local checks are
-`Nb2ReceiptVerifier`, a second contract (about 6,000 gas per hop for the extra call). The
-verifier creates it in its constructor and holds it as an immutable, so `verifierCodeHash` pins both.
+`Nb2ReceiptVerifier`, a second contract (about 6,000 gas per hop for the extra call). The verifier creates it in its
+constructor and holds both its address and its expected runtime code hash (`RECEIPTS_CODEHASH`) as immutables. Every call
+first requires `EXTCODEHASH(RECEIPTS) == RECEIPTS_CODEHASH` (`HelperCodeMismatch()` otherwise). The verifier's runtime code
+hash therefore pins the helper's code, not only its address, even for a runtime installed by other initialization code
+(astra's review of #82, `test_helperCodePinned`).
 
 | Contract | Runtime bytes |
 |---|---:|
@@ -56,7 +59,7 @@ builds therefore have different code hashes (`test_buildsHaveDistinctCodeHashes`
 
 ## Tests (`test/nb2/verifier`, about 8 s)
 
-Every verifier vector (114) is checked byte for byte against the Go reference (nb2ref), whose output the vectors are:
+Every verifier vector (117) is checked byte for byte against the Go reference (nb2ref), whose output the vectors are:
 - an accepted vector returns exactly its 192-byte verdict;
 - a refused vector reverts with exactly its `expect.revert` bytes.
 
@@ -72,7 +75,8 @@ The suite also runs:
 - the config vectors (ConfigShape);
 - the seal receipts, through the same receipt path, with their inner rule;
 - the gap, chain-fold and segment-log vectors;
-- the minter-scalar primitives and constants.
+- the minter-scalar and unlock-recovery primitives (IDs 2 and 3, including a valid ID-2 signature, are UnlockRecovery) and
+  the constants.
 
 `0x0100` and `0x0102` are test doubles (`Nb2Doubles.sol`). The certificate-batch double holds the vectors' trust history,
 derived by `script/nb2/trust-fixture.py`. Precompile behaviour itself is covered by the ureth unit tests and fixtures.
@@ -136,6 +140,26 @@ plus the verifier's cost. For the two-split reference part at P = 0 that is abou
 - The typed decode is a second walk.
 - Each aggregator UC's strict acceptance (map order, UTF-8, shape) costs about 27,000 gas, and its folds about 4,000.
 - These are EVM parsing costs, not avoidable checks.
+
+**Resource bounds (astra's review of #82).** Work is finite and bounded by the input, but not linear in it:
+- each nested mint embeds its whole ancestor token, and its transaction hash covers it, so hashing grows quadratically with
+  split depth;
+- the claim and state-ID sets are open-addressed on digest low bits, so adversarially clustered IDs can make probing
+  quadratic in the token's own transaction count.
+
+Both only make the submitter's own evidence more expensive. Out of gas is a plain failure, not a rule.
+
+**What NB2-09's live run must cover** (the tests here use doubles for 0x0100 and 0x0102, and the batch double shares
+`Nb2Cert`):
+- the deployed verifier and helper through the vault on the pinned ureth, comparing 192-byte verdicts with Go for origin-only,
+  transfer, split, nested and epoch-spanning tokens, typed and legacy receipts;
+- historical authority at epoch and round boundaries, unknown or future epochs, registry not ready, insufficient quorum,
+  duplicate signers, wrong network, partition, shard or configuration;
+- batches at 16 and 17 claims and the byte cap, repeated claims, an invalid claim at each position, combination-only native
+  refusal, and the flush before a later fault;
+- real membership paths and shard boundaries with mutations;
+- missing, reverting or malformed native answers, helper code authentication, and production/test build admission;
+- real transaction gas for long and deep tokens and for expensive refusals, with the vault's reserve.
 
 ## Decision gate (with the owner)
 

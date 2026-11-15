@@ -73,12 +73,21 @@ contract NativeBridgeVerifierV2 is INativeBridgeVerifierV2 {
     bytes32 internal constant TOKENID_SUFFIX = sha256("TOKENID");
 
     bool public immutable admitsTestSet;
-    /// @notice The receipt verifier this verifier created (an immutable, so the code hash pins it).
+    /// @notice The receipt verifier this verifier created.
     Nb2ReceiptVerifier public immutable RECEIPTS;
+    /// @notice The runtime code hash `RECEIPTS` must have. Both immutables are bytes of this contract's runtime, so its code
+    ///         hash pins the helper's code, not only its address: every call checks EXTCODEHASH(RECEIPTS) against it first, and
+    ///         a verifier whose runtime was installed by other initialization code cannot be paired with another helper.
+    bytes32 public immutable RECEIPTS_CODEHASH;
+
+    /// @dev The helper at RECEIPTS does not have the pinned code (not a rule).
+    error HelperCodeMismatch();
 
     constructor(bool testSet_) {
         admitsTestSet = testSet_;
         RECEIPTS = new Nb2ReceiptVerifier();
+        RECEIPTS_CODEHASH = keccak256(type(Nb2ReceiptVerifier).runtimeCode);
+        if (address(RECEIPTS).codehash != RECEIPTS_CODEHASH) revert HelperCodeMismatch();
     }
 
     // ---- state of one call ----------------------------------------------------------------------------------------------
@@ -186,7 +195,8 @@ contract NativeBridgeVerifierV2 is INativeBridgeVerifierV2 {
         return _verify(ctx, gamma, evidence);
     }
 
-    function _newCtx() internal pure returns (Ctx memory ctx) {
+    function _newCtx() internal view returns (Ctx memory ctx) {
+        if (address(RECEIPTS).codehash != RECEIPTS_CODEHASH) revert HelperCodeMismatch();
         ctx.keyH = new bytes32[](128);
         ctx.keyA = new address[](128);
     }
@@ -1035,13 +1045,22 @@ contract NativeBridgeVerifierV2 is INativeBridgeVerifierV2 {
         uint256 up,
         uint256 ul
     ) internal view {
+        _unlockDigest(
+            ctx, key, sha256(abi.encodePacked(hex"825820", sourceHash, hex"5820", txh)), up, ul
+        );
+    }
+
+    /// @dev The unlock rule over its message digest H(C(b(sourceHash), b(txHash))).
+    function _unlockDigest(Ctx memory ctx, address key, bytes32 digest, uint256 up, uint256 ul)
+        internal
+        view
+    {
         _require(ctx, ul == 65, R.UNLOCK_LENGTH);
         uint256 r = uint256(C.word(up));
         uint256 s = uint256(C.word(up + 32));
         _require(ctx, r != 0 && r < X.N && s != 0 && s <= X.HALF_N, R.UNLOCK_SCALARS);
         uint256 id = C.u8(up + 64);
         _require(ctx, id <= 1, R.UNLOCK_RECOVERY);
-        bytes32 digest = sha256(abi.encodePacked(hex"825820", sourceHash, hex"5820", txh));
         address got = X.recover(digest, id, bytes32(r), bytes32(s));
         _require(ctx, got != address(0) && got == key, R.UNLOCK_KEY);
     }

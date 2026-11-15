@@ -118,13 +118,6 @@ contract SealReceiptHarness is NativeBridgeVerifierV2 {
 contract Nb2Profile is NativeBridgeVerifierV2 {
     constructor() NativeBridgeVerifierV2(false) {}
 
-    function pScan(bytes calldata evidence) external view returns (uint256 g) {
-        g = gasleft();
-        uint256 p = _cdPos(evidence);
-        C.scan(p, p + evidence.length, true);
-        g -= gasleft();
-    }
-
     function pDecode(bytes calldata gamma, bytes calldata evidence)
         external
         view
@@ -149,6 +142,28 @@ contract Nb2Profile is NativeBridgeVerifierV2 {
         Tok[] memory chain = _walk(ctx, t);
         _initCtx(ctx, chain);
         _rootMint(ctx, chain[chain.length - 1]);
+        g -= gasleft();
+    }
+
+    /// @notice The unlock rule over a given digest (the primitives' unlockRecovery vectors).
+    function unlockCheck(bytes calldata key, bytes32 digest, bytes calldata unlock) external view {
+        Ctx memory ctx = _newCtx();
+        _unlockDigest(ctx, Nb2Crypto.keyAddress(_cdPos(key)), digest, _cdPos(unlock), unlock.length);
+    }
+}
+
+/// @notice Primitive costs for the NB2-05 report (standalone, so the profilers stay below EIP-170). Test-only.
+contract Nb2PrimitiveProfile {
+    function _cdPos(bytes calldata b) internal pure returns (uint256 p) {
+        assembly ("memory-safe") {
+            p := b.offset
+        }
+    }
+
+    function pScan(bytes calldata evidence) external view returns (uint256 g) {
+        g = gasleft();
+        uint256 p = _cdPos(evidence);
+        C.scan(p, p + evidence.length, true);
         g -= gasleft();
     }
 
