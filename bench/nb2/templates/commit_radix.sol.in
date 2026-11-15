@@ -1,0 +1,130 @@
+    // ---------------------------------------------------------------- compressed binary radix (crit-bit) tree
+    /// leaf = H(0x00 || z) (33 bytes), node = H(0x01 || u8(bit) || L || R) (66 bytes), where bit is
+    /// the highest bit in which the node's two subtrees differ (255 = most significant); keys with a
+    /// 0 there are on the left. Only real branches exist: no unary levels. Absence proof:
+    /// u8(d) || z || (u8(bit_k) || s_k) for k = 0 .. d-1 from the leaf up; the path follows eta's
+    /// bits and ends at the leaf z != eta. 33 + 33d bytes. Self-delimiting, like the multiproof.
+    function _history(uint256 eta, uint256 a, uint256 c, bytes calldata history) internal view returns (uint256 e) {
+        uint256 k = K;
+        uint256 len = history.length;
+        if (len < 32 + 33) revert BadHistoryLength(len);
+        bytes32 d = D;
+        uint256 x;
+        uint256 np;
+        bool bad;
+        assembly ("memory-safe") {
+            let st := mload(0x40)
+            let s := add(st, 0xa0)
+            mstore(st, ARCHIVE_STEP)
+            let o := add(history.offset, 32)
+            let end := add(history.offset, len)
+            x := calldataload(history.offset)
+            for {} lt(o, end) { np := add(np, 1) } {
+                let dep := byte(0, calldataload(o))
+                let z := calldataload(add(o, 1))
+                if or(eq(z, eta), iszero(lt(dep, k))) {
+                    mstore(0, shl(224, 0xe7169745))
+                    mstore(4, np)
+                    revert(0, 36)
+                }
+                mstore8(s, 0)
+                mstore(add(s, 1), z)
+                let mm := keccak256(s, 33)
+                mstore8(s, 1)
+                let sp := add(o, 33)
+                for { let j := 0 } lt(j, dep) { j := add(j, 1) } {
+                    let w := calldataload(sp)
+                    let bit := byte(0, w)
+                    let sib := calldataload(add(sp, 1))
+                    mstore8(add(s, 1), bit)
+                    switch and(shr(bit, eta), 1)
+                    case 0 {
+                        mstore(add(s, 2), mm)
+                        mstore(add(s, 34), sib)
+                    }
+                    default {
+                        mstore(add(s, 2), sib)
+                        mstore(add(s, 34), mm)
+                    }
+                    mm := keccak256(s, 66)
+                    sp := add(sp, 33)
+                }
+                o := sp
+                mstore(add(st, 0x28), add(a, np))
+                mstore(add(st, 0x20), d)
+                mstore(add(st, 0x48), x)
+                mstore(add(st, 0x68), mm)
+                x := keccak256(st, 136)
+            }
+            bad := iszero(eq(o, end))
+        }
+        if (bad) revert BadHistoryLength(len);
+        e = a + np;
+        _range(a, e, c);
+        assembly ("memory-safe") {
+            if iszero(eq(x, sload(add(1, and(e, 1))))) {
+                mstore(0, shl(224, 0xa6226dc5))
+                revert(0, 4)
+            }
+        }
+    }
+
+    /// Builds the crit-bit tree of the sorted z in one pass with a stack (a Cartesian tree on the
+    /// critical bits of adjacent keys).
+    function _root(uint256 z, uint256 scratch) internal view returns (bytes32 r) {
+        uint256 k = K;
+        assembly ("memory-safe") {
+            function msb(v) -> b {
+                b := shl(7, lt(0xffffffffffffffffffffffffffffffff, v))
+                b := or(b, shl(6, lt(0xffffffffffffffff, shr(b, v))))
+                b := or(b, shl(5, lt(0xffffffff, shr(b, v))))
+                b := or(b, shl(4, lt(0xffff, shr(b, v))))
+                b := or(b, shl(3, lt(0xff, shr(b, v))))
+                b := or(b, shl(2, lt(0xf, shr(b, v))))
+                b := or(b, shl(1, lt(0x3, shr(b, v))))
+                b := or(b, lt(0x1, shr(b, v)))
+            }
+            // stack entries are (bit, left hash) word pairs at st + 64n
+            function build(zp, kk, s) -> cur {
+                let st := add(s, 0x60)
+                let n := 0
+                mstore8(s, 0)
+                mstore(add(s, 1), mload(zp))
+                cur := keccak256(s, 33)
+                for { let i := 1 } lt(i, kk) { i := add(i, 1) } {
+                    let zi := add(zp, shl(5, i))
+                    let nxt := mload(zi)
+                    let bit := msb(xor(mload(sub(zi, 32)), nxt))
+                    for {} n {} {
+                        let top := add(st, shl(6, sub(n, 1)))
+                        let tb := mload(top)
+                        if iszero(lt(tb, bit)) { break }
+                        n := sub(n, 1)
+                        mstore8(s, 1)
+                        mstore8(add(s, 1), tb)
+                        mstore(add(s, 2), mload(add(top, 32)))
+                        mstore(add(s, 34), cur)
+                        cur := keccak256(s, 66)
+                    }
+                    let slot := add(st, shl(6, n))
+                    mstore(slot, bit)
+                    mstore(add(slot, 32), cur)
+                    n := add(n, 1)
+                    mstore8(s, 0)
+                    mstore(add(s, 1), nxt)
+                    cur := keccak256(s, 33)
+                }
+                mstore8(s, 1)
+                for {} n {} {
+                    n := sub(n, 1)
+                    let top := add(st, shl(6, n))
+                    mstore8(add(s, 1), mload(top))
+                    mstore(add(s, 2), mload(add(top, 32)))
+                    mstore(add(s, 34), cur)
+                    cur := keccak256(s, 66)
+                }
+            }
+            let cur := build(z, k, scratch)
+            r := cur
+        }
+    }

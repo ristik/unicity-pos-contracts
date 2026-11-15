@@ -1,0 +1,293 @@
+    // ---------------------------------------------------------------- constants (spec 3, 13)
+    bytes32 internal constant ARCHIVE_GENESIS = 0x45076af3d8858f1d7a9bb6e037bb5ca4270d0b4fa90f9397eb7adb905590a339;
+    bytes32 internal constant ARCHIVE_STEP = 0xc68efdc45f5c9a20bf6abfda6493e8e295d8e31495fd1e744cd4c35f74785dfa;
+    bytes32 internal constant ASSET = 0x87b0b8b600fcd942cc3383bac1dbb80fd69d54af700cf48faa4525451a7b1845;
+    bytes32 internal constant TOPIC_DEPOSITED = 0x853a9d825910065273b44cf4f0ad33d2525f875d3da0a53f967ae40b7508d2b8;
+    bytes32 internal constant TOPIC_PAID = 0x606160394df2742a67735645b7e783304d61d2dbc5b550e8c6acfaf27b6291d7;
+    bytes32 internal constant TOPIC_SEALED = 0x06e724201a1c72937156cbdb3b9522d26b3818ee33ace10cd7cda65bb9cae916;
+
+    bytes32 internal immutable D;
+    address internal immutable VERIFIER;
+    uint256 internal immutable GLEN;
+    bytes32 internal immutable G0;
+    bytes32 internal immutable G1;
+    bytes32 internal immutable G2;
+    bytes32 internal immutable G3;
+    bytes32 internal immutable G4;
+    bytes32 internal immutable G5;
+    bytes32 internal immutable G6;
+    bytes32 internal immutable G7;
+    bytes32 internal immutable G8;
+    bytes32 internal immutable G9;
+    bytes32 internal immutable G10;
+    bytes32 internal immutable G11;
+
+    error ZeroValue();
+    error BadFirstOwner();
+    error LiabilityCap(uint256 outstanding, uint256 amount, uint256 cap);
+    error DepositCounterExhausted();
+    error Reentrancy();
+    error BadHistoryLength(uint256 length);
+    error FutureIndex(uint64 start, uint64 current);
+    error StaleEndpoint(uint64 endpoint, uint64 current);
+    error BadGapProof(uint256 position);
+    error ChainMismatch();
+    error AlreadyPaid(bytes32 eta);
+    error VerifierRefused(bytes reason);
+    error VerifierBadReturn();
+    error DomainMismatch();
+    error AssetMismatch();
+    error ClaimMismatch();
+    error BadRecipient();
+    error ZeroAmount();
+    error LiabilityUnderflow(uint256 outstanding, uint256 amount);
+    error SegmentCounterExhausted();
+    error PayoutFailed();
+    error BadConfig(uint256 field);
+
+    event Deposited(uint64 indexed nonce, bytes32 domain, uint256 amount, bytes32 rho, bytes firstOwner);
+    event Paid(bytes32 indexed eta, address indexed recipient, uint256 amount);
+    event SegmentSealed(uint64 indexed segment, bytes32 headBefore, bytes32 headAfter, bytes ids);
+
+    function domain() external view returns (bytes32) {
+        return D;
+    }
+
+    function _range(uint256 a, uint256 e, uint256 c) internal pure {
+        if (a > c) revert FutureIndex(uint64(a), uint64(c));
+        if (!(e == c || (c > 0 && e == c - 1))) revert StaleEndpoint(uint64(e), uint64(c));
+    }
+
+    /// Spec 11.1 step 5 and 6: STATICCALL the verifier with (config(), evidence) and check the verdict.
+    function _verify(bytes calldata evidence, uint256 eta, uint256 a, uint256 q)
+        internal
+        view
+        returns (address recipient, uint256 amount)
+    {
+        bytes32 g0 = G0;
+        bytes32 g1 = G1;
+        bytes32 g2 = G2;
+        bytes32 g3 = G3;
+        bytes32 g4 = G4;
+        bytes32 g5 = G5;
+        bytes32 g6 = G6;
+        bytes32 g7 = G7;
+        bytes32 g8 = G8;
+        bytes32 g9 = G9;
+        bytes32 g10 = G10;
+        bytes32 g11 = G11;
+        uint256 glen = GLEN;
+        address verifier = VERIFIER;
+        uint256 ptr;
+        uint256 total;
+        assembly ("memory-safe") {
+            ptr := mload(0x40)
+            mstore(ptr, shl(224, 0xdf447dca))
+            let gpad := and(add(glen, 31), not(31))
+            mstore(add(ptr, 4), 0x40)
+            mstore(add(ptr, 36), add(0x60, gpad))
+            mstore(add(ptr, 68), glen)
+            let gp := add(ptr, 100)
+            mstore(gp, g0)
+            mstore(add(gp, 0x20), g1)
+            mstore(add(gp, 0x40), g2)
+            mstore(add(gp, 0x60), g3)
+            mstore(add(gp, 0x80), g4)
+            mstore(add(gp, 0xa0), g5)
+            mstore(add(gp, 0xc0), g6)
+            mstore(add(gp, 0xe0), g7)
+            mstore(add(gp, 0x100), g8)
+            mstore(add(gp, 0x120), g9)
+            mstore(add(gp, 0x140), g10)
+            mstore(add(gp, 0x160), g11)
+            let ep := add(gp, gpad)
+            mstore(ep, evidence.length)
+            calldatacopy(add(ep, 32), evidence.offset, evidence.length)
+            let elen := and(add(evidence.length, 31), not(31))
+            mstore(add(add(ep, 32), evidence.length), 0)
+            total := sub(add(add(ep, 32), elen), ptr)
+        }
+        bool ok;
+        assembly ("memory-safe") {
+            ok := staticcall(gas(), verifier, ptr, total, 0, 0)
+        }
+        if (!ok) {
+            bytes memory reason;
+            assembly ("memory-safe") {
+                reason := mload(0x40)
+                mstore(reason, returndatasize())
+                returndatacopy(add(reason, 32), 0, returndatasize())
+                mstore(0x40, add(add(reason, 32), returndatasize()))
+            }
+            revert VerifierRefused(reason);
+        }
+        bytes32 vdom;
+        bytes32 veta;
+        uint256 vmin;
+        bytes32 vasset;
+        uint256 vrec;
+        assembly ("memory-safe") {
+            if iszero(eq(returndatasize(), 192)) {
+                mstore(0, shl(224, 0xf659e897))
+                revert(0, 4)
+            }
+            returndatacopy(ptr, 0, 192)
+            vdom := mload(ptr)
+            veta := mload(add(ptr, 32))
+            vmin := mload(add(ptr, 64))
+            vasset := mload(add(ptr, 96))
+            vrec := mload(add(ptr, 128))
+            amount := mload(add(ptr, 160))
+        }
+        if (vmin >> 64 != 0 || vrec >> 160 != 0) revert VerifierBadReturn();
+        if (vdom != D) revert DomainMismatch();
+        if (vasset != ASSET) revert AssetMismatch();
+        if (uint256(veta) != eta || vmin != a) revert ClaimMismatch();
+        recipient = address(uint160(vrec));
+        if (recipient == address(0) || recipient == address(this)) revert BadRecipient();
+        if (amount == 0) revert ZeroAmount();
+        if (amount > q) revert LiabilityUnderflow(q, amount);
+    }
+
+    function _guardEnter() internal {
+        assembly ("memory-safe") {
+            if tload(0) {
+                mstore(0, shl(224, 0xab143c06))
+                revert(0, 4)
+            }
+            tstore(0, 1)
+        }
+    }
+
+    function _guardExit() internal {
+        assembly ("memory-safe") {
+            tstore(0, 0)
+        }
+    }
+
+    function _checkOwner(bytes calldata firstOwner) internal pure {
+        bool ok;
+        assembly ("memory-safe") {
+            let w := calldataload(firstOwner.offset)
+            // d9 9878 83 01 41 01 58 21 || key33, key33[0] in {02, 03}
+            ok := and(
+                eq(firstOwner.length, 42),
+                and(
+                    eq(shr(184, w), 0xd99878830141015821),
+                    or(eq(byte(9, w), 2), eq(byte(9, w), 3))
+                )
+            )
+        }
+        if (!ok) revert BadFirstOwner();
+    }
+
+    function _pay(address recipient, uint256 amount) internal {
+        bool ok;
+        assembly ("memory-safe") {
+            ok := call(gas(), recipient, amount, 0, 0, 0, 0)
+        }
+        if (!ok) revert PayoutFailed();
+    }
+
+    function _emitPaid(uint256 eta, address recipient, uint256 amount) internal {
+        assembly ("memory-safe") {
+            mstore(0, amount)
+            log3(0, 32, TOPIC_PAID, eta, recipient)
+        }
+    }
+
+    // ---------------------------------------------------------------- sorting (spec 10.4 step 1)
+    /// Sorts n words at base in place. Worst case O(n log n) whatever the arrival order (one bucket
+    /// can hold all K identifiers): insertion sort for n <= 12; otherwise insertion-sorted chunks of
+    /// 8, then bottom-up merges through scratch memory above the free memory pointer.
+    function _sortRun(uint256 base, uint256 n) internal pure {
+        assembly ("memory-safe") {
+            function ins(b, lo, hi) {
+                for { let i := add(lo, 1) } lt(i, hi) { i := add(i, 1) } {
+                    let pi := add(b, shl(5, i))
+                    let v := mload(pi)
+                    let pj := pi
+                    let pl := add(b, shl(5, lo))
+                    for {} gt(pj, pl) {} {
+                        let pv := mload(sub(pj, 32))
+                        if iszero(gt(pv, v)) { break }
+                        mstore(pj, pv)
+                        pj := sub(pj, 32)
+                    }
+                    mstore(pj, v)
+                }
+            }
+            function min(x, y) -> r {
+                r := x
+                if lt(y, x) { r := y }
+            }
+            switch gt(n, 12)
+            case 0 { ins(base, 0, n) }
+            default {
+                for { let c0 := 0 } lt(c0, n) { c0 := add(c0, 8) } { ins(base, c0, min(add(c0, 8), n)) }
+                let src := base
+                let dst := mload(0x40)
+                let bytesN := shl(5, n)
+                for { let w := 256 } lt(w, bytesN) { w := shl(1, w) } {
+                    for { let lo := 0 } lt(lo, bytesN) { lo := add(lo, shl(1, w)) } {
+                        let pi := add(src, lo)
+                        let pe1 := add(src, min(add(lo, w), bytesN))
+                        let pj := pe1
+                        let pe2 := add(src, min(add(lo, shl(1, w)), bytesN))
+                        let po := add(dst, lo)
+                        for {} and(lt(pi, pe1), lt(pj, pe2)) { po := add(po, 32) } {
+                            let x := mload(pi)
+                            let y := mload(pj)
+                            switch gt(x, y)
+                            case 0 {
+                                mstore(po, x)
+                                pi := add(pi, 32)
+                            }
+                            default {
+                                mstore(po, y)
+                                pj := add(pj, 32)
+                            }
+                        }
+                        mcopy(po, pi, sub(pe1, pi))
+                        po := add(po, sub(pe1, pi))
+                        mcopy(po, pj, sub(pe2, pj))
+                    }
+                    let t := src
+                    src := dst
+                    dst := t
+                }
+                if iszero(eq(src, base)) { mcopy(base, src, bytesN) }
+            }
+        }
+    }
+
+    /// Spec 10.4 steps 1 (strictness) to 2: z is sorted bucket by bucket; check, commit, chain, emit.
+    function _finishSeal(uint256 ev, uint256 c, bytes32 hc, uint256 k) internal returns (bytes32 hnext) {
+        uint256 z = ev + 128;
+        bool ok = true;
+        assembly ("memory-safe") {
+            let prev := mload(z)
+            for { let i := 1 } lt(i, k) { i := add(i, 1) } {
+                let v := mload(add(z, shl(5, i)))
+                if iszero(gt(v, prev)) { ok := 0 }
+                prev := v
+            }
+        }
+        require(ok);
+        bytes32 m = _root(z, z + (k << 5));
+        bytes32 d = D;
+        assembly ("memory-safe") {
+            let st := add(z, shl(5, k))
+            mstore(st, ARCHIVE_STEP)
+            mstore(add(st, 0x28), c)
+            mstore(add(st, 0x20), d)
+            mstore(add(st, 0x48), hc)
+            mstore(add(st, 0x68), m)
+            hnext := keccak256(st, 136)
+            mstore(ev, hc)
+            mstore(add(ev, 32), hnext)
+            mstore(add(ev, 64), 0x60)
+            mstore(add(ev, 96), shl(5, k))
+            log2(ev, add(128, shl(5, k)), TOPIC_SEALED, c)
+        }
+    }

@@ -1,0 +1,55 @@
+    // ---------------------------------------------------------------- raw flat segment (control)
+    /// M = H(z_0 || ... || z_{K-1}); the proof is the whole sorted segment (32K bytes) and the vault
+    /// binary-searches it for eta.
+    function _history(uint256 eta, uint256 a, uint256 c, bytes calldata history) internal view returns (uint256 e) {
+        uint256 k = K;
+        uint256 plen = k << 5;
+        uint256 len = history.length;
+        if (len < 32 + plen || (len - 32) % plen != 0) revert BadHistoryLength(len);
+        uint256 np = (len - 32) / plen;
+        e = a + np;
+        _range(a, e, c);
+        bytes32 d = D;
+        assembly ("memory-safe") {
+            let st := mload(0x40)
+            let buf := add(st, 0xa0)
+            mstore(st, ARCHIVE_STEP)
+            let o := add(history.offset, 32)
+            let x := calldataload(history.offset)
+            for { let q := 0 } lt(q, np) { q := add(q, 1) } {
+                calldatacopy(buf, o, plen)
+                let mm := keccak256(buf, plen)
+                let lo := 0
+                let hi := k
+                for {} lt(lo, hi) {} {
+                    let mid := shr(1, add(lo, hi))
+                    let v := calldataload(add(o, shl(5, mid)))
+                    if eq(v, eta) {
+                        mstore(0, shl(224, 0xe7169745))
+                        mstore(4, q)
+                        revert(0, 36)
+                    }
+                    switch lt(v, eta)
+                    case 1 { lo := add(mid, 1) }
+                    default { hi := mid }
+                }
+                mstore(add(st, 0x28), add(a, q))
+                mstore(add(st, 0x20), d)
+                mstore(add(st, 0x48), x)
+                mstore(add(st, 0x68), mm)
+                x := keccak256(st, 136)
+                o := add(o, plen)
+            }
+            if iszero(eq(x, sload(add(1, and(e, 1))))) {
+                mstore(0, shl(224, 0xa6226dc5))
+                revert(0, 4)
+            }
+        }
+    }
+
+    function _root(uint256 z, uint256) internal view returns (bytes32 r) {
+        uint256 k = K;
+        assembly ("memory-safe") {
+            r := keccak256(z, shl(5, k))
+        }
+    }

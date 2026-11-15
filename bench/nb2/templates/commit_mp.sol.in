@@ -1,0 +1,155 @@
+    // ---------------------------------------------------------------- sorted leaves, adjacent multiproof
+    /// leaf_i = H(0x00 || z_i), node = H(0x01 || L || R). Proof kinds (u8 head):
+    ///   i < K-1: l = z_i, u = z_{i+1}, l < eta < u; siblings 2t + (h-1-t), t = trailing ones of i:
+    ///            for each level below the meeting node one left sibling of i and one right sibling
+    ///            of i+1, then the siblings above it. 65 + 32(h-1+t) bytes.
+    ///   0xFF:    below the minimum, u = z_0, eta < u, h right siblings. 33 + 32h bytes.
+    ///   0xFE:    above the maximum, l = z_{K-1}, eta > l, h left siblings. 33 + 32h bytes.
+    /// Proofs are self-delimiting; P is the number parsed (one pass, range checked after the fold).
+    function _history(uint256 eta, uint256 a, uint256 c, bytes calldata history) internal view returns (uint256 e) {
+        uint256 h = LOGK;
+        uint256 k = K;
+        uint256 len = history.length;
+        if (len < 32 + 33 + (h << 5)) revert BadHistoryLength(len);
+        bytes32 d = D;
+        uint256 x;
+        uint256 np;
+        bool bad;
+        assembly ("memory-safe") {
+            let st := mload(0x40)
+            let s := add(st, 0xa0)
+            mstore(st, ARCHIVE_STEP)
+            let km1 := sub(k, 1)
+            let o := add(history.offset, 32)
+            let end := add(history.offset, len)
+            x := calldataload(history.offset)
+            for {} lt(o, end) { np := add(np, 1) } {
+                let i := byte(0, calldataload(o))
+                let mm
+                switch i
+                case 0xff {
+                    let u := calldataload(add(o, 1))
+                    if iszero(lt(eta, u)) {
+                        mstore(0, shl(224, 0xe7169745))
+                        mstore(4, np)
+                        revert(0, 36)
+                    }
+                    mstore8(s, 0)
+                    mstore(add(s, 1), u)
+                    mm := keccak256(s, 33)
+                    mstore8(s, 1)
+                    let sp := add(o, 33)
+                    for { let j := 0 } lt(j, h) { j := add(j, 1) } {
+                        mstore(add(s, 1), mm)
+                        mstore(add(s, 33), calldataload(sp))
+                        mm := keccak256(s, 65)
+                        sp := add(sp, 32)
+                    }
+                    o := sp
+                }
+                case 0xfe {
+                    let l := calldataload(add(o, 1))
+                    if iszero(gt(eta, l)) {
+                        mstore(0, shl(224, 0xe7169745))
+                        mstore(4, np)
+                        revert(0, 36)
+                    }
+                    mstore8(s, 0)
+                    mstore(add(s, 1), l)
+                    mm := keccak256(s, 33)
+                    mstore8(s, 1)
+                    let sp := add(o, 33)
+                    for { let j := 0 } lt(j, h) { j := add(j, 1) } {
+                        mstore(add(s, 1), calldataload(sp))
+                        mstore(add(s, 33), mm)
+                        mm := keccak256(s, 65)
+                        sp := add(sp, 32)
+                    }
+                    o := sp
+                }
+                default {
+                    let l := calldataload(add(o, 1))
+                    let u := calldataload(add(o, 33))
+                    if iszero(and(lt(i, km1), and(lt(l, eta), lt(eta, u)))) {
+                        mstore(0, shl(224, 0xe7169745))
+                        mstore(4, np)
+                        revert(0, 36)
+                    }
+                    mstore8(s, 0)
+                    mstore(add(s, 1), l)
+                    let lx := keccak256(s, 33)
+                    mstore(add(s, 1), u)
+                    let ly := keccak256(s, 33)
+                    mstore8(s, 1)
+                    let t := 0
+                    for {} and(shr(t, i), 1) { t := add(t, 1) } {}
+                    let sp := add(o, 65)
+                    for { let j := 0 } lt(j, t) { j := add(j, 1) } {
+                        mstore(add(s, 1), calldataload(sp))
+                        mstore(add(s, 33), lx)
+                        lx := keccak256(s, 65)
+                        mstore(add(s, 1), ly)
+                        mstore(add(s, 33), calldataload(add(sp, 32)))
+                        ly := keccak256(s, 65)
+                        sp := add(sp, 64)
+                    }
+                    mstore(add(s, 1), lx)
+                    mstore(add(s, 33), ly)
+                    mm := keccak256(s, 65)
+                    for { let j := add(t, 1) } lt(j, h) { j := add(j, 1) } {
+                        let sib := calldataload(sp)
+                        switch and(shr(j, i), 1)
+                        case 0 {
+                            mstore(add(s, 1), mm)
+                            mstore(add(s, 33), sib)
+                        }
+                        default {
+                            mstore(add(s, 1), sib)
+                            mstore(add(s, 33), mm)
+                        }
+                        mm := keccak256(s, 65)
+                        sp := add(sp, 32)
+                    }
+                    o := sp
+                }
+                mstore(add(st, 0x28), add(a, np))
+                mstore(add(st, 0x20), d)
+                mstore(add(st, 0x48), x)
+                mstore(add(st, 0x68), mm)
+                x := keccak256(st, 136)
+            }
+            bad := iszero(eq(o, end))
+        }
+        if (bad) revert BadHistoryLength(len);
+        e = a + np;
+        _range(a, e, c);
+        assembly ("memory-safe") {
+            if iszero(eq(x, sload(add(1, and(e, 1))))) {
+                mstore(0, shl(224, 0xa6226dc5))
+                revert(0, 4)
+            }
+        }
+    }
+
+    function _root(uint256 z, uint256 scratch) internal view returns (bytes32 r) {
+        uint256 k = K;
+        assembly ("memory-safe") {
+            let s := scratch
+            let lv := add(scratch, 0x60)
+            mstore8(s, 0)
+            for { let i := 0 } lt(i, k) { i := add(i, 1) } {
+                mstore(add(s, 1), mload(add(z, shl(5, i))))
+                mstore(add(lv, shl(5, i)), keccak256(s, 33))
+            }
+            mstore8(s, 1)
+            for { let w := shr(1, k) } w { w := shr(1, w) } {
+                for { let i := 0 } lt(i, w) { i := add(i, 1) } {
+                    let src := add(lv, shl(6, i))
+                    mstore(add(s, 1), mload(src))
+                    mstore(add(s, 33), mload(add(src, 32)))
+                    mstore(add(lv, shl(5, i)), keccak256(s, 65))
+                }
+            }
+            r := mload(lv)
+        }
+    }

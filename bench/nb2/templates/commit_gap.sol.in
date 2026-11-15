@@ -1,0 +1,92 @@
+    // ---------------------------------------------------------------- circular-gap tree (spec 10.1, 10.2)
+    /// history = startHead || proof_0 .. proof_{P-1}, proof = u8(i) || l || u || s_0 .. s_{h-1}.
+    function _history(uint256 eta, uint256 a, uint256 c, bytes calldata history) internal view returns (uint256 e) {
+        uint256 h = LOGK;
+        uint256 k = K;
+        uint256 plen = 65 + (h << 5);
+        uint256 len = history.length;
+        if (len < 32 + plen || (len - 32) % plen != 0) revert BadHistoryLength(len);
+        uint256 np = (len - 32) / plen;
+        e = a + np;
+        _range(a, e, c);
+        bytes32 d = D;
+        uint256 x;
+        assembly ("memory-safe") {
+            let st := mload(0x40)
+            let s := add(st, 0xa0)
+            mstore(st, ARCHIVE_STEP)
+            let km1 := sub(k, 1)
+            let o := add(history.offset, 32)
+            x := calldataload(history.offset)
+            for { let q := 0 } lt(q, np) { q := add(q, 1) } {
+                let i := byte(0, calldataload(o))
+                let l := calldataload(add(o, 1))
+                let u := calldataload(add(o, 33))
+                let ok
+                switch lt(i, km1)
+                case 1 { ok := and(lt(l, eta), lt(eta, u)) }
+                default { ok := and(eq(i, km1), and(gt(l, u), or(gt(eta, l), lt(eta, u)))) }
+                if iszero(ok) {
+                    mstore(0, shl(224, 0xe7169745))
+                    mstore(4, q)
+                    revert(0, 36)
+                }
+                mstore8(s, 0)
+                mstore(add(s, 1), l)
+                mstore(add(s, 33), u)
+                let mm := keccak256(s, 65)
+                mstore8(s, 1)
+                let sp := add(o, 65)
+                for { let j := 0 } lt(j, h) { j := add(j, 1) } {
+                    let sib := calldataload(sp)
+                    switch and(shr(j, i), 1)
+                    case 0 {
+                        mstore(add(s, 1), mm)
+                        mstore(add(s, 33), sib)
+                    }
+                    default {
+                        mstore(add(s, 1), sib)
+                        mstore(add(s, 33), mm)
+                    }
+                    mm := keccak256(s, 65)
+                    sp := add(sp, 32)
+                }
+                mstore(add(st, 0x28), add(a, q))
+                mstore(add(st, 0x20), d)
+                mstore(add(st, 0x48), x)
+                mstore(add(st, 0x68), mm)
+                x := keccak256(st, 136)
+                o := add(o, plen)
+            }
+            if iszero(eq(x, sload(add(1, and(e, 1))))) {
+                mstore(0, shl(224, 0xa6226dc5))
+                revert(0, 4)
+            }
+        }
+    }
+
+    /// M = root of the complete tree over leaf_i = H(0x00 || z_i || z_{i+1 mod K}).
+    function _root(uint256 z, uint256 scratch) internal view returns (bytes32 r) {
+        uint256 k = K;
+        assembly ("memory-safe") {
+            let s := scratch
+            let lv := add(scratch, 0x60)
+            let km1 := sub(k, 1)
+            mstore8(s, 0)
+            for { let i := 0 } lt(i, k) { i := add(i, 1) } {
+                mstore(add(s, 1), mload(add(z, shl(5, i))))
+                mstore(add(s, 33), mload(add(z, shl(5, and(add(i, 1), km1)))))
+                mstore(add(lv, shl(5, i)), keccak256(s, 65))
+            }
+            mstore8(s, 1)
+            for { let w := shr(1, k) } w { w := shr(1, w) } {
+                for { let i := 0 } lt(i, w) { i := add(i, 1) } {
+                    let src := add(lv, shl(6, i))
+                    mstore(add(s, 1), mload(src))
+                    mstore(add(s, 33), mload(add(src, 32)))
+                    mstore(add(lv, shl(5, i)), keccak256(s, 65))
+                }
+            }
+            r := mload(lv)
+        }
+    }

@@ -1,0 +1,27 @@
+# NB2-02 (bft-core#1098) gas bake-off harness. Isolated from the repository's main project: the root
+# foundry.toml never compiles bench/, and this harness is not a CI gate. Run it with run.sh.
+#
+# Compiler settings follow the repository pin (solc 0.8.37, via-IR, Cancun, optimizer on). The
+# harness measures at optimizer_runs = 200 by default; run.sh can override it with FOUNDRY_OPTIMIZER_RUNS.
+[profile.default]
+src = "src"
+test = "test"
+script = "script"
+out = "out"
+cache_path = "cache"
+libs = ["../../lib"]
+remappings = ["forge-std/=../../lib/forge-std/src/"]
+solc_version = "0.8.37"
+evm_version = "cancun"
+optimizer = true
+optimizer_runs = 200
+via_ir = true
+bytecode_hash = "none"
+cbor_metadata = false
+gas_limit = "18446744073709551615"
+block_gas_limit = "18446744073709551615"
+memory_limit = 4294967296
+fs_permissions = [{ access = "read-write", path = "./results" }, { access = "read", path = "./out" }]
+
+[lint]
+lint_on_build = false
