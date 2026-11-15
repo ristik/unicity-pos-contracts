@@ -1,0 +1,24 @@
+        if (gamma.length > 384) revert BadConfig(0);
+        bytes32 d = sha256(gamma);
+        D = d;
+        VERIFIER = verifier;
+        GLEN = gamma.length;
+        bytes32[12] memory w;
+        assembly ("memory-safe") {
+            let n := mload(gamma)
+            for { let i := 0 } lt(i, n) { i := add(i, 1) } {
+                mstore8(add(w, i), byte(0, mload(add(add(gamma, 32), i))))
+            }
+        }
+        G0 = w[0];
+        G1 = w[1];
+        G2 = w[2];
+        G3 = w[3];
+        G4 = w[4];
+        G5 = w[5];
+        G6 = w[6];
+        G7 = w[7];
+        G8 = w[8];
+        G9 = w[9];
+        G10 = w[10];
+        G11 = w[11];
