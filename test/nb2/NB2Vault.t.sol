@@ -14,6 +14,23 @@ import {
     RevertingRecipient
 } from "./NB2TestBase.sol";
 
+/// A verifier that returns or reverts with 512 KiB of data from any call.
+contract ReturnBomb {
+    bool internal immutable REVERTS;
+
+    constructor(bool reverts) {
+        REVERTS = reverts;
+    }
+
+    fallback() external {
+        bool r = REVERTS;
+        assembly ("memory-safe") {
+            if r { revert(0, 524288) }
+            return(0, 524288)
+        }
+    }
+}
+
 /// The vault's rules one by one (bft-core docs/design/native-bridge-v2.md sections 5, 9 to 11 and 13; NB2-04 #1100):
 /// every rejection with its exact revert data, rotation at K = 4 and K = 8, rollback, packing boundaries, K = 64 seals,
 /// the storage-write bound and the CI gas ceilings.
@@ -282,6 +299,36 @@ contract NB2VaultTest is NB2TestBase {
         _expect(w, eta, 0, "", abi.encodeWithSignature("VerifierRefused(bytes)", reason));
         w.mock.set(true, "");
         _expect(w, eta, 0, "", abi.encodeWithSignature("VerifierRefused(bytes)", ""));
+    }
+
+    /// Revert data is copied into VerifierRefused only up to 1024 bytes; larger is VerifierBadReturn, decided before any
+    /// copy, so a huge revert that fits the verifier's gas cannot exhaust the vault's (section 11.1 step 5).
+    function test_redeem_verifierRevertBounded() public {
+        World memory w = deploy(4, 2, QMAX);
+        fund(w, 100);
+        bytes32 eta = nextEta(w, 9);
+        bytes memory r1024 = new bytes(1024);
+        r1024[0] = 0x6a;
+        w.mock.set(true, r1024);
+        _expect(w, eta, 0, "", abi.encodeWithSignature("VerifierRefused(bytes)", r1024));
+        w.mock.set(true, new bytes(1025));
+        _expect(w, eta, 0, "", abi.encodeWithSignature("VerifierBadReturn()"));
+        // a verifier that reverts with 512 KiB: the callee has the gas for it, the vault's remainder must suffice
+        address bomb = address(new ReturnBomb(true));
+        vm.etch(address(w.mock), bomb.code);
+        bytes memory cd = abi.encodeCall(
+            INB2Vault.redeem, (verdict(w, eta, 0, RECIPIENT, 1), eta, uint64(0), bytes(""))
+        );
+        (bool ok, bytes memory ret) = address(w.v).call{gas: 1_000_000}(cd);
+        assertFalse(ok);
+        assertEq(ret, abi.encodeWithSignature("VerifierBadReturn()"));
+        // the same for oversized success data
+        bomb = address(new ReturnBomb(false));
+        vm.etch(address(w.mock), bomb.code);
+        (ok, ret) = address(w.v).call{gas: 1_000_000}(cd);
+        assertFalse(ok);
+        assertEq(ret, abi.encodeWithSignature("VerifierBadReturn()"));
+        assertEq(_q(w), 100);
     }
 
     function test_redeem_VerifierBadReturn() public {
@@ -619,6 +666,43 @@ contract NB2VaultTest is NB2TestBase {
         assertEq(
             uint256(vm.load(address(w.v), bytes32(0))), (1 << 200) | (1 << 144), "no borrow into m"
         );
+    }
+
+    /// Staged constructor validation (section 4.1): the array, then the fields 0..18 in index order, then the deployment
+    /// checks asset (10), ty (11), aid (12), vault (9), chainId (5), verifier code hash (15). Multi-fault Γ report the
+    /// first failure of that order.
+    function test_constructor_precedence() public {
+        MockVerifierV2 mock = new MockVerifierV2();
+        address addr = vm.computeCreateAddress(address(this), vm.getNonce(address(this)));
+        GammaFields memory f = fields(addr, address(mock), 4, 2, QMAX);
+        // wrong chainId (5) and wrong asset (10): 10
+        GammaFields memory g = fields(addr, address(mock), 4, 2, QMAX);
+        g.chainId = 1;
+        g.asset = keccak256("x");
+        _ctorExpect(g, 10);
+        // wrong vault (9) and wrong ty (11): 11
+        g = fields(address(0xdead), address(mock), 4, 2, QMAX);
+        g.ty = keccak256("x");
+        _ctorExpect(g, 11);
+        // a decode fault (7) and a wrong asset (10): 7
+        g = fields(addr, address(mock), 4, 2, QMAX);
+        g.evmShard = "";
+        g.asset = keccak256("x");
+        _ctorExpect(g, 7);
+        // a Γ self-consistent for chain 1 (ty and aid derived for it) deployed on 31337, with a wrong code hash: 5
+        vm.chainId(1);
+        g = fields(addr, address(mock), 4, 2, QMAX);
+        g.verifierCodeHash = keccak256("other");
+        vm.chainId(31337);
+        _ctorExpect(g, 5);
+        f.verifierCodeHash = keccak256("other");
+        _ctorExpect(f, 15);
+    }
+
+    function _ctorExpect(GammaFields memory g, uint256 field) internal {
+        bytes memory gamma = encodeGamma(g);
+        vm.expectRevert(abi.encodeWithSelector(NB2Config.BadConfig.selector, field));
+        new NativeBridgeVaultV2Test(gamma);
     }
 
     function test_packing_qmaxBound() public {

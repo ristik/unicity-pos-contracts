@@ -52,6 +52,9 @@ abstract contract NB2VaultBase {
     uint256 internal constant C_SHIFT = 152;
     uint256 internal constant N_SHIFT = 200;
 
+    /// @dev The largest verifier revert data the vault copies into VerifierRefused (section 11.1 step 5).
+    uint256 internal constant MAX_VERIFIER_REVERT = 1024;
+
     // -------------------------------------------------------------------------------------------- immutables
     bytes32 internal immutable D;
     address internal immutable VERIFIER;
@@ -419,8 +422,14 @@ abstract contract NB2VaultBase {
             ok := staticcall(gas(), verifier, ptr, sub(add(add(ep, 32), epad), ptr), 0, 0)
         }
         if (!ok) {
+            // A refusal is VerifierRefused(reason) for reason <= MAX_VERIFIER_REVERT bytes. Longer revert data is
+            // VerifierBadReturn(), decided from returndatasize() before anything is copied.
             bytes memory reason;
             assembly ("memory-safe") {
+                if gt(returndatasize(), MAX_VERIFIER_REVERT) {
+                    mstore(0, shl(224, 0xf659e897)) // VerifierBadReturn()
+                    revert(0, 4)
+                }
                 reason := mload(0x40)
                 mstore(reason, returndatasize())
                 returndatacopy(add(reason, 32), 0, returndatasize())
