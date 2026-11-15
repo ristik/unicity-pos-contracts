@@ -47,7 +47,7 @@ hash therefore pins the helper's code, not only its address, even for a runtime 
 
 | Contract | Runtime bytes |
 |---|---:|
-| Verifier | 18,716 |
+| Verifier | 19,574 (initcode 44,824) |
 | Receipt helper | 12,452 |
 
 **Revert data** is always the 4-byte `<Rule>()` (or `CertBatchFailed()`, `MembershipFailed()`, `InvalidMinterScalar()`),

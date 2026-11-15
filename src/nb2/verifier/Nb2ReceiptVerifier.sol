@@ -16,9 +16,11 @@ import {Nb2Evm} from "./Nb2Evm.sol";
 ///         status, logs[logIndex] and its emitter. The EVM UC's authority (epoch, interval, quorum) is the 0x0100 claim it
 ///         returns, which the caller judges with its other claims.
 ///
-///         It also judges each aggregator certificate locally (`certificate`). It is a separate contract only for EIP-170: the token verifier creates it in its constructor and holds its
-///         address as an immutable, so the token verifier's code hash pins it. Stateless; it reverts on nothing but a failed
-///         precompile.
+///         It also judges each aggregator certificate locally (`certificate`). It is a separate contract only for EIP-170.
+///         The token verifier creates it in its constructor and holds both its address and its expected runtime code hash
+///         as immutables; it checks EXTCODEHASH of that address against the hash in the constructor and on every call, so
+///         the token verifier's own code hash pins this contract's code, not only its address. Stateless; it reverts on
+///         nothing but a failed precompile.
 contract Nb2ReceiptVerifier {
     struct Env {
         uint256 network;
