@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # NB2-02 (bft-core#1098) gas bake-off: generate the candidates, run every workload, build the tables.
 #   bench/nb2/run.sh            # optimizer_runs = 200 (the repository's default profile)
-#   RUNS=1 bench/nb2/run.sh     # the size-first profile the repository applies to src/bridge
+#   RUNS=1 bench/nb2/run.sh     # the size-first profile the repository applies to src/nb2/verifier
 # Writes results/*.csv (raw rows, one per measured transaction) and RESULTS.md; with RUNS other
 # than 200 they go to results-runs$RUNS/ and RESULTS-runs$RUNS.md. Takes about two minutes.
 set -euo pipefail

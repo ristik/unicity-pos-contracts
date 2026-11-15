@@ -3,7 +3,7 @@
 This harness measures native bridge v2's replay and settlement gas (bft-core#1098, part of #1096) with a mock token
 verifier. It runs on its own: the repository's `foundry.toml` never compiles `bench/`, no CI workflow runs it, and it
 is not a pull-request gate. Measured tables: [`RESULTS.md`](RESULTS.md) (`optimizer_runs = 200`) and
-[`RESULTS-runs1.md`](RESULTS-runs1.md) (the size-first profile the repository applies to `src/bridge`).
+[`RESULTS-runs1.md`](RESULTS-runs1.md) (the size-first profile the repository applies to `src/nb2/verifier`).
 
 ```
 bench/nb2/run.sh            # about two minutes; needs forge and python3
