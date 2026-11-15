@@ -1,0 +1,91 @@
+package nb2ref
+
+// NB2-05 (#1101) measurement corpus: larger tokens than the vector file carries, from the same deterministic "main" world.
+// Not part of bft-core: run in a scratch copy, NB2_LARGE_OUT=<file> go test -run TestNB2LargeTokens ./nb2ref/
+
+import (
+	"encoding/json"
+	"fmt"
+	"math/big"
+	"os"
+	"testing"
+
+	"github.com/decred/dcrd/dcrec/secp256k1/v4"
+)
+
+type largeToken struct {
+	ID       string `json:"id"`
+	Evidence Hex    `json:"evidence"`
+	Verdict  Hex    `json:"verdict"`
+	Bytes    int    `json:"bytes"`
+	Txs      int    `json:"txs"`
+	Depth    int    `json:"depth"`
+}
+
+func TestNB2LargeTokens(t *testing.T) {
+	out := os.Getenv("NB2_LARGE_OUT")
+	if out == "" {
+		t.Skip("NB2_LARGE_OUT not set")
+	}
+	w, err := NewWorld(64, 16, 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var res []largeToken
+	add := func(id string, tok *Token, txs, depth int) {
+		ev := Evidence(tok.Bytes())
+		v, err := VerifyReturn(w.Gamma, ev, w.Trust, BuildParams(w.Build))
+		if err != nil {
+			t.Fatalf("%s: %v", id, err)
+		}
+		res = append(res, largeToken{ID: id, Evidence: Hex(ev), Verdict: Hex(v.ABI()), Bytes: len(ev), Txs: txs, Depth: depth})
+	}
+	for _, n := range []int{1, 2, 5, 10, 20, 50, 100, 200} {
+		dep, err := w.MakeDeposit(big.NewInt(100), Key("a"), ReceiptOpts{})
+		if err != nil {
+			t.Fatal(err)
+		}
+		cur := w.RootDraft(dep, []*secp256k1.PrivateKey{Key("a")})
+		for i := 0; i < n; i++ {
+			k := Key(fmt.Sprint("chain-", n, "-", i))
+			cur.Transfer(sigPred(k), k)
+		}
+		cur.Return(w.ReturnTo(big.NewInt(100), Recipient20("chain"), 0))
+		tok, err := w.Finalize(cur)
+		if err != nil {
+			t.Fatal(err)
+		}
+		add(fmt.Sprint("transfers-", n), tok, n+2, 0)
+	}
+	for _, depth := range []int{1, 2, 5, 10, 20, 40, 80, 120, 150} {
+		dep, err := w.MakeDeposit(big.NewInt(1000), Key("a"), ReceiptOpts{})
+		if err != nil {
+			t.Fatal(err)
+		}
+		cur := w.RootDraft(dep, []*secp256k1.PrivateKey{Key("a")})
+		amount := int64(1000)
+		txs := 1
+		for i := 0; i < depth; i++ {
+			hop := Key(fmt.Sprint("deep-hop-", depth, "-", i))
+			cur.Transfer(sigPred(hop), hop)
+			owner := Key(fmt.Sprint("deep-", depth, "-", i))
+			_, kids, err := w.Split(cur, []SplitOut{{Amount: big.NewInt(amount - 1), Owner: owner}, {Amount: big.NewInt(1), Owner: Key(fmt.Sprint("deep-side-", i))}}, SplitOpts{})
+			if err != nil {
+				t.Fatal(err)
+			}
+			amount--
+			cur = kids[0]
+			txs += 3 // the hop, the split burn, the child's mint
+		}
+		cur.Return(w.ReturnTo(big.NewInt(amount), Recipient20("deep"), 0))
+		tok, err := w.Finalize(cur)
+		if err != nil {
+			t.Fatal(err)
+		}
+		add(fmt.Sprint("lineage-", depth), tok, txs+1, depth)
+	}
+	b, _ := json.MarshalIndent(map[string]any{"gamma": Hex(w.Gamma), "tokens": res}, "", " ")
+	if err := os.WriteFile(out, b, 0o644); err != nil {
+		t.Fatal(err)
+	}
+}
