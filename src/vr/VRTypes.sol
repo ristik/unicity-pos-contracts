@@ -259,4 +259,10 @@ interface IVR is IValidatorRegistry, IVRSteps {
     function pendingPair() external view returns (bytes32);
     function health() external view returns (uint8);
     function feesFor(uint64 n) external view returns (FeeSet memory);
+    function committeeIds() external view returns (uint64[] memory);
+    function scheduledForceRemoves()
+        external
+        view
+        returns (uint64[] memory changeIds, uint64[] memory targets, uint64[] memory scheduledAt);
+    function bindingOf(uint64 id, bool staged) external view returns (Member memory);
 }

@@ -528,6 +528,56 @@ contract ValidatorRegistry is VRShared {
         return _committeeMembers();
     }
 
+    /// @notice The ids of the committee in force, ascending: `committee()` without the binding reads.
+    function committeeIds() external view returns (uint64[] memory) {
+        return _committeeIds();
+    }
+
+    /// @notice The Scheduled ForceRemove changes, ascending change id, with their target ids and `scheduledAt` (at most four). An
+    /// election module orders its removal pool by them (design 3.7.3) without copying every pending payload through `change`.
+    function scheduledForceRemoves()
+        external
+        view
+        returns (uint64[] memory changeIds, uint64[] memory targets, uint64[] memory scheduledAt)
+    {
+        VRLayout.VRStorage storage $ = VRLayout.load();
+        uint256 n = $.pendingIds.length;
+        uint64[] memory ids = new uint64[](n);
+        uint256 k = 0;
+        for (uint256 i = 0; i < n; ++i) {
+            VRLayout.Change storage ch = $.changes[$.pendingIds[i]];
+            if (ch.kind == VRC.K_FORCE_REMOVE && ch.state == VRC.CH_SCHEDULED) {
+                ids[k++] = $.pendingIds[i];
+            }
+        }
+        changeIds = new uint64[](k);
+        targets = new uint64[](k);
+        scheduledAt = new uint64[](k);
+        for (uint256 i = 0; i < k; ++i) {
+            changeIds[i] = ids[i];
+            targets[i] = _frId(ids[i]);
+            scheduledAt[i] = $.changes[ids[i]].scheduledAt;
+        }
+    }
+
+    /// @notice An identity's current binding as member words (generation g), or with `staged` its staged binding (generation g + 1):
+    /// the id, generation, node and key words and payee an output may carry for it (design 3.1 binding snapshots). Weights and the
+    /// exposure digest are zero; everything is zero when there is no such binding.
+    function bindingOf(uint64 id, bool staged) external view returns (Member memory m) {
+        VRLayout.VRStorage storage $ = VRLayout.load();
+        VRLayout.Identity storage idn = $.identities[id];
+        bytes32 ref = staged ? idn.stagedRef : idn.currentRef;
+        if (idn.generation == 0 || ref == 0) return m;
+        VRLayout.BindingRecord storage b = $.bindings[ref];
+        m.id = id;
+        m.generation = staged ? idn.generation + 1 : idn.generation;
+        m.rootNodeWord = b.rootNodeWord;
+        m.rootKeyHash = b.rootKeyHash;
+        m.evmNodeWord = b.evmNodeWord;
+        m.evmKeyHash = b.evmKeyHash;
+        m.payee = b.payee;
+    }
+
     // =============================================================================================
     // facets
     // =============================================================================================
