@@ -124,10 +124,11 @@ contract RecordsTest is P85Flow {
         assertEq(lotv(1).refCount, 2, "genesis plus the surviving J");
     }
 
-    function test_sessionClosedRejectsUnknownSessions() public {
+    /// @dev A result with no custody session is foreign (design section 4.2): the record is a no-op that advances the cursor.
+    function test_sessionClosedOfAnUnknownSessionIsAForeignNoOp() public {
         pushRecord(RecordKind.SessionClosed, abi.encode(SessionClosedData(keccak256("none"))));
-        vm.expectRevert(CustodyStorage.UnknownSession.selector);
         custody.applyRootRecords(1);
+        assertEq(custody.recordCursor(), 1);
     }
 
     function test_sessionClosedCannotAbortAnAcknowledgedHandoff() public {
@@ -253,10 +254,12 @@ contract RecordsTest is P85Flow {
         assertEq(staged, keccak256(c));
     }
 
-    function test_ackRejectsUnknownSessions() public {
+    function test_ackOfAnUnknownSessionIsAForeignNoOp() public {
+        bytes32 before = custody.lastAckedAssignment();
         pushRecord(RecordKind.Ack, ackData(keccak256("none"), H_ROUND, 100, 101));
-        vm.expectRevert(CustodyStorage.UnknownSession.selector);
         custody.applyRootRecords(1);
+        assertEq(custody.recordCursor(), 1);
+        assertEq(custody.lastAckedAssignment(), before);
     }
 
     function test_ackOfAClosedSessionIsRejected() public {
@@ -476,12 +479,13 @@ contract RecordsTest is P85Flow {
         custody.applyRootRecords(1);
     }
 
-    function test_closureOfAnAssignmentThatIsNeitherActiveNorTheReservedJIsRejected() public {
-        // an assignment custody never reserved: the root cannot close it (the Reserved J of the open session is staged instead, see
-        // PendingClosureSpec)
+    function test_closureOfAnAssignmentCustodyNeverReservedIsAForeignNoOp() public {
+        // an assignment custody never reserved is foreign (design section 4.2): the record advances the cursor and changes nothing (the
+        // Reserved J of the open session is staged instead, see PendingClosureSpec)
         pushRecord(RecordKind.Closure, closureData(ASG_J, H_ROUND, "j"));
-        vm.expectRevert(CustodyStorage.AssignmentNotActive.selector);
         custody.applyRootRecords(1);
+        assertEq(custody.recordCursor(), 1);
+        assertFalse(asg(ASG_J).closed);
     }
 
     function test_closureWaitsForTheSessionLockBeforeReleasingReferences() public {

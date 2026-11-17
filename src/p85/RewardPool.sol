@@ -8,7 +8,8 @@ pragma solidity 0.8.37;
 import {ReentrancyGuard} from "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
 import {Math} from "@openzeppelin/contracts/utils/math/Math.sol";
 import {IRootRecords, GovernanceSnapshot} from "./IP85.sol";
-import {RecordKind, RootRecord, AckData, RecoveryAckData} from "./P85Types.sol";
+import {RecordKind, RootRecord, RecoveryAckData} from "./P85Types.sol";
+import {OutputView} from "../vr/VRTypes.sol";
 
 interface IRewardCustody {
     function recordCursor() external view returns (uint64);
@@ -81,6 +82,12 @@ interface IRewardElection {
         );
 }
 
+/// @dev The two ValidatorRegistry views the tail bound reads (src/vr: VRGovernanceFacet.openOutput, ValidatorRegistry.output).
+interface IRewardRegistry {
+    function openOutput() external view returns (bytes32);
+    function output(bytes32 resultId) external view returns (OutputView memory);
+}
+
 interface IRewardGovernance {
     function currentPolicyID() external view returns (uint32);
     function rewardRateAt(uint32 policyID) external view returns (uint128);
@@ -98,7 +105,11 @@ interface IRewardGovernance {
 ///   - an Ack ends the incumbent at its `offset` and starts the successor there;
 ///   - a RecoveryAck ends the incumbent at `jOffset`, gives J [jOffset, kOffset) (a zero-length interval when they coincide) and starts K
 ///     at `kOffset`;
-///   - SessionClosed, Closure and Retirement records move no boundary, so an aborted candidate earns nothing.
+///   - an Ack or RecoveryAck of a result custody has no session for (a foreign result: another module's or a native output) ends the
+///     owned segment at its offset and opens a NONE segment that accrues nothing, until an owned Ack or RecoveryAck ends it (section 4.4
+///     of the validator-registry design); `closeInterval` skips an ended NONE segment and is NothingToDo on an open NONE tail;
+///   - SessionClosed, Closure, Retirement, Boundary, OutputRejected and HolderRetirement records move no boundary, so an aborted candidate
+///     earns nothing.
 /// Intervals are half-open [a, b). `b` is the earliest of: the owner's end, the next point of the fixed grid (every GRID progress units
 /// from the start), and the progress a later policy snapshot (a new reward rate) took effect. A caller chooses no endpoint and no length.
 /// An interval is closed only up to the current canonical progress (`b <= progress`), and the tail of the latest assignment only while the
@@ -106,7 +117,9 @@ interface IRewardGovernance {
 /// candidate not yet acknowledged, recovered or closed) the tail closes only up to the progress at which that candidate was reserved: the
 /// offset of its Ack or RecoveryAck is above that progress (the handover is ordered after the reservation, as for any later election), but
 /// may be below the current one. A stuck session therefore delays the intervals after its reservation until it resolves; it does not stop the
-/// ones before.
+/// ones before. On a validator-registry generation the same bound applies to VR's open output, whatever module (or the registry itself, for
+/// a native repair) owns it: an output another module or VR reserved can be committed and acknowledged with a foreign Ack whose offset ends
+/// the tail, so the tail never settles past the reservation of any output still open.
 ///
 /// For length L = b - a and the rate q in force at `a`: nominal = floor(q * L / 1000), budget = min(nominal, available). Each member of
 /// the owning assignment, in the exposures' canonical order, is credited floor(budget * weight / totalWeight) (the committed, quantized
@@ -150,6 +163,9 @@ contract RewardPool is ReentrancyGuard {
     event Credited(address indexed payee, uint256 amount);
     event Claimed(address indexed payee, address indexed to, uint256 amount);
 
+    /// @notice The ValidatorRegistry of a validator-registry generation: the canonical genesis address 0xff..03 (validator-registry
+    /// design sections 2.1 and 10). On a P85-only generation no code is there and the tail is bounded by the election alone.
+    address public constant REGISTRY = 0xFF00000000000000000000000000000000000003;
     /// @dev The fixed closing grid (design section 3): 1,000 progress units, anchored at START.
     uint64 public constant GRID = 1_000;
     uint256 public constant MAX_MEMBERS = 16;
@@ -254,32 +270,44 @@ contract RewardPool is ReentrancyGuard {
         if (processed == 0) revert NothingToDo();
     }
 
+    /// @dev Accrual ends at the authoritative transition (design section 4.4). An Ack or RecoveryAck of a result custody holds no session
+    /// for is foreign: it ends the open owned segment at its offset (`jOffset` for a RecoveryAck) and opens one NONE segment (assignment
+    /// zero), which accrues nothing; a foreign one while NONE is open moves nothing. An owned one while NONE is open (reattachment) ends
+    /// NONE at its offset and continues as from an owned segment. Every other kind moves no boundary.
     function _apply(RootRecord memory r) private {
-        if (r.kind == RecordKind.Ack) {
-            AckData memory d = abi.decode(r.data, (AckData));
-            (, bytes32 successor,,, bytes32 incumbent) = CUSTODY.session(d.resultID);
-            _endLast(incumbent, d.offset);
-            _segments.push(Segment(successor, d.offset, 0, false));
-            emit TimelineExtended(r.index, _segments.length);
-        } else if (r.kind == RecordKind.RecoveryAck) {
-            RecoveryAckData memory d = abi.decode(r.data, (RecoveryAckData));
-            (, bytes32 j,,, bytes32 incumbent) = CUSTODY.session(d.resultID);
-            if (d.kOffset < d.jOffset) revert TimelineMismatch();
-            _endLast(incumbent, d.jOffset);
-            _segments.push(Segment(j, d.jOffset, d.kOffset, true));
-            _segments.push(Segment(d.recoveryAssignmentID, d.kOffset, 0, false));
-            emit TimelineExtended(r.index, _segments.length);
+        if (r.kind != RecordKind.Ack && r.kind != RecordKind.RecoveryAck) return;
+        // both payloads start with the result id and the offset the owner ends at: Ack (resultID, replacedHRound, offset, ...),
+        // RecoveryAck (resultID, recoveryAssignmentID, jOffset, ...)
+        (bytes32 resultID,, uint64 offset) = abi.decode(r.data, (bytes32, bytes32, uint64));
+        (uint8 state, bytes32 successor,,, bytes32 incumbent) = CUSTODY.session(resultID);
+        Segment storage last = _segments[_segments.length - 1];
+        bool none = !last.ended && last.assignmentID == bytes32(0);
+        if (state == 0) {
+            if (none) return;
+            _end(last, last.assignmentID, offset);
+            _segments.push(Segment(bytes32(0), offset, 0, false));
+        } else {
+            _end(last, none ? bytes32(0) : incumbent, offset);
+            if (r.kind == RecordKind.Ack) {
+                _segments.push(Segment(successor, offset, 0, false));
+            } else {
+                RecoveryAckData memory d = abi.decode(r.data, (RecoveryAckData));
+                if (d.kOffset < d.jOffset) revert TimelineMismatch();
+                _segments.push(Segment(successor, d.jOffset, d.kOffset, true));
+                _segments.push(Segment(d.recoveryAssignmentID, d.kOffset, 0, false));
+            }
         }
+        emit TimelineExtended(r.index, _segments.length);
     }
 
-    /// @dev The latest segment must be the incumbent and open; it ends at `boundary`, never before what was already rewarded.
-    function _endLast(bytes32 incumbent, uint64 boundary) private {
-        uint256 last = _segments.length - 1;
-        Segment storage s = _segments[last];
-        if (s.ended || s.assignmentID != incumbent || boundary < s.start) {
+    /// @dev The latest segment must be `owner`'s and open; it ends at `boundary`, never before what was already rewarded.
+    function _end(Segment storage s, bytes32 owner, uint64 boundary) private {
+        if (s.ended || s.assignmentID != owner || boundary < s.start) {
             revert TimelineMismatch();
         }
-        if (last == segmentCursor && boundary < nextStart) revert TimelineMismatch();
+        if (_segments.length - 1 == segmentCursor && boundary < nextStart) {
+            revert TimelineMismatch();
+        }
         s.end = boundary;
         s.ended = true;
     }
@@ -291,8 +319,14 @@ contract RewardPool is ReentrancyGuard {
     function closeInterval() external returns (uint64 start, uint64 end, uint256 budget) {
         Segment storage s = _segments[segmentCursor];
         start = nextStart;
-        // a finished (or zero-length) segment hands over to the next one without an interval
-        while (s.ended && start >= s.end) {
+        // a finished (or zero-length) segment hands over to the next one without an interval; an ended NONE segment is skipped whole
+        // (it accrues nothing) and an open NONE tail has nothing to close until an owned Ack ends it
+        while (true) {
+            if (s.assignmentID == bytes32(0)) {
+                if (!s.ended) revert NothingToDo();
+                start = s.end;
+            }
+            if (!s.ended || start < s.end) break;
             if (segmentCursor + 1 >= _segments.length) revert TimelineMismatch();
             ++segmentCursor;
             s = _segments[segmentCursor];
@@ -310,6 +344,19 @@ contract RewardPool is ReentrancyGuard {
             if (open != bytes32(0)) {
                 (,,, uint64 reservedAt,,,,,,) = ELECTION.result(open);
                 if (reservedAt < limit) limit = reservedAt;
+            }
+            // ... or by the handoff of an output of any owner (this pool's module, another module or a native repair). Every handoff
+            // commits an output VR holds open from its reservation until it imports that output's release (Boundary or SessionClosed),
+            // and its Ack or RecoveryAck offset lies above the progress the output was reserved at (H is ordered after the Freeze,
+            // which follows the reservation). VR's record cursor never runs ahead of the registry's, so a released output's records are
+            // already imported, and the caught-up check above makes this pool read them first. This bound holds while the
+            // acknowledgement is pending and while imports lag (validator-registry design section 4.4, I1).
+            if (REGISTRY.code.length != 0) {
+                bytes32 vrOpen = IRewardRegistry(REGISTRY).openOutput();
+                if (vrOpen != bytes32(0)) {
+                    uint64 vrReservedAt = IRewardRegistry(REGISTRY).output(vrOpen).reservedProgress;
+                    if (vrReservedAt < limit) limit = vrReservedAt;
+                }
             }
         }
         end = _intervalEnd(s, start);

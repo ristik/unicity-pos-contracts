@@ -19,6 +19,7 @@ import {
     RecoveryAckData,
     ClosureData,
     RetirementData,
+    HolderRetirementData,
     Position,
     Exposure,
     Assignment
@@ -44,6 +45,9 @@ import {CustodyStorage} from "./CustodyStorage.sol";
 /// reachable only by the factory and only until genesis is sealed (afterwards each of them reverts); the code is not here to keep the runtime
 /// under EIP-170.
 contract StakeCustody is CustodyStorage {
+    /// @notice This custody's liability-holder index in its validator-registry generation (design section 3.9.1: P85 custody is holder 0
+    /// of the PoS-prototype generation). A HolderRetirement record of any other holder is a no-op here.
+    uint8 public constant HOLDER_INDEX = 0;
     /// @notice The address of the genesis implementation the genesis stubs delegate to.
     address public immutable GENESIS_IMPL;
 
@@ -378,9 +382,18 @@ contract StakeCustody is CustodyStorage {
         emit RootRecordsApplied(first, end - 1, lastRecordID);
     }
 
+    /// @dev Records custody does not own advance the cursor and change nothing (design section 4.2), so the hash chain stays whole and a
+    /// detached holder can always catch up: kinds 6 and 7, a HolderRetirement of another holder, an Ack, SessionClosed or RecoveryAck of a
+    /// result with no custody session, and a Closure of an assignment custody never reserved. A record of a known session or assignment
+    /// still applies, or reverts, as before.
     function _applyRecord(RootRecord memory r) private {
         // Session records name their result in the first word; election learns how it ended, at the record's own anchors.
         uint8 outcome = SESSION_CLOSED;
+        if (r.kind == RecordKind.None) revert UnknownRecordKind();
+        if (r.kind <= RecordKind.RecoveryAck && _sessions[abi.decode(r.data, (bytes32))].state == 0)
+        {
+            return; // a foreign result
+        }
         if (r.kind == RecordKind.SessionClosed) {
             _closeSession(abi.decode(r.data, (SessionClosedData)));
         } else if (r.kind == RecordKind.Ack) {
@@ -390,16 +403,25 @@ contract StakeCustody is CustodyStorage {
             _recover(abi.decode(r.data, (RecoveryAckData)));
             outcome = SESSION_RECOVERED;
         } else if (r.kind == RecordKind.Closure) {
-            _closeLiability(abi.decode(r.data, (ClosureData)), r.progress, r.ucTime);
+            ClosureData memory c = abi.decode(r.data, (ClosureData));
+            if (assignments[c.assignmentID].state != 0) _closeLiability(c, r.progress, r.ucTime);
+            return;
         } else if (r.kind == RecordKind.Retirement) {
             _importRetirement(abi.decode(r.data, (RetirementData)), r.progress, r.ucTime);
+            return;
+        } else if (r.kind == RecordKind.HolderRetirement) {
+            HolderRetirementData memory h = abi.decode(r.data, (HolderRetirementData));
+            if (h.holder == HOLDER_INDEX) {
+                _importRetirement(
+                    RetirementData(h.id, h.generation, h.refDigest), r.progress, r.ucTime
+                );
+            }
+            return;
         } else {
-            revert UnknownRecordKind();
+            return; // Boundary, OutputRejected
         }
-        if (r.kind <= RecordKind.RecoveryAck) {
-            IElectionPolicy(election)
-                .resultResolved(abi.decode(r.data, (bytes32)), outcome, r.progress, r.ucTime);
-        }
+        IElectionPolicy(election)
+            .resultResolved(abi.decode(r.data, (bytes32)), outcome, r.progress, r.ucTime);
     }
 
     /// @dev Exact pre-H abort or ordered rejection: closes only this attempt.

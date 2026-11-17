@@ -148,7 +148,11 @@ enum RecordKind {
     Ack,
     RecoveryAck,
     Closure,
-    Retirement
+    Retirement, // pre-VR generations only
+    // validator-registry generations (bft-core docs/design/validator-registry/schema-v1.md section 7)
+    Boundary,
+    OutputRejected,
+    HolderRetirement
 }
 
 /// @notice One authenticated root control record as projected by the SealRegistry. `progress` and
@@ -196,6 +200,33 @@ struct ClosureData {
 }
 
 struct RetirementData {
+    uint64 id;
+    uint64 generation;
+    bytes32 refDigest;
+}
+
+/// @notice Record kind 6: the EVM transition of an acknowledged result; it immediately follows the result's Ack or RecoveryAck.
+struct BoundaryData {
+    bytes32 resultID;
+    uint64 changesEpoch; // J's root epoch
+    uint64 installedRootEpoch; // changesEpoch, plus one on recovery
+    uint64 installedShardEpoch; // K's on recovery, else J's
+    uint64 activationRound;
+    bool recovered;
+    uint16 rejectedBitmap; // bit i: the i-th RegistryChanges entry was rejected EVM-side
+}
+
+/// @notice Record kind 7: why a result was rejected; it immediately precedes the result's SessionClosed.
+struct OutputRejectedData {
+    bytes32 resultID;
+    uint8 reason; // 1 Expired, 2 Invalidated, 3 Invalid
+    uint64 memberId; // nonzero only with Invalid
+    uint16 readyBitmap; // nonzero only with Expired
+}
+
+/// @notice Record kind 8: authorizes the retirement of (id, generation) at liability holder `holder` (< 8).
+struct HolderRetirementData {
+    uint8 holder;
     uint64 id;
     uint64 generation;
     bytes32 refDigest;

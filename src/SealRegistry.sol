@@ -141,6 +141,10 @@ contract SealRegistry is IRootRecords {
     bytes32 internal constant RECORDS_CLOSURE = keccak256("unicity.seal-registry/records.closure");
     bytes32 internal constant RECORDS_RETIREMENT =
         keccak256("unicity.seal-registry/records.retirement");
+    /// @dev The holder-scoped retirement key of record kind 8 (validator-registry schema v1, RECORDS_RETIREMENT_V2):
+    /// keccak256(abi.encode(RECORDS_RETIREMENT_V2, holder, id, generation)) holds the first record's index + 1.
+    bytes32 internal constant RECORDS_RETIREMENT_V2 =
+        keccak256("unicity.seal-registry/records.retirement.v2");
     uint256 internal constant MAX_IMPORT = 32;
     // inbox.consumed remains genesis-only. transition.cursor advances on each accepted acknowledgement.
 
@@ -430,8 +434,9 @@ contract SealRegistry is IRootRecords {
         _store(SLOT_RECORDS_IMPORTED_ROUND, n);
     }
 
-    /// @dev Checks the exact payload width and uint64-word shape of one record (P85Types structs: all static words), fixes the
-    /// closure or retirement key to this index, and stores every word. The first record of a key is the only one.
+    /// @dev Checks the exact payload width and narrow-word shape of one record (P85Types structs: all static words), the cross-field rules
+    /// of kinds 6 to 8 (validator-registry schema v1 section 7), fixes the closure or retirement key to this index, and stores every word.
+    /// The first record of a key is the only one.
     function _acceptRecord(RootRecord calldata r, uint64 closedEpoch) private {
         uint256 kind = uint8(r.kind);
         uint256 words;
@@ -446,6 +451,12 @@ contract SealRegistry is IRootRecords {
             (words, u64Mask) = (6, 0x2);
         } else if (kind == uint8(RecordKind.Retirement)) {
             (words, u64Mask) = (3, 0x3);
+        } else if (kind == uint8(RecordKind.Boundary)) {
+            (words, u64Mask) = (7, 0x1e);
+        } else if (kind == uint8(RecordKind.OutputRejected)) {
+            (words, u64Mask) = (4, 0x4);
+        } else if (kind == uint8(RecordKind.HolderRetirement)) {
+            (words, u64Mask) = (4, 0x6);
         } else {
             revert RecordInvalid();
         }
@@ -460,6 +471,28 @@ contract SealRegistry is IRootRecords {
             );
         } else if (kind == uint8(RecordKind.Retirement)) {
             key = keccak256(abi.encode(RECORDS_RETIREMENT, _u64(d[0:32]), _u64(d[32:64])));
+        } else if (kind == uint8(RecordKind.Boundary)) {
+            // nonzero result; installedRootEpoch = changesEpoch (+1 when recovered, a canonical bool); a 16-bit bitmap
+            uint256 recovered = _word(d, 5);
+            if (
+                _word(d, 0) == 0 || recovered > 1 || _word(d, 6) > type(uint16).max
+                    || _word(d, 2) != _word(d, 1) + recovered
+            ) revert RecordInvalid();
+        } else if (kind == uint8(RecordKind.OutputRejected)) {
+            // nonzero result; reason 1 Expired .. 3 Invalid; memberId only with Invalid; readyBitmap (16 bits) only with Expired
+            uint256 reason = _word(d, 1);
+            uint256 ready = _word(d, 3);
+            if (
+                _word(d, 0) == 0 || reason == 0 || reason > 3 || ready > type(uint16).max
+                    || (_word(d, 2) != 0 && reason != 3) || (ready != 0 && reason != 1)
+            ) revert RecordInvalid();
+        } else if (kind == uint8(RecordKind.HolderRetirement)) {
+            // holder < MAX_HOLDERS (8); keyed by (holder, id, generation)
+            uint256 holder = _word(d, 0);
+            if (holder >= 8) revert RecordInvalid();
+            key = keccak256(
+                abi.encode(RECORDS_RETIREMENT_V2, holder, _u64(d[32:64]), _u64(d[64:96]))
+            );
         }
         if (key != 0) {
             if (_load(key) != 0) revert RecordDuplicateKey();
@@ -479,6 +512,10 @@ contract SealRegistry is IRootRecords {
             _store(_entrySlot(i, 6 + j), w);
         }
         _store(_entrySlot(i, 15), closedEpoch);
+    }
+
+    function _word(bytes calldata d, uint256 j) private pure returns (uint256) {
+        return uint256(bytes32(d[32 * j:32 * j + 32]));
     }
 
     function _u64(bytes calldata word) private pure returns (uint64) {
