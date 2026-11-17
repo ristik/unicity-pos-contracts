@@ -191,6 +191,25 @@ The P85 modules compile under a size-first optimizer profile (`optimizer_runs = 
 `src/p85/**` in `foundry.toml`) so that `StakeCustody` stays under EIP-170; the SealRegistry's pinned
 settings and code hash are unaffected.
 
+## ValidatorRegistry and FoundationMultisig (VT-02)
+
+`src/vr/` holds the ValidatorRegistry (VR) of
+[bft-core #1142](https://github.com/ristik/bft-core/issues/1142), implementing the VT-01 design
+(`briefs/validator-registry-design-final.md`) against the frozen schema v1
+(`docs/design/validator-registry/schema-v1.md` and `testvectors/validator-registry/` in bft-core):
+identities and bindings, the governed change queue, the output record and its state machine, the
+contained module steps, root-record application, the pointer switch, the holder namespace, the
+watchdogs and native repair. `FoundationMultisig` is the 3-of-5 governor.
+
+VR is one account at `0xff..03` whose code is split under EIP-170: the core `ValidatorRegistry`
+(hooks, contained steps, outputs, the fallback) and three facets it runs by DELEGATECALL in its own
+storage (`VRRecordsFacet`, `VRRepairFacet`, `VRGovernanceFacet`). The facets' addresses and code
+hashes are immutables of the core, so VR's pinned code hash covers all four. Storage is the
+ERC-7201 struct of `VRLayout.sol`; `test/vr/VRSchemaStorage.t.sol` writes the frozen scenarios
+through it. `test/vr/` consumes the shared vectors (codec, records, change payloads, queue checks,
+scopes, binding, fees, the output table, the change lifecycle, S2a and the switch order) and holds
+the containment, governance, repair, identity, multisig and gas tests.
+
 ## License
 
 [LICENSE](LICENSE) is the Apache License 2.0. Each source file's SPDX header names its licence:

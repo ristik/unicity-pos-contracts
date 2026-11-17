@@ -1,0 +1,275 @@
+// SPDX-License-Identifier: Apache-2.0
+pragma solidity 0.8.37;
+
+// Loops are bounded by the frozen ceilings: 16 committee members, 32 pending changes, 16 bound changes, 64 activations, 8 holders and
+// the hook's maxBatch (at most 32 records). Calls into modules are contained steps (design section 3.3), never bubbling.
+// forge-lint: disable-start(calls-loop, reentrancy-no-eth, unsafe-typecast)
+
+import {VRC} from "./VRConstants.sol";
+import {VRCodec} from "./VRCodec.sol";
+import {VRLayout} from "./VRLayout.sol";
+import {VRShared} from "./VRShared.sol";
+import {Member} from "./VRTypes.sol";
+import {Quantize} from "../p85/Quantize.sol";
+
+/// @title VRRepairFacet
+/// @notice The watchdogs and the registry-native repair path of the ValidatorRegistry (design sections 3.6.2, 3.6.3 and the 3.7.3 trial
+/// rules for ForceRemove), run by DELEGATECALL from VR's `elect` only (the fallback never routes here).
+contract VRRepairFacet is VRShared {
+    address internal immutable SELF;
+
+    constructor() {
+        SELF = address(this);
+    }
+
+    modifier onlyDelegated() {
+        if (address(this) == SELF || _tload(LOCK_SLOT) != 1) revert NotSelf();
+        _;
+    }
+
+    /// @notice Evaluates the work deadline and the ForceRemove ages (VR's `elect`, under its lock).
+    function watch(uint64 p) external onlyDelegated {
+        _watch(p);
+    }
+
+    /// @notice The registry-native output (VR's `elect`, under its lock, with the module Faulted or Stalled).
+    function electNative(bytes32 origin, uint64 p) external onlyDelegated returns (uint8) {
+        return _electNative(origin, p);
+    }
+
+    /// @dev Work deadline and ForceRemove age, evaluated from SealRegistry progress. Only a Healthy module can become Stalled; the
+    /// deadlines are reset only by the Boundary of an output from the active module or a successful SetModule activation, never by a
+    /// reservation, an expiry or a withdrawal.
+    function _watch(uint64 p) private {
+        VRLayout.VRStorage storage $ = VRLayout.load();
+        if ($.status.health != VRC.HEALTHY) return;
+        VRLayout.Watch storage w = $.watch;
+        bool work = w.actionWork || _hasBoundaryWork();
+        if (!work) {
+            if (w.workPending) w.workPending = false;
+        } else {
+            if (!w.workPending) {
+                w.workPending = true;
+                w.workSince = p;
+            }
+            if (uint256(p) > uint256(w.workSince) + _deadline()) {
+                $.status.health = VRC.STALLED;
+                emit ModuleStalled($.activeModule, 1);
+                return;
+            }
+        }
+        uint256 n = $.pendingIds.length;
+        Snap memory snap;
+        bool read = false;
+        for (uint256 i = 0; i < n; ++i) {
+            uint64 id = $.pendingIds[i];
+            VRLayout.Change storage ch = $.changes[id];
+            if (ch.kind != VRC.K_FORCE_REMOVE || ch.state != VRC.CH_SCHEDULED) continue;
+            if (uint256(p) <= uint256(ch.scheduledAt) + _deadline()) continue;
+            if (!read) {
+                snap = _snap();
+                read = true;
+            }
+            if (_feasible(snap, _frId(id))) {
+                $.status.health = VRC.STALLED;
+                emit ModuleStalled($.activeModule, 2);
+                return;
+            }
+        }
+    }
+
+    struct FrCandidate {
+        uint64 id; // the member to remove
+        uint64 scheduledAt;
+        uint64 changeId;
+        bool feasible;
+    }
+
+    /// @dev The registry-native output: the committee minus the ForceRemove removals the bounded trial search (design 3.7.3) chooses,
+    /// bindings unchanged, exempt from CommitteeLimits but within continuity. Due only with Scheduled boundary work to bind and at least
+    /// MIN_EPOCH_GAP progress since the epoch's first ordinary round.
+    function _electNative(bytes32 origin, uint64 p) private returns (uint8) {
+        VRLayout.VRStorage storage $ = VRLayout.load();
+        Snap memory snap = _snap();
+        (FrCandidate[] memory cands, uint256 nc, uint256 dueWork) = _frCandidates(snap);
+        if (dueWork == 0 && nc == 0) return VRC.ELECT_NOT_DUE; // NoScheduledWork
+        if (uint256(p) < uint256($.watch.epochStartProgress) + VRC.MIN_EPOCH_GAP) {
+            return VRC.ELECT_NOT_DUE; // EpochGap
+        }
+        (bool found, uint256 mask) = _trialSearch(snap, cands, nc, dueWork, p);
+        if (!found) return VRC.ELECT_NO_CANDIDATE;
+        uint64[] memory removed = new uint64[](_popcount(mask));
+        uint256 r = 0;
+        for (uint256 i = 0; i < nc; ++i) {
+            if (mask & (1 << i) != 0) removed[r++] = cands[i].id;
+        }
+        _sortIds(removed);
+        uint64 attempt = $.counters.nativeAttempt;
+        bytes32 rid = VRCodec.nativeResultId($.network, address(this), $.lastAcked, attempt, origin);
+        if ($.outputs[rid].state != VRC.OUT_NONE) return VRC.ELECT_NO_CANDIDATE;
+        $.counters.nativeAttempt = attempt + 1;
+        _reserve(rid, address(0), true, attempt);
+        _bind(rid, removed, false);
+        if ($.outputChanges[rid].length == 0) {
+            // nothing fitted: undo (cannot happen with Scheduled work, kept as a guard)
+            delete $.outputs[rid];
+            $.openOutput = 0;
+            $.counters.nativeAttempt = attempt;
+            return VRC.ELECT_NOT_DUE;
+        }
+        Member[] memory ms = _nativeMembers(rid, removed);
+        _publish(rid, $.outputs[rid], ms);
+        return VRC.ELECT_RESERVED;
+    }
+
+    /// @dev Scheduled ForceRemoves of committee members (distinct ids), feasible first by ascending scheduledAt, then the others, at most
+    /// four; and the count of other Scheduled boundary work.
+    function _frCandidates(Snap memory snap)
+        private
+        view
+        returns (FrCandidate[] memory out, uint256 n, uint256 dueWork)
+    {
+        VRLayout.VRStorage storage $ = VRLayout.load();
+        uint256 np = $.pendingIds.length;
+        FrCandidate[] memory all = new FrCandidate[](np);
+        uint256 na = 0;
+        for (uint256 i = 0; i < np; ++i) {
+            uint64 cid = $.pendingIds[i];
+            VRLayout.Change storage ch = $.changes[cid];
+            if (ch.state != VRC.CH_SCHEDULED || ch.kind == VRC.K_MODULE_ACTION) continue;
+            if (ch.kind != VRC.K_FORCE_REMOVE) {
+                ++dueWork;
+                continue;
+            }
+            uint64 target = _frId(cid);
+            bool member = false;
+            for (uint256 j = 0; j < snap.o.length; ++j) {
+                if (snap.o[j].id == target) member = true;
+            }
+            if (!member) continue;
+            bool dup = false;
+            for (uint256 j = 0; j < na; ++j) {
+                if (all[j].id == target) dup = true;
+            }
+            if (dup) continue;
+            all[na++] = FrCandidate(target, ch.scheduledAt, cid, _feasible(snap, target));
+        }
+        // stable order: feasible first, then by (scheduledAt, change id)
+        for (uint256 i = 1; i < na; ++i) {
+            FrCandidate memory x = all[i];
+            uint256 j = i;
+            while (j > 0 && _frBefore(x, all[j - 1])) {
+                all[j] = all[j - 1];
+                --j;
+            }
+            all[j] = x;
+        }
+        n = na < VRC.MAX_PENDING_FORCE ? na : VRC.MAX_PENDING_FORCE;
+        out = new FrCandidate[](n);
+        for (uint256 i = 0; i < n; ++i) {
+            out[i] = all[i];
+        }
+    }
+
+    function _frBefore(FrCandidate memory a, FrCandidate memory b) private pure returns (bool) {
+        if (a.feasible != b.feasible) return a.feasible;
+        if (a.scheduledAt != b.scheduledAt) return a.scheduledAt < b.scheduledAt;
+        return a.changeId < b.changeId;
+    }
+
+    /// @dev The bounded trial search over the candidate removals (design 3.7.3, limits exempt): every subset, the mandatory oldest
+    /// overdue feasible removal in every trial, the empty trial only with other work; acceptance by continuity against the committee;
+    /// the best-ranked passing trial wins (oldest feasible included, more removals, |S| nearer nTarget, lexicographically smaller ids).
+    function _trialSearch(
+        Snap memory snap,
+        FrCandidate[] memory c,
+        uint256 nc,
+        uint256 dueWork,
+        uint64 p
+    ) private view returns (bool found, uint256 best) {
+        uint256 oldestFeasible = type(uint256).max;
+        if (nc > 0 && c[0].feasible) oldestFeasible = 0;
+        bool mandatory = oldestFeasible == 0 && uint256(p) > uint256(c[0].scheduledAt) + _deadline();
+        uint256 o = snap.o.length;
+        for (uint256 mask = 0; mask < (1 << nc); ++mask) {
+            if (mandatory && mask & 1 == 0) continue;
+            if (mask == 0 && dueWork == 0) continue;
+            if (!_passesWithout(snap, _maskIds(c, nc, mask))) continue;
+            if (!found || _ranksBefore(c, nc, mask, best, oldestFeasible, mandatory, o)) {
+                best = mask;
+                found = true;
+            }
+        }
+    }
+
+    function _ranksBefore(
+        FrCandidate[] memory c,
+        uint256 nc,
+        uint256 a,
+        uint256 b,
+        uint256 oldestFeasible,
+        bool mandatory,
+        uint256 o
+    ) private view returns (bool) {
+        if (!mandatory && oldestFeasible == 0) {
+            bool ia = a & 1 != 0;
+            bool ib = b & 1 != 0;
+            if (ia != ib) return ia;
+        }
+        uint256 ra = _popcount(a);
+        uint256 rb = _popcount(b);
+        if (ra != rb) return ra > rb;
+        uint256 t = VRLayout.load().committeeLimits.nTarget;
+        uint256 da = _absDiff(o - ra, t);
+        uint256 db = _absDiff(o - rb, t);
+        if (da != db) return da < db;
+        // lexicographic over the removed ids, ascending
+        uint64[] memory xa = _maskIds(c, nc, a);
+        uint64[] memory xb = _maskIds(c, nc, b);
+        for (uint256 i = 0; i < xa.length; ++i) {
+            if (xa[i] != xb[i]) return xa[i] < xb[i];
+        }
+        return false;
+    }
+
+    function _maskIds(FrCandidate[] memory c, uint256 nc, uint256 mask)
+        private
+        pure
+        returns (uint64[] memory ids)
+    {
+        ids = new uint64[](_popcount(mask));
+        uint256 k = 0;
+        for (uint256 i = 0; i < nc; ++i) {
+            if (mask & (1 << i) != 0) ids[k++] = c[i].id;
+        }
+        _sortIds(ids);
+    }
+
+    function _nativeMembers(bytes32 rid, uint64[] memory removed)
+        private
+        view
+        returns (Member[] memory ms)
+    {
+        VRLayout.VRStorage storage $ = VRLayout.load();
+        VRLayout.Seat[] storage c = $.committee;
+        uint256 n = c.length;
+        uint256 keep = n;
+        for (uint256 i = 0; i < n; ++i) {
+            if (_contains(removed, c[i].id)) --keep;
+        }
+        uint256[] memory raw = new uint256[](keep);
+        ms = new Member[](keep);
+        uint256 k = 0;
+        for (uint256 i = 0; i < n; ++i) {
+            if (_contains(removed, c[i].id)) continue;
+            raw[k] = c[i].rawWeight;
+            ms[k] = _seatMember(c[i]);
+            ++k;
+        }
+        uint256[] memory q = Quantize.quantize(raw);
+        for (uint256 i = 0; i < keep; ++i) {
+            ms[i].weight = uint64(q[i]);
+            ms[i].exposureDigest = VRCodec.exposureDigest($.network, address(this), rid, ms[i].id);
+        }
+    }
+}
