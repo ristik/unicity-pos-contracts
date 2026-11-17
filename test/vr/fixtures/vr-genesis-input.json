@@ -1,0 +1,78 @@
+{
+ "format": "unicity.vr.genesis-input.v1",
+ "chainId": 3,
+ "network": "0xabababababababababababababababababababababababababababababababab",
+ "governorSigners": [
+  "0x000000000000000000000000000000000000c001",
+  "0x000000000000000000000000000000000000c002",
+  "0x000000000000000000000000000000000000c003",
+  "0x000000000000000000000000000000000000c004",
+  "0x000000000000000000000000000000000000c005"
+ ],
+ "limits": {
+  "nMin": 4,
+  "nTarget": 4,
+  "nMax": 16,
+  "vMax": 16,
+  "lMax": 1,
+  "rMax": 8,
+  "maxBatch": 32
+ },
+ "knownRootEpoch": 1,
+ "epochStartProgress": 0,
+ "fees": {
+  "baseFeeFloor": 1000000,
+  "changeDenominator": 8,
+  "feeCollector": "0x00000000000000000000000000000000000000fe"
+ },
+ "maxGas": 200000000,
+ "systemGas": 140000000,
+ "continuity": {
+  "maxM": 4,
+  "distNum": 1,
+  "distDen": 2
+ },
+ "identityCount": 4,
+ "identities": [
+  {
+   "id": 1,
+   "owner": "0x000000000000000000000000000000000000a001",
+   "rootNodeID": "16Uiu2HAmRoot1",
+   "rootKey": "0x0347efa547f97d28e3214d9d5802425437dcc5fdb51b6e53139a31b5e56b6bd250",
+   "evmNodeID": "16Uiu2HAmEvm1",
+   "evmKey": "0x02426c545d1406bc9b7f82947b319429cf3e312d14dc86ef7152a7db605db81ad9",
+   "payee": "0x000000000000000000000000000000000000b001",
+   "rawWeight": 1
+  },
+  {
+   "id": 2,
+   "owner": "0x000000000000000000000000000000000000a002",
+   "rootNodeID": "16Uiu2HAmRoot2",
+   "rootKey": "0x0334fa95a8918564802f0d9ead73cdedd3784ed1c11ced41550b9cdb6465a7ce25",
+   "evmNodeID": "16Uiu2HAmEvm2",
+   "evmKey": "0x02daaf9c8ce51856cbc8e41217746177b619c502436c8e8bea7c17f80fc89009d5",
+   "payee": "0x000000000000000000000000000000000000b002",
+   "rawWeight": 1
+  },
+  {
+   "id": 3,
+   "owner": "0x000000000000000000000000000000000000a003",
+   "rootNodeID": "16Uiu2HAmRoot3",
+   "rootKey": "0x037a09341c0c37eba064bf9dbb2e65baa5874d50de30308589d46e3751cfb834e7",
+   "evmNodeID": "16Uiu2HAmEvm3",
+   "evmKey": "0x03b10957102869843d843288e8c7222d24949c611780dad1ab97379cac37d53a23",
+   "payee": "0x000000000000000000000000000000000000b003",
+   "rawWeight": 1
+  },
+  {
+   "id": 4,
+   "owner": "0x000000000000000000000000000000000000a004",
+   "rootNodeID": "16Uiu2HAmRoot4",
+   "rootKey": "0x028474c14e3a26af6afd4d8f2512d3a87b1d08fc7876fa4106eb418f18a83a731d",
+   "evmNodeID": "16Uiu2HAmEvm4",
+   "evmKey": "0x0213f6c6ba59e465b18634b66cd719333f51b7a5ee97cba4917c9edc5d00c2d8b1",
+   "payee": "0x000000000000000000000000000000000000b004",
+   "rawWeight": 1
+  }
+ ]
+}

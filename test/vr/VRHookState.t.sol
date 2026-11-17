@@ -972,6 +972,77 @@ contract VRHookStateTest is PoaBase {
         assertEq(next.attachPrevious(), MOCK_ADDR);
     }
 
+    /// @dev The combined fixtures of the VR batch rule (astra, urethhook r2; VT-14 acceptance: bft-core b1state CheckVRHookGas). One
+    /// H = 32 records call carries the 16-member, 64 KiB switching output's Ack, 30 ordinary records and its Boundary, the switch at
+    /// the start, the middle or the end of the batch, with both modules' record callbacks and every switch callback burning their
+    /// maximum caps. The batch rule's reservation, R_32 + B, must cover each of them: the single-live-output invariant allows one
+    /// switch per call, and its two onRecords segments sum to at most H records.
+    function test_mixedFirst() public {
+        _begin("mixed-first");
+        _mixed(0);
+    }
+
+    function test_mixedMiddle() public {
+        _begin("mixed-middle");
+        _mixed(15);
+    }
+
+    function test_mixedLast() public {
+        _begin("mixed-last");
+        _mixed(30);
+    }
+
+    function _mixed(uint256 beforeBoundary) internal {
+        _maxBounds(module);
+        _mockGenesis(16, 1, 16, 16);
+        MockModule next = _maxNext();
+        _bindSixteenMax(address(next));
+        bytes32 r = _rid("R");
+        assertEq(_moduleReserve(r, true), VRC.ELECT_RESERVED);
+        module.clearLog();
+        module.setGriefLeave(20_000);
+        module.setMode(S_RECORDS, M_GRIEF);
+        module.setMode(S_RESOLVED, M_GRIEF);
+        module.setMode(S_DETACH, M_GRIEF);
+        next.setMode(S_ATTACH, M_GRIEF);
+        next.setMode(S_ADOPT, M_GRIEF);
+        next.setMode(S_RECORDS, M_GRIEF);
+        next.setGriefLeave(60_000);
+        _openBlock();
+        _recAck(r);
+        for (uint256 i; i < beforeBoundary; ++i) {
+            _recClosure(keccak256(abi.encode("mixed ordinary", i)));
+        }
+        _recBoundary(r, _nextEpoch(), false, 0);
+        for (uint256 i = beforeBoundary; i < 30; ++i) {
+            _recClosure(keccak256(abi.encode("mixed ordinary", i)));
+        }
+        _runBlock(32);
+        assertEq(vr.recordCursor(), 32);
+        assertEq(_state(r), VRC.OUT_ACKNOWLEDGED);
+        assertEq(vr.activeModule().module, MOCK_NEXT_ADDR, "switched");
+        assertEq(vr.health(), VRC.HEALTHY, "every callback answered at its maximum cap");
+        assertEq(vr.committee().length, 16);
+        assertEq(vr.holderCount(), 1);
+        string memory through = string.concat("onRecords:0:", vm.toString(beforeBoundary + 2));
+        assertEq(module.log(0), "onResolved:1");
+        assertEq(module.log(1), through, "the old module's segment runs through the Boundary");
+        assertEq(module.log(2), "detach");
+        assertEq(next.log(0), "attach");
+        if (beforeBoundary < 30) {
+            assertEq(
+                next.log(1),
+                string.concat(
+                    "onRecords:",
+                    vm.toString(beforeBoundary + 2),
+                    ":",
+                    vm.toString(30 - beforeBoundary)
+                ),
+                "the new module gets the rest"
+            );
+        }
+    }
+
     // =============================================================================================
     // fault attribution through public transactions after the hooks
     // =============================================================================================
