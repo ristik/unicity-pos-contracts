@@ -150,11 +150,44 @@ contract VRContainmentTest is VRBase {
     // reentrancy
     // ---------------------------------------------------------------------------------------------
 
+    /// @dev The refusals of one `_reenter` round starting at attempt `base`: Locked for every locked mutator (register and
+    /// proposeBinding included), NotSystemCaller for the hooks, NotSelf for the step entry points, and success (no refusal) for the
+    /// lock-exempt `invalidate` of an unknown result.
+    function _assertReentryErrors(uint256 base) internal view {
+        bytes4 locked = bytes4(keccak256("Locked()"));
+        bytes4 sys = bytes4(keccak256("NotSystemCaller()"));
+        bytes4 self_ = bytes4(keccak256("NotSelf()"));
+        bytes4[14] memory want = [
+            locked,
+            sys,
+            sys,
+            locked,
+            locked,
+            locked,
+            locked,
+            self_,
+            self_,
+            self_,
+            self_,
+            locked,
+            locked,
+            bytes4(0)
+        ];
+        for (uint256 i = 0; i < 14; ++i) {
+            assertEq(module.reentryErrors(base + i), want[i], vm.toString(i));
+        }
+    }
+
     function test_reentryIntoEveryMutatorIsRefusedFromElect() public {
         module.setMode(S_ELECT, REENTER);
         assertEq(_elect(), VRC.ELECT_NOT_DUE, "the module's own frame survives its refused calls");
-        assertEq(module.reentryAttempts(), 12);
-        assertEq(module.reentryRefusals(), 12, "every re-entrant mutator call was refused");
+        assertEq(module.reentryAttempts(), 14);
+        assertEq(
+            module.reentryRefusals(),
+            13,
+            "every re-entrant mutator call but the lock-exempt invalidate was refused"
+        );
+        _assertReentryErrors(0);
         assertEq(vr.health(), VRC.HEALTHY);
     }
 
@@ -165,8 +198,10 @@ contract VRContainmentTest is VRBase {
         module.setMode(S_RESOLVED, REENTER);
         _acknowledge(r, 0);
         assertEq(_state(r), VRC.OUT_ACKNOWLEDGED);
-        assertEq(module.reentryAttempts(), 24);
-        assertEq(module.reentryRefusals(), 24);
+        assertEq(module.reentryAttempts(), 28);
+        assertEq(module.reentryRefusals(), 26);
+        _assertReentryErrors(0);
+        _assertReentryErrors(14);
         assertEq(vr.health(), VRC.HEALTHY);
     }
 
@@ -176,7 +211,9 @@ contract VRContainmentTest is VRBase {
         _passDelays();
         vr.execute(id);
         assertEq(_changeState(id), VRC.CH_ACTIVE);
-        assertEq(module.reentryRefusals(), module.reentryAttempts());
+        assertEq(module.reentryAttempts(), 14);
+        assertEq(module.reentryRefusals(), 13);
+        _assertReentryErrors(0);
     }
 
     function test_bubbledReentryIsAFault() public {

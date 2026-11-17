@@ -56,3 +56,13 @@ jobs:
           python3 "$RUNNER_TEMP/bft-core/xrepo/check.py" --bft-core "$RUNNER_TEMP/bft-core" --contracts .
       - name: forge test
         run: forge test -vvv
+      - name: The VR hook fixture is the generator's output
+        # test/vr/fixtures/vr-hook.json (copied into ureth's crates/unicity/execution/testdata) is regenerated from a clean raw
+        # directory: the dumps of VRHookState.t.sol folded by tools/vr_hook_state.py. Any change to VR, the facets, PoA, the
+        # composer, the test modules or a scenario's setup fails here until the fixture (and ureth's copy) is regenerated.
+        run: |
+          rm -rf test/vr/fixtures/vr-hook-raw
+          mkdir -p test/vr/fixtures/vr-hook-raw
+          VR_WRITE_HOOK_STATE=test/vr/fixtures/vr-hook-raw forge test --match-contract VRHookStateTest
+          python3 tools/vr_hook_state.py test/vr/fixtures/vr-hook-raw "$RUNNER_TEMP/vr-hook.json"
+          cmp "$RUNNER_TEMP/vr-hook.json" test/vr/fixtures/vr-hook.json

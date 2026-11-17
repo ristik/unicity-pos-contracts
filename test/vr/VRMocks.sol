@@ -1,7 +1,14 @@
 // SPDX-License-Identifier: Apache-2.0
 pragma solidity 0.8.37;
 
-import {VRRecord, IVRRecordSource, IElectionModule, Member, IVR} from "../../src/vr/VRTypes.sol";
+import {
+    VRRecord,
+    IVRRecordSource,
+    IElectionModule,
+    Member,
+    IVR,
+    Registration
+} from "../../src/vr/VRTypes.sol";
 import {VRCodec} from "../../src/vr/VRCodec.sol";
 import {VRC} from "../../src/vr/VRConstants.sol";
 
@@ -48,6 +55,7 @@ contract MockModule is IElectionModule {
     uint8 internal constant WRITE_THEN_REVERT = 8;
     uint8 internal constant INVALIDATE_OPEN = 9; // invalidate VR's open output (lock-exempt), then behave
     uint8 internal constant RETURN_WORD = 10; // a void step that returns one word
+    uint8 internal constant OVERSIZE = 11; // outputOf: a successful Ready answer one byte above VR's cap (5408)
 
     // steps
     uint8 internal constant S_ELECT = 1;
@@ -87,6 +95,10 @@ contract MockModule is IElectionModule {
     string[] public log;
     uint256 public reentryAttempts;
     uint256 public reentryRefusals;
+    /// @dev The refusal of each re-entry attempt, three bits per call and 64 bits per `_reenter` round (one write per round, so a
+    /// void step's small cap still fits): 0 succeeded, 1 Locked, 2 NotSystemCaller, 3 NotSelf, 7 anything else.
+    uint256 public reentryCodes;
+    uint256 public reentryRounds;
     uint256 public sideEffect; // written by WRITE_THEN_REVERT before reverting
     bytes32 public lastAttachHash;
     uint8 public attachHolderIndex;
@@ -226,9 +238,32 @@ contract MockModule is IElectionModule {
         }
     }
 
+    /// @notice The revert selector VR answered re-entry attempt `k` with (counting from the first round), zero for a success.
+    function reentryErrors(uint256 k) external view returns (bytes4) {
+        uint256 round = k / 14;
+        require(round < reentryRounds, "no such attempt");
+        uint256 code = (reentryCodes >> ((reentryRounds - 1 - round) * 64 + (k % 14) * 3)) & 7;
+        if (code == 0) return bytes4(0);
+        if (code == 1) return bytes4(keccak256("Locked()"));
+        if (code == 2) return bytes4(keccak256("NotSystemCaller()"));
+        if (code == 3) return bytes4(keccak256("NotSelf()"));
+        return bytes4(0xffffffff);
+    }
+
+    /// @dev Calls every VR mutator with a well-formed ABI call: register and proposeBinding (refused with Locked), publish, queue,
+    /// cancel, execute and setEndpoints (Locked), the system hooks (NotSystemCaller), the four step entry points (NotSelf), and the
+    /// lock-exempt `invalidate`, which is total: for an unknown result it succeeds and changes nothing.
     function _reenter() internal {
         IVR v = IVR(vr);
-        bytes[] memory calls = new bytes[](12);
+        Registration memory r = Registration({
+            rootNodeID: "reentrant-root",
+            rootKey: new bytes(33),
+            evmNodeID: "reentrant-evm",
+            evmKey: new bytes(33),
+            payee: address(this),
+            nonce: 0
+        });
+        bytes[] memory calls = new bytes[](14);
         calls[0] = abi.encodeCall(v.publish, (bytes32(uint256(1))));
         calls[1] = abi.encodeCall(v.applyRootRecords, (1));
         calls[2] = abi.encodeCall(v.elect, (bytes32(0)));
@@ -240,12 +275,29 @@ contract MockModule is IElectionModule {
         calls[8] = abi.encodeCall(v.stepElect, (new bytes(256)));
         calls[9] = abi.encodeCall(v.stepPublish, (bytes32(uint256(1))));
         calls[10] = abi.encodeCall(v.stepAdoption, (address(this), 1000, bytes("")));
-        calls[11] = hex"deadbeef"; // register/proposeBinding are covered by `Locked` through the same modifier
+        calls[11] = abi.encodeCall(v.register, (r, new bytes(65), new bytes(65)));
+        calls[12] = abi.encodeCall(v.proposeBinding, (uint64(1), r, new bytes(65), new bytes(65)));
+        calls[13] = abi.encodeCall(v.invalidate, (keccak256("an unknown result"), 1));
+        uint256 codes = 0;
+        uint256 refused = 0;
         for (uint256 i = 0; i < calls.length; ++i) {
-            ++reentryAttempts;
-            (bool ok,) = vr.call(calls[i]);
-            if (!ok) ++reentryRefusals;
+            (bool ok, bytes memory ret) = vr.call(calls[i]);
+            uint256 code = 0;
+            if (!ok) {
+                ++refused;
+                bytes4 e = ret.length < 4 ? bytes4(0) : bytes4(ret);
+                code = e == bytes4(keccak256("Locked()"))
+                    ? 1
+                    : e == bytes4(keccak256("NotSystemCaller()"))
+                        ? 2
+                        : e == bytes4(keccak256("NotSelf()")) ? 3 : 7;
+            }
+            codes |= code << (i * 3);
         }
+        reentryAttempts += calls.length;
+        reentryRefusals += refused;
+        reentryCodes = (reentryCodes << 64) | codes;
+        ++reentryRounds;
     }
 
     function _bubble() internal {
@@ -332,7 +384,15 @@ contract MockModule is IElectionModule {
             snapshotDigest: keccak256("snapshot"),
             policyDigest: keccak256("policy")
         });
-        return VRCodec.packOutput(h, ms);
+        bytes memory packed = VRCodec.packOutput(h, ms);
+        if (mode[S_OUTPUT] == OVERSIZE) {
+            // the ABI envelope of the valid answer plus one byte: a successful return of cap + 1 bytes for a 16-member output
+            bytes memory enc = abi.encodePacked(abi.encode(packed), bytes1(0));
+            assembly {
+                return(add(enc, 0x20), mload(enc))
+            }
+        }
+        return packed;
     }
 
     function adoptionReady(bytes calldata) external view returns (bytes memory) {
