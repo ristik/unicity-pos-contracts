@@ -19,6 +19,7 @@ import random
 from fractions import Fraction
 
 B = 65536
+U64 = 2**64 - 1
 REMOVE, REPLACE, JOIN = 1, 2, 3
 
 
@@ -125,7 +126,13 @@ class Scenario:
         lo, _, hi = self.limits
         return lo - n if n < lo else (n - hi if n > hi else 0)
 
+    def raw_total(self, changes):
+        rem = {c[1] for c in changes if c[0] == REMOVE}
+        return sum(r for i, _, _, r in self.seats if i not in rem) + sum(1 for c in changes if c[0] == JOIN)
+
     def accepts(self, changes):
+        if self.raw_total(changes) > U64:  # the protocol's raw-total bound: such a trial is not a candidate
+            return False
         s = self.successor(changes)
         if not s or len(s) > 16:
             return False
@@ -242,6 +249,14 @@ def named():
                       staged=[st(7), st(8)], joiners=[j(20), j(21)], limits=(1, 10, 16)))
     s.append(Scenario("n16 at the ceiling", unit(16), joiners=[j(20)], limits=(1, 16, 16)))
     s.append(Scenario("n16 ceiling swap", unit(16), removing=[3], joiners=[j(20)], limits=(1, 16, 16)))
+    # the raw-total bound (2^64 - 1) with weights carried over at the maximum: an overflowing trial is skipped, not chosen
+    wmax5 = weighted([U64 // 5] * 5)  # total exactly 2^64 - 1
+    s.append(Scenario("max total n5 one joiner overflows: NoCandidate", wmax5, joiners=[j(9)], limits=(1, 6, 16)))
+    s.append(Scenario("max total n5 two joiners overflow: NoCandidate", wmax5, joiners=[j(9), j(10)], limits=(1, 7, 16)))
+    s.append(Scenario("max total n5 the swap remains valid", wmax5, removing=[3], joiners=[j(9)], limits=(1, 6, 16)))
+    s.append(Scenario("max total n5 the empty trial remains valid", wmax5, joiners=[j(9)], due_work=1, limits=(1, 6, 16)))
+    wmax7 = weighted([U64 // 7] * 7)  # total 2^64 - 2: one joiner fits, two do not
+    s.append(Scenario("near-max total n7 one of two joiners fits", wmax7, joiners=[j(9), j(10)], limits=(1, 9, 16)))
     return s
 
 

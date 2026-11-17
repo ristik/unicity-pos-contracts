@@ -28,7 +28,10 @@ import {Quantize} from "../../p85/Quantize.sol";
 /// "the first passing trial in rank order" and "the best-ranked passing trial" are the same trial.
 ///
 /// Weights: incumbents keep their raw weight, joiners have unit raw weight, and S is quantized by the shared `Quantize` rule (on a PoA
-/// generation every raw weight is 1). O carries its committed weights.
+/// generation every raw weight is 1). O carries its committed weights. A trial whose raw total exceeds 2^64 - 1 (the protocol's
+/// bound, possible only with weights carried over at the maximum) is not acceptable; the search goes on with the other trials. Carried
+/// non-unit weights keep continuity aligned with VR, but such a committee does not gain the equal-weight headcount premise (design
+/// 8.3 needs a pinned h_max for weighted profiles), and the 3.7.3 arithmetic facts (pure removal from five) are equal-weight facts.
 ///
 /// Cost: a trial is a few bit sets over O. Its continuity measurement is derived in one pass over O (the shared `Continuity.judge`
 /// takes it), with S's quantization from `Quantize.divisor`, so the 64 trials allocate nothing per member. `test/vr/poa` checks every
@@ -373,6 +376,8 @@ library PoaComposer {
             for (uint256 i = 0; i < n; ++i) {
                 if (removedO & (uint256(1) << i) == 0) rawTotal += b.raw[i];
             }
+            // the protocol's raw-total bound (Quantize.quantize, VR's output validation): a trial above it is not a candidate
+            if (rawTotal > type(uint64).max) return false;
             uint256 s = Quantize.divisor(rawTotal, size, Quantize.WEIGHT_CAP_B);
             uint256 w = joins; // a joiner's quantized unit weight is max(1, floor(1 / s)) = 1
             for (uint256 i = 0; i < n; ++i) {

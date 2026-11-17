@@ -109,7 +109,7 @@ contract PoaComposerVectorsTest is Test, FastJson {
             if (input[0] == 7) sizes[2] = true;
             if (input[0] == 10) sizes[3] = true;
         }
-        assertEq(names.length, 431, "vector count");
+        assertEq(names.length, 436, "vector count");
         assertTrue(sizes[0] && sizes[1] && sizes[2] && sizes[3], "n = 4, 5, 7 and 10");
         emit log_named_uint("vectors", names.length);
         emit log_named_uint("with a candidate", found);
