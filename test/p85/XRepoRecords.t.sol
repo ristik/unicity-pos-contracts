@@ -377,6 +377,17 @@ contract XRepoRecordsTest is P85Flow {
         custody.applyRootRecords(1);
     }
 
+    /// @dev A closure naming an assignment custody never reserved is a foreign no-op since VT-15 (validator-registry design section 4.2):
+    /// it is consumed, and the assignment the root meant stays open, so the disagreement shows as custody's state against the root's
+    /// model (the custody view bft-core compares) instead of as a halted shard.
+    function _ignored(RootRecord memory r, bytes32 meant) internal {
+        roots.pushRaw(r);
+        uint64 before = custody.recordCursor();
+        custody.applyRootRecords(1);
+        assertEq(custody.recordCursor(), before + 1, "the foreign closure is consumed");
+        assertFalse(asg(meant).closed, "the assignment the root meant is not closed");
+    }
+
     function _refused(RootRecord memory r, bytes4 err) internal {
         roots.pushRaw(r);
         vm.expectRevert(err);
@@ -384,8 +395,9 @@ contract XRepoRecordsTest is P85Flow {
     }
 
     /// @notice The three Go/Solidity disagreements that stopped the P85 lane on 2026-10-11, each as the one changed word in the root's
-    /// records. Custody refuses each, which is what halted the shard then; the test above is what shows the unchanged records are
-    /// accepted. (History 0 is the recovery: Closure of G, Closure of J, RecoveryAck, Closure of K.)
+    /// records. Custody refuses a wrong digest, which is what halted the shard then; a closure naming an assignment custody never had is
+    /// now a foreign no-op that leaves the meant assignment open (design section 4.2); the test above is what shows the unchanged records
+    /// are accepted. (History 0 is the recovery: Closure of G, Closure of J, RecoveryAck, Closure of K.)
     function test_theDisagreementsThatStoppedTheLaneAreRefused() public {
         string memory json = vm.readFile(string.concat(vm.projectRoot(), GO_RECORDS));
         bytes32 result = _publish();
@@ -395,21 +407,21 @@ contract XRepoRecordsTest is P85Flow {
         // runs 25 and 26: the first closure names a genesis assignment custody was never deployed with (the id of the base shard
         // configuration instead of the full one)
         uint256 snap = vm.snapshotState();
-        _refused(
+        _ignored(
             _changedClosure(
                 json, 0, 0, 0, keccak256("the genesis assignment id of another configuration")
             ),
-            CustodyStorage.AssignmentNotActive.selector
+            r.predecessor
         );
         vm.revertToState(snap);
 
         // run 27: the closure of the primary J names it by its assignment hash; custody keys a primary by its election result
         snap = vm.snapshotState();
         _applyVerbatim(json, 0, 0);
-        _refused(
-            _changedClosure(json, 0, 1, 0, keccak256("the assignment hash of J")),
-            CustodyStorage.AssignmentNotActive.selector
+        _ignored(
+            _changedClosure(json, 0, 1, 0, keccak256("the assignment hash of J")), r.assignmentID
         );
+        assertEq(_pending(), bytes32(0), "and the Reserved J closure is not staged");
         vm.revertToState(snap);
 
         // a digest derived under another assignment's id: J's closure with the genesis assignment's exposure digest

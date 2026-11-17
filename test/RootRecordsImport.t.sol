@@ -770,4 +770,208 @@ contract RootRecordsImportTest is SealRegistryBase {
             vm.revertToState(snap);
         }
     }
+
+    // ---------------------------------------------------------------- validator-registry kinds 6 to 8
+
+    /// @dev RootRecord with a raw kind byte: the same ABI, so a kind outside the enum can be sent.
+    struct RawRecord {
+        uint64 index;
+        bytes32 recordID;
+        bytes32 predecessor;
+        uint8 kind;
+        uint64 progress;
+        uint64 ucTime;
+        bytes data;
+    }
+
+    struct RawImported {
+        RawRecord record;
+        uint64 closedEpoch;
+    }
+
+    function _rawSingle(uint8 kind, bytes memory data)
+        internal
+        pure
+        returns (RawImported[] memory es)
+    {
+        es = new RawImported[](1);
+        es[0] = RawImported(
+            RawRecord(
+                0,
+                keccak256(abi.encode(uint64(0), bytes32(0), kind, uint64(5), uint64(1_005), data)),
+                bytes32(0),
+                kind,
+                5,
+                1_005,
+                data
+            ),
+            0
+        );
+    }
+
+    /// @dev Imports one record of a raw kind into a fresh open round; true when the registry accepts it.
+    function _importsRaw(uint8 kind, bytes memory data) internal returns (bool ok) {
+        uint256 snap = vm.snapshotState();
+        OpenArgs memory a = opened();
+        RawImported[] memory es = _rawSingle(kind, data);
+        (ok,) = callAs(
+            A_SYS,
+            abi.encodeWithSelector(
+                SealRegistry.importRootRecords.selector,
+                a.n,
+                uint64(5),
+                uint64(1_005),
+                uint64(1),
+                es[0].record.recordID,
+                es
+            )
+        );
+        if (ok) {
+            RootRecord memory r = reg.recordAt(0);
+            assertEq(uint8(r.kind), kind);
+            assertEq(r.data, data);
+        }
+        vm.revertToState(snap);
+    }
+
+    function _boundary(uint64 changes, uint64 installed, uint256 recovered, uint256 bitmap)
+        internal
+        pure
+        returns (bytes memory)
+    {
+        return abi.encode(
+            keccak256("r"), changes, installed, uint64(9), uint64(1_234), recovered, bitmap
+        );
+    }
+
+    function _rejected(bytes32 r, uint256 reason, uint64 member, uint256 ready)
+        internal
+        pure
+        returns (bytes memory)
+    {
+        return abi.encode(r, reason, member, ready);
+    }
+
+    function _holder(uint256 holder, uint64 id, uint64 gen) internal pure returns (bytes memory) {
+        return abi.encode(holder, id, gen, keccak256("ref"));
+    }
+
+    function test_theRegistryKindsAreAcceptedAndReadBack() public {
+        assertTrue(_importsRaw(6, _boundary(5, 5, 0, 0xffff)), "Boundary primary");
+        assertTrue(_importsRaw(6, _boundary(5, 6, 1, 0)), "Boundary recovery");
+        assertTrue(_importsRaw(7, _rejected(keccak256("r"), 1, 0, 7)), "OutputRejected Expired");
+        assertTrue(_importsRaw(7, _rejected(keccak256("r"), 2, 0, 0)), "OutputRejected Invalidated");
+        assertTrue(_importsRaw(7, _rejected(keccak256("r"), 3, 4, 0)), "OutputRejected Invalid");
+        assertTrue(
+            _importsRaw(8, _holder(7, type(uint64).max, type(uint64).max)), "HolderRetirement"
+        );
+    }
+
+    /// @dev Each cross-field rule of schema v1 section 7, refused alone.
+    function test_theRegistryKindsCrossFieldRulesAreRefused() public {
+        bytes32 r = keccak256("r");
+        bytes[17] memory bad = [
+            _boundary(5, 6, 0, 0), // installed != changes for a primary
+            _boundary(5, 5, 1, 0), // installed != changes + 1 for a recovery
+            _boundary(5, 5, 2, 0), // recovered not a bool
+            _boundary(5, 5, 0, 0x10000), // bitmap above 16 bits
+            abi.encode(
+                bytes32(0), uint64(5), uint64(5), uint64(9), uint64(1), uint256(0), uint256(0)
+            ), // zero result
+            abi.encode(
+                r, uint256(1) << 64, uint64(5), uint64(9), uint64(1), uint256(0), uint256(0)
+            ), // a uint64 above 64 bits
+            abi.encodePacked(_boundary(5, 5, 0, 0), uint256(0)), // eight words
+            _rejected(r, 0, 0, 0), // reason 0
+            _rejected(r, 4, 0, 0), // reason 4
+            _rejected(r, 1, 3, 0), // member outside Invalid
+            _rejected(r, 3, 0, 1), // bitmap outside Expired
+            _rejected(r, 1, 0, 0x10000), // bitmap above 16 bits
+            _rejected(bytes32(0), 2, 0, 0), // zero result
+            abi.encode(r, uint256(1), uint256(1) << 64, uint256(0)), // member above 64 bits (and outside Invalid)
+            _holder(8, 1, 1), // holder 8
+            abi.encode(uint256(0), uint256(1) << 64, uint64(1), r), // id above 64 bits
+            abi.encodePacked(_holder(0, 1, 1), uint256(0)) // five words
+        ];
+        uint8[17] memory kinds = [6, 6, 6, 6, 6, 6, 6, 7, 7, 7, 7, 7, 7, 7, 8, 8, 8];
+        for (uint256 i; i < bad.length; ++i) {
+            assertFalse(_importsRaw(kinds[i], bad[i]), string.concat("case ", vm.toString(i)));
+        }
+        assertFalse(_importsRaw(9, abi.encode(r)), "kind 9");
+    }
+
+    function test_aHolderRetirementKeyIsFixedByTheFirstRecord() public {
+        OpenArgs memory a = opened();
+        RootRecord memory first =
+            rec(0, bytes32(0), RecordKind.HolderRetirement, 5, 1_005, _holder(0, 7, 1));
+        importOk(a.n, 5, 1_005, 1, first.recordID, _single(first, 0));
+        // the v2 dedup key of schema v1 (encoding.json "retirement v2 dedup key": holder 0, id 7, generation 1) holds index + 1
+        bytes32 key = keccak256(
+            abi.encode(
+                keccak256("unicity.seal-registry/records.retirement.v2"),
+                uint256(0),
+                uint64(7),
+                uint64(1)
+            )
+        );
+        assertEq(key, 0xac23f3e3ea63434732ba84a3e1a54563d2effcc245ef48fdbdcd922eb29feb76);
+        assertEq(uint256(vm.load(A_SR, key)), 1);
+        finalizeAsSystem(a.n, keccak256("R1"));
+
+        a = nextRound(a);
+        openAsSystem(a);
+        // another holder, and the pre-VR key of the same (id, generation), are other keys
+        RootRecord memory other =
+            rec(1, first.recordID, RecordKind.HolderRetirement, 6, 1_006, _holder(1, 7, 1));
+        RootRecord memory legacy = rec(
+            2,
+            other.recordID,
+            RecordKind.Retirement,
+            6,
+            1_006,
+            abi.encode(uint64(7), uint64(1), keccak256("ref"))
+        );
+        SealRegistry.ImportedRecord[] memory es = new SealRegistry.ImportedRecord[](2);
+        es[0] = SealRegistry.ImportedRecord(other, 0);
+        es[1] = SealRegistry.ImportedRecord(legacy, 0);
+        importOk(a.n, 6, 1_006, 3, legacy.recordID, es);
+        finalizeAsSystem(a.n, keccak256("R2"));
+
+        a = nextRound(a);
+        openAsSystem(a);
+        RootRecord memory again =
+            rec(3, legacy.recordID, RecordKind.HolderRetirement, 7, 1_007, _holder(0, 7, 1));
+        assertRefused(
+            A_SYS,
+            importCall(a.n, 7, 1_007, 4, again.recordID, _single(again, 0)),
+            SealRegistry.RecordDuplicateKey.selector
+        );
+    }
+
+    /// @dev The frozen record.decode vectors (bft-core testvectors/validator-registry/encoding.json, copied to test/vr/fixtures):
+    /// every one gets the production verdict of the registry's import.
+    function test_theFrozenRecordDecodeVectorsGetTheRegistrysVerdict() public {
+        string memory json =
+            vm.readFile(string.concat(vm.projectRoot(), "/test/vr/fixtures/encoding.json"));
+        uint256 n;
+        uint256 accepted;
+        for (uint256 i;; ++i) {
+            string memory vp = string.concat(".vectors[", vm.toString(i), "]");
+            if (!vm.keyExistsJson(json, vp)) break;
+            if (
+                keccak256(bytes(vm.parseJsonString(json, string.concat(vp, ".op"))))
+                    != keccak256("record.decode")
+            ) continue;
+            uint8 kind = uint8(vm.parseJsonUint(json, string.concat(vp, ".input.kind")));
+            bytes memory data = vm.parseJsonBytes(json, string.concat(vp, ".input.data"));
+            bool ok = vm.parseJsonBool(json, string.concat(vp, ".expect.ok"));
+            assertEq(
+                _importsRaw(kind, data), ok, vm.parseJsonString(json, string.concat(vp, ".name"))
+            );
+            ++n;
+            if (ok) ++accepted;
+        }
+        assertEq(n, 25);
+        assertEq(accepted, 8);
+    }
 }

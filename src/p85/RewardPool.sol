@@ -8,7 +8,7 @@ pragma solidity 0.8.37;
 import {ReentrancyGuard} from "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
 import {Math} from "@openzeppelin/contracts/utils/math/Math.sol";
 import {IRootRecords, GovernanceSnapshot} from "./IP85.sol";
-import {RecordKind, RootRecord, AckData, RecoveryAckData} from "./P85Types.sol";
+import {RecordKind, RootRecord, RecoveryAckData} from "./P85Types.sol";
 
 interface IRewardCustody {
     function recordCursor() external view returns (uint64);
@@ -98,7 +98,11 @@ interface IRewardGovernance {
 ///   - an Ack ends the incumbent at its `offset` and starts the successor there;
 ///   - a RecoveryAck ends the incumbent at `jOffset`, gives J [jOffset, kOffset) (a zero-length interval when they coincide) and starts K
 ///     at `kOffset`;
-///   - SessionClosed, Closure and Retirement records move no boundary, so an aborted candidate earns nothing.
+///   - an Ack or RecoveryAck of a result custody has no session for (a foreign result: another module's or a native output) ends the
+///     owned segment at its offset and opens a NONE segment that accrues nothing, until an owned Ack or RecoveryAck ends it (section 4.4
+///     of the validator-registry design); `closeInterval` skips an ended NONE segment and is NothingToDo on an open NONE tail;
+///   - SessionClosed, Closure, Retirement, Boundary, OutputRejected and HolderRetirement records move no boundary, so an aborted candidate
+///     earns nothing.
 /// Intervals are half-open [a, b). `b` is the earliest of: the owner's end, the next point of the fixed grid (every GRID progress units
 /// from the start), and the progress a later policy snapshot (a new reward rate) took effect. A caller chooses no endpoint and no length.
 /// An interval is closed only up to the current canonical progress (`b <= progress`), and the tail of the latest assignment only while the
@@ -254,32 +258,44 @@ contract RewardPool is ReentrancyGuard {
         if (processed == 0) revert NothingToDo();
     }
 
+    /// @dev Accrual ends at the authoritative transition (design section 4.4). An Ack or RecoveryAck of a result custody holds no session
+    /// for is foreign: it ends the open owned segment at its offset (`jOffset` for a RecoveryAck) and opens one NONE segment (assignment
+    /// zero), which accrues nothing; a foreign one while NONE is open moves nothing. An owned one while NONE is open (reattachment) ends
+    /// NONE at its offset and continues as from an owned segment. Every other kind moves no boundary.
     function _apply(RootRecord memory r) private {
-        if (r.kind == RecordKind.Ack) {
-            AckData memory d = abi.decode(r.data, (AckData));
-            (, bytes32 successor,,, bytes32 incumbent) = CUSTODY.session(d.resultID);
-            _endLast(incumbent, d.offset);
-            _segments.push(Segment(successor, d.offset, 0, false));
-            emit TimelineExtended(r.index, _segments.length);
-        } else if (r.kind == RecordKind.RecoveryAck) {
-            RecoveryAckData memory d = abi.decode(r.data, (RecoveryAckData));
-            (, bytes32 j,,, bytes32 incumbent) = CUSTODY.session(d.resultID);
-            if (d.kOffset < d.jOffset) revert TimelineMismatch();
-            _endLast(incumbent, d.jOffset);
-            _segments.push(Segment(j, d.jOffset, d.kOffset, true));
-            _segments.push(Segment(d.recoveryAssignmentID, d.kOffset, 0, false));
-            emit TimelineExtended(r.index, _segments.length);
+        if (r.kind != RecordKind.Ack && r.kind != RecordKind.RecoveryAck) return;
+        // both payloads start with the result id and the offset the owner ends at: Ack (resultID, replacedHRound, offset, ...),
+        // RecoveryAck (resultID, recoveryAssignmentID, jOffset, ...)
+        (bytes32 resultID,, uint64 offset) = abi.decode(r.data, (bytes32, bytes32, uint64));
+        (uint8 state, bytes32 successor,,, bytes32 incumbent) = CUSTODY.session(resultID);
+        Segment storage last = _segments[_segments.length - 1];
+        bool none = !last.ended && last.assignmentID == bytes32(0);
+        if (state == 0) {
+            if (none) return;
+            _end(last, last.assignmentID, offset);
+            _segments.push(Segment(bytes32(0), offset, 0, false));
+        } else {
+            _end(last, none ? bytes32(0) : incumbent, offset);
+            if (r.kind == RecordKind.Ack) {
+                _segments.push(Segment(successor, offset, 0, false));
+            } else {
+                RecoveryAckData memory d = abi.decode(r.data, (RecoveryAckData));
+                if (d.kOffset < d.jOffset) revert TimelineMismatch();
+                _segments.push(Segment(successor, d.jOffset, d.kOffset, true));
+                _segments.push(Segment(d.recoveryAssignmentID, d.kOffset, 0, false));
+            }
         }
+        emit TimelineExtended(r.index, _segments.length);
     }
 
-    /// @dev The latest segment must be the incumbent and open; it ends at `boundary`, never before what was already rewarded.
-    function _endLast(bytes32 incumbent, uint64 boundary) private {
-        uint256 last = _segments.length - 1;
-        Segment storage s = _segments[last];
-        if (s.ended || s.assignmentID != incumbent || boundary < s.start) {
+    /// @dev The latest segment must be `owner`'s and open; it ends at `boundary`, never before what was already rewarded.
+    function _end(Segment storage s, bytes32 owner, uint64 boundary) private {
+        if (s.ended || s.assignmentID != owner || boundary < s.start) {
             revert TimelineMismatch();
         }
-        if (last == segmentCursor && boundary < nextStart) revert TimelineMismatch();
+        if (_segments.length - 1 == segmentCursor && boundary < nextStart) {
+            revert TimelineMismatch();
+        }
         s.end = boundary;
         s.ended = true;
     }
@@ -291,8 +307,14 @@ contract RewardPool is ReentrancyGuard {
     function closeInterval() external returns (uint64 start, uint64 end, uint256 budget) {
         Segment storage s = _segments[segmentCursor];
         start = nextStart;
-        // a finished (or zero-length) segment hands over to the next one without an interval
-        while (s.ended && start >= s.end) {
+        // a finished (or zero-length) segment hands over to the next one without an interval; an ended NONE segment is skipped whole
+        // (it accrues nothing) and an open NONE tail has nothing to close until an owned Ack ends it
+        while (true) {
+            if (s.assignmentID == bytes32(0)) {
+                if (!s.ended) revert NothingToDo();
+                start = s.end;
+            }
+            if (!s.ended || start < s.end) break;
             if (segmentCursor + 1 >= _segments.length) revert TimelineMismatch();
             ++segmentCursor;
             s = _segments[segmentCursor];

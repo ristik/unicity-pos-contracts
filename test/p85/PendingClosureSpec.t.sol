@@ -405,19 +405,24 @@ contract PendingClosureSpecTest is P85Flow {
         custody.applyRootRecords(1);
     }
 
-    function test_aClosureOfAnUnknownAssignmentIsRejectedAndKCannotBeClosedBeforeItsRecoveryAck()
-        public
-    {
-        // an assignment custody has never seen: no pending state is created for it
+    /// @dev An assignment custody never reserved is foreign (validator-registry design section 4.2): its Closure advances the cursor and
+    /// changes nothing. K's closure never precedes its RecoveryAck in a root log (the root refuses a third unacknowledged handoff, so K's
+    /// epoch cannot end before K is acknowledged), so the no-op cannot drop a K liability.
+    function test_aClosureOfAnUnknownAssignmentIsAForeignNoOpAndStagesNothing() public {
         pushRecord(RecordKind.Closure, closureData(ASG_J, J_H, "j"));
-        vm.expectRevert(CustodyStorage.AssignmentNotActive.selector);
         custody.applyRootRecords(1);
-        // K exists only once the RecoveryAck derives it: its closure cannot precede that record
+        assertEq(custody.recordCursor(), 1);
+        assertEq(asg(ASG_J).state, 0, "no state is created for it");
+        assertFalse(asg(ASG_J).closed);
         setUp();
         _stageG_J();
+        bytes32 staged = _fingerprint();
         pushRecord(RecordKind.Closure, closureData(ASG_K, K_H, "k"));
-        vm.expectRevert(CustodyStorage.AssignmentNotActive.selector);
-        custody.applyRootRecords(1);
+        applyAll();
+        assertEq(custody.recordCursor(), 3);
+        assertEq(asg(ASG_J).pClose, 140, "the staged J closure is untouched");
+        assertTrue(staged != bytes32(0));
+        assertEq(asg(ASG_K).state, 0, "K does not exist before its RecoveryAck");
     }
 
     function test_aClosureOfAnAbortedAssignmentIsRejected() public {
@@ -783,9 +788,10 @@ contract PendingClosureSpecTest is P85Flow {
 
     function test_aRevertLaterInTheBatchUndoesTheStagingEarlierInIt() public {
         _pushGJClosures();
-        pushRecord(RecordKind.Closure, closureData(ASG_K, K_H, "k")); // K is unknown: reverts
+        // a SessionClosed of J while its closure is staged is an impossible root history: reverts
+        pushRecord(RecordKind.SessionClosed, abi.encode(SessionClosedData(RES_J)));
         bytes32 before_ = _fingerprint();
-        vm.expectRevert(CustodyStorage.AssignmentNotActive.selector);
+        vm.expectRevert(PENDING_UNRESOLVED);
         custody.applyRootRecords(3);
         assertEq(_fingerprint(), before_, "no cursor or state advance, nothing swallowed");
         assertEq(custody.recordCursor(), 0);

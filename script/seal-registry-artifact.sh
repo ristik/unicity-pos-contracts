@@ -28,7 +28,7 @@ operational=(
 	records.count records.tip records.progress records.ucTime records.targetCount records.targetTip records.importedRound
 )
 b1fixed=(b1.network b1.format b1.profileHash b1.initialized b1.genesisEpoch b1.importedTipEpoch b1.originReady)
-b1prefixes=(b1.entry b1.member records.entry records.closure records.retirement)
+b1prefixes=(b1.entry b1.member records.entry records.closure records.retirement records.retirement.v2)
 
 keyed() { # name... -> [{name,key}]
 	local arr='[]' name key
@@ -113,6 +113,11 @@ jq -n \
 				prefix: ($prefixes[4]),
 				formula: "keccak256(abi.encode(F(\"records.retirement\"), uint64(id), uint64(generation))) = first index + 1"
 			},
+			retirementV2: {
+				prefix: ($prefixes[5]),
+				formula: "keccak256(abi.encode(F(\"records.retirement.v2\"), uint256(holder), uint64(id), uint64(generation))) = first index + 1 (record kind 8, validator-registry schema v1)"
+			},
+			kinds: "1 SessionClosed, 2 Ack, 3 RecoveryAck, 4 Closure, 5 Retirement, 6 Boundary, 7 OutputRejected, 8 HolderRetirement (P85Types.RecordKind)",
 			maxImport: 32
 		},
 		genesisStorage: [
