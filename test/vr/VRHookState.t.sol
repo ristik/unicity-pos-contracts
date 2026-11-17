@@ -17,6 +17,7 @@ import {PoaComposerEngine} from "../../src/vr/poa/PoaComposer.sol";
 /// into `test/vr/fixtures/vr-hook.json`, which ureth (`crates/unicity/execution/tests/vr_hook.rs`) loads into its genesis, runs through
 /// its real block path against the real SealRegistry, and compares slot for slot.
 ///
+///     rm -rf test/vr/fixtures/vr-hook-raw && mkdir -p test/vr/fixtures/vr-hook-raw
 ///     VR_WRITE_HOOK_STATE=test/vr/fixtures/vr-hook-raw forge test --match-contract VRHookStateTest
 ///     python3 tools/vr_hook_state.py test/vr/fixtures/vr-hook-raw test/vr/fixtures/vr-hook.json
 ///

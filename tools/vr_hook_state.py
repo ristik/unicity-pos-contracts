@@ -1,9 +1,13 @@
 #!/usr/bin/env python3
 """Folds the raw forge dumps of test/vr/VRHookState.t.sol into test/vr/fixtures/vr-hook.json, the fixture ureth's VR hook test runs.
 
-Usage (from the repository root):
+Usage (from the repository root; CI runs the same and compares the result with the committed file):
+    rm -rf test/vr/fixtures/vr-hook-raw && mkdir -p test/vr/fixtures/vr-hook-raw
     VR_WRITE_HOOK_STATE=test/vr/fixtures/vr-hook-raw forge test --match-contract VRHookStateTest
     python3 tools/vr_hook_state.py test/vr/fixtures/vr-hook-raw test/vr/fixtures/vr-hook.json
+
+The raw directory must hold exactly the current scenarios: every dump must name a scenario the generator still declares
+(`_begin("<name>")` or a variant helper's first argument in test/vr/VRHookState.t.sol), and every declared scenario must be dumped.
 
 The fixture holds, once, the runtime code and its keccak256 of every account the scenarios use (the VR core and its three facets,
 the PoA module and composer, and the test modules), each identical across scenarios; then per scenario the nonzero storage of those
@@ -12,6 +16,7 @@ forge observed after the hooks (outcome, health, cursor, open output, last ackno
 """
 import json
 import pathlib
+import re
 import sys
 
 try:
@@ -51,8 +56,20 @@ def storage(a):
     return {word(k): word(v) for k, v in a.get("storage", {}).items() if int(v, 16) != 0}
 
 
+GENERATOR = pathlib.Path(__file__).resolve().parent.parent / "test" / "vr" / "VRHookState.t.sol"
+# the scenario names the generator declares: _begin("name") and the variant helpers' first argument
+DECLARED = re.compile(r'_(?:begin|electVariant|outputVariant|recordsVariant)\(\s*"([a-z0-9-]+)"')
+NOT_DUMPED = {"fixture-check"}
+
+
 def main(raw, dest):
     raw, dest = pathlib.Path(raw), pathlib.Path(dest)
+    declared = set(DECLARED.findall(GENERATOR.read_text())) - NOT_DUMPED
+    dumped = {p.name[: -len(".meta.json")] for p in raw.glob("*.meta.json")}
+    stale = sorted(dumped - declared)
+    missing = sorted(declared - dumped)
+    assert not stale, f"dumps of scenarios the generator no longer declares (clear {raw}): {stale}"
+    assert not missing, f"declared scenarios without a dump: {missing}"
     code = {}
     scenarios = {}
     for meta_path in sorted(raw.glob("*.meta.json")):
