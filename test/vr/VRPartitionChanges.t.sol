@@ -128,4 +128,21 @@ contract VRPartitionChangesTest is VRBase {
         assertEq(_changeState(ids[8]), VRC.CH_SCHEDULED);
         assertEq(_changeState(ids[9]), VRC.CH_SCHEDULED);
     }
+
+    /// @dev FD-29: VR binds an AddPartition and a change of the same partition's shard into one output (their scopes differ); the roots
+    /// judge the change Invalid, so the Boundary activates the addition and rejects the change by its bitmap bit.
+    function test_anUpdateOfAPartitionAddedInTheSameOutputIsRejectedByTheRoots() public {
+        uint64 add = _queue(VRC.K_ADD_PARTITION, _add(40));
+        uint64 upd = _queue(VRC.K_UPDATE_PARTITION, _update(40, keccak256("tentative")));
+        _passDelays();
+        vr.execute(add);
+        vr.execute(upd);
+        bytes32 r = _rid("R");
+        assertEq(_moduleReserve(r, true), VRC.ELECT_RESERVED);
+        uint64[] memory bound = vr.output(r).changes;
+        assertEq(bound.length, 2, "both bind: a partition scope and a shard scope");
+        _acknowledge(r, uint16(1) << 1);
+        assertEq(_changeState(add), VRC.CH_ACTIVE);
+        assertEq(_changeState(upd), VRC.CH_REJECTED);
+    }
 }
