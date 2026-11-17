@@ -253,7 +253,7 @@ contract ValidatorRegistry is VRShared {
         uint256 maxRet,
         bool isStatic
     ) private returns (bytes memory ret) {
-        if (gasleft() < cap + cap / 63 + 5_000) revert StepFailed();
+        if (gasleft() < _inner(cap)) revert StepFailed();
         bool ok;
         uint256 rs;
         assembly ("memory-safe") {
@@ -352,8 +352,8 @@ contract ValidatorRegistry is VRShared {
             );
         }
 
-        uint256 budget = _cap($.module, G_ELECT, CAP_ELECT) + _cap($.module, G_OUTPUT, CAP_OUTPUT)
-            + ELECT_VR_GAS;
+        uint256 budget = _inner(_cap($.module, G_ELECT, CAP_ELECT))
+            + _inner(_cap($.module, G_OUTPUT, CAP_OUTPUT)) + ELECT_VR_GAS;
         bytes memory ctx = VRCodec.encodeContext(_context(origin, p, seal.ucTime()));
         (bool ok, bool short) =
             _contained(STEP_ELECT, budget, abi.encodeCall(IVRSteps.stepElect, (ctx)));
@@ -465,7 +465,7 @@ contract ValidatorRegistry is VRShared {
             $.status.health == VRC.INCONSISTENT || o.state != VRC.OUT_RESERVED || o.native
                 || o.sourceModule != $.activeModule
         ) return VRC.PUB_PRECONDITION_FAILED;
-        uint256 budget = _cap($.module, G_OUTPUT, CAP_OUTPUT) + PUBLISH_VR_GAS;
+        uint256 budget = _inner(_cap($.module, G_OUTPUT, CAP_OUTPUT)) + PUBLISH_VR_GAS;
         (bool ok, bool short) =
             _contained(STEP_OUTPUT, budget, abi.encodeCall(IVRSteps.stepPublish, (resultId)));
         if (short) revert BudgetShort(STEP_OUTPUT);

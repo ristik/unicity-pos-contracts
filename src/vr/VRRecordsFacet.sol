@@ -148,7 +148,10 @@ contract VRRecordsFacet is VRShared {
         $.lastAcked = rid;
         $.pendingPair = 0;
         $.pending.pairRecovered = false;
-        _install(rid, o.membersDigest);
+        // A primary acknowledgement installs J, the output's captured committee. A recovery installs K, the committee the roots
+        // carried over, which is the committee in force here (no Boundary happened since R's reservation): seats, digest, bindings and
+        // staging stay as they are (design 4.1, 8.2).
+        if (!recovered) _install(rid, o.membersDigest);
         $.status.knownRootEpoch = epoch;
         $.watch.epochStartProgress = $.watch.cachedProgress;
         emit OutputAcknowledged(rid, recovered, epoch);
@@ -199,7 +202,8 @@ contract VRRecordsFacet is VRShared {
                 ch.boundTo = 0;
                 emit ChangeReleased(id, rid, VRC.CH_SCHEDULED, 0);
             } else if (bitmap & (1 << i) != 0) {
-                // the committed root verdict; the Boundary record carries only the bitmap (schema 3.3: Conflict stands for it)
+                // the Boundary record carries only the bitmap: Conflict (1) is the generic marker of a root rejection; the exact fold
+                // verdict is the committed candidate's RegistryChanges entry (schema 3.3)
                 _terminate(id, VRC.CH_REJECTED, VRC.V_CONFLICT);
                 emit ChangeReleased(id, rid, VRC.CH_REJECTED, VRC.V_CONFLICT);
             } else if (ch.kind == VRC.K_SET_MODULE) {
@@ -351,7 +355,7 @@ contract VRRecordsFacet is VRShared {
             uint256 cap = meta.gasBounds[G_ADOPT] < CAP_ADOPT ? meta.gasBounds[G_ADOPT] : CAP_ADOPT;
             (bool ok, bool short) = _contained(
                 STEP_ADOPTION,
-                cap + VOID_VR_GAS,
+                _inner(cap) + VOID_VR_GAS,
                 abi.encodeCall(IVRSteps.stepAdoption, (next, cap, ctx))
             );
             if (!ok || short || _tload(RESULT_SLOT) != VRC.STATUS_READY) {

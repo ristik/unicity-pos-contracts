@@ -361,10 +361,11 @@ library VRCodec {
             if (i > 0 && a.committee[i - 1].id >= m.id) return (ORDER, a);
             a.committee[i] = m;
         }
-        a.initData = new bytes(l);
-        for (uint256 i = 0; i < l; ++i) {
-            a.initData[i] = b[start + i];
+        bytes memory init = new bytes(l);
+        assembly ("memory-safe") {
+            mcopy(add(init, 0x20), add(add(b, 0x20), start), l)
         }
+        a.initData = init;
         for (uint256 i = start + l; i < b.length; ++i) {
             if (b[i] != 0) return (PADDING, a);
         }
@@ -423,6 +424,7 @@ library VRCodec {
             if (reason > type(uint8).max || wordAt(d, 2) > max || wordAt(d, 3) > type(uint16).max) {
                 return false;
             }
+            if (wordAt(d, 0) == 0) return false; // zero result id (vrschema DecodeOutputRejected)
             if (reason < VRC.REJ_EXPIRED || reason > VRC.REJ_INVALID) return false;
             if (wordAt(d, 2) != 0 && reason != VRC.REJ_INVALID) return false;
             if (wordAt(d, 3) != 0 && reason != VRC.REJ_EXPIRED) return false;

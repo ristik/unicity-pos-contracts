@@ -31,6 +31,7 @@ contract VRStateMachineTest is VRBase, FastJson {
     uint64 internal baseT;
     string internal vname;
     uint256 internal vectorsRun;
+    bool internal governanceFaulted; // set once the ModuleAction vector's failing onGovernance has run
 
     bytes32 internal constant RELEASED_TOPIC =
         keccak256("ChangeReleased(uint64,bytes32,uint8,uint8)");
@@ -101,6 +102,7 @@ contract VRStateMachineTest is VRBase, FastJson {
         vname = _js(_p(i, ".name"));
         uint256 steps = _ju(_p(i, ".input.steps"));
         delete names;
+        governanceFaulted = false;
         for (uint256 s = 0; s < steps; ++s) {
             string memory sp =
                 string.concat(".vectors[", vm.toString(i), "].expect.trace[", vm.toString(s), "]");
@@ -273,6 +275,7 @@ contract VRStateMachineTest is VRBase, FastJson {
             string memory c = _js(string.concat(a, ".case"));
             address target = _is(c, "not the active module") ? address(0xBEEF) : address(module);
             module.setMode(7, _is(c, "active, onGovernance fails") ? 1 : 0);
+            if (_is(c, "active, onGovernance fails")) governanceFaulted = true;
             assertEq(
                 _queue(VRC.K_MODULE_ACTION, abi.encode(target, abi.encode(uint64(1), uint64(1)))),
                 id
@@ -462,7 +465,11 @@ contract VRStateMachineTest is VRBase, FastJson {
             _js(string.concat(st, ".lastAcked")),
             _m(string.concat(op, ": lastAcked"))
         );
-        assertEq(vr.health(), _ju(string.concat(st, ".health")), _m(string.concat(op, ": health")));
+        uint256 wantHealth = _ju(string.concat(st, ".health"));
+        // Documented deviation (astra VT-02 finding 6): a fully funded failing onGovernance is a module fault (design 3.3.1). The
+        // reference model's Execute does not model health (schema 14: a model's silence waives nothing), so the vector keeps 0 here.
+        if (governanceFaulted) wantHealth = VRC.FAULTED;
+        assertEq(vr.health(), wantHealth, _m(string.concat(op, ": health")));
         assertEq(
             vr.recordCursor(), _ju(string.concat(st, ".cursor")), _m(string.concat(op, ": cursor"))
         );

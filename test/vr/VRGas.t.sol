@@ -139,6 +139,9 @@ contract VRGasTest is VRBase {
         _apply(32);
         uint256 batch = g0 - gasleft();
         assertEq(vr.recordCursor(), 32);
+        assertEq(module.logLength(), 1, "the onRecords callback ran");
+        assertEq(module.log(0), "onRecords:0:32");
+        assertEq(vr.health(), VRC.HEALTHY);
         console2.log("applyRootRecords(32), Closure records, one onRecords call:", batch);
         console2.log("per record:", batch / 32);
     }
@@ -185,6 +188,7 @@ contract VRGasTest is VRBase {
         uint256 used = g0 - gasleft();
         assertEq(vr.activeModule().module, address(next), "switched");
         assertEq(vr.health(), VRC.HEALTHY, "every callback answered at its cap");
+        assertEq(next.log(0), "attach", "attach was actually called");
         console2.log("Boundary with every callback at its cap:", used);
     }
 }

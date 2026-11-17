@@ -126,6 +126,8 @@ abstract contract VRShared {
     uint256 internal constant ELECT_VR_GAS = 2_600_000;
     uint256 internal constant PUBLISH_VR_GAS = 2_600_000;
     uint256 internal constant VOID_VR_GAS = 40_000;
+    /// @dev What `_callModule` requires on top of the cap before it calls (the inner call's EIP-150 headroom check).
+    uint256 internal constant INNER_SLACK = 5_000;
     /// @dev Covers the failure write, the event, the lock clear and the return after the worst failing step.
     uint256 internal constant OUTER_RESERVE = 60_000;
     uint256 internal constant ENDPOINTS_MAX = 1024;
@@ -202,12 +204,23 @@ abstract contract VRShared {
         emit ModuleFaulted($.activeModule, step);
     }
 
+    /// @dev The gas a step frame must hold for one inner call capped at `cap`: the cap, its 1/63 EIP-150 headroom and the check slack.
+    /// Every step budget is a sum of these plus VR's own work in the frame, so a module answering within its legal cap is always
+    /// actually called with that cap (design 3.3.1, 3.3.4).
+    function _inner(uint256 cap) internal pure returns (uint256) {
+        return cap + cap / 63 + INNER_SLACK;
+    }
+
+    /// @dev Outstanding boundary work for the generic work deadline: a change Scheduled or Bound (an open output's binding does not
+    /// complete it; only its Boundary does), other than ModuleAction and ForceRemove. A ForceRemove ages on its own, feasibility-qualified
+    /// clock (design 3.6.3: an infeasible removal never stalls the module), so it never feeds this one.
     function _hasBoundaryWork() internal view returns (bool) {
         VRLayout.VRStorage storage $ = VRLayout.load();
         uint256 n = $.pendingIds.length;
         for (uint256 i = 0; i < n; ++i) {
             VRLayout.Change storage ch = $.changes[$.pendingIds[i]];
-            if (ch.state == VRC.CH_SCHEDULED && ch.kind != VRC.K_MODULE_ACTION) return true;
+            if (ch.kind == VRC.K_MODULE_ACTION || ch.kind == VRC.K_FORCE_REMOVE) continue;
+            if (ch.state == VRC.CH_SCHEDULED || ch.state == VRC.CH_BOUND) return true;
         }
         return false;
     }
@@ -396,6 +409,8 @@ abstract contract VRShared {
         (ok, w) = _getter(module, IElectionModule.moduleTag.selector, 1, bits);
         if (!ok) return (VRChanges.BAD_METADATA, m);
         m.moduleTag = bytes32(w[0]);
+        // the reserved tag marks registry-native outputs only (schema 2.2: native == (moduleTag == REGISTRY_NATIVE))
+        if (m.moduleTag == VRC.REGISTRY_NATIVE) return (VRChanges.BAD_METADATA, m);
         bits[0] = 32;
         (ok, w) = _getter(module, IElectionModule.capabilities.selector, 1, bits);
         if (!ok || w[0] > (VRC.CAP_LIABILITY_HOLDER | VRC.CAP_ADOPTION_CHECK)) {
@@ -689,7 +704,7 @@ abstract contract VRShared {
     {
         bool short;
         (ok, short) = _contained(
-            step, cap + VOID_VR_GAS, abi.encodeCall(IVRSteps.stepVoid, (module, cap, data))
+            step, _inner(cap) + VOID_VR_GAS, abi.encodeCall(IVRSteps.stepVoid, (module, cap, data))
         );
         if (!ok && !short && faults) _fault(step);
     }

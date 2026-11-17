@@ -121,7 +121,7 @@ contract VRGovernanceFacet is VRShared {
         if (ch.kind != VRC.K_MODULE_ACTION) {
             ch.state = VRC.CH_SCHEDULED;
             ch.scheduledAt = p;
-            _noteWork(p);
+            if (ch.kind != VRC.K_FORCE_REMOVE) _noteWork(p); // a ForceRemove ages by its own scheduledAt
             emit ChangeScheduled(changeId, p);
             return; // `locked` clears the lock on this path too
         }
@@ -137,7 +137,7 @@ contract VRGovernanceFacet is VRShared {
             abi.encodeCall(IElectionModule.onGovernance, (VRChanges.dynField(payload, 1)));
         (bool ok, bool short) = _contained(
             STEP_GOVERNANCE,
-            cap + VOID_VR_GAS,
+            _inner(cap) + VOID_VR_GAS,
             abi.encodeCall(IVRSteps.stepVoid, (target, cap, data))
         );
         if (short) revert BudgetShort(STEP_GOVERNANCE);
@@ -146,7 +146,9 @@ contract VRGovernanceFacet is VRShared {
             $.watch.actionWork = true;
             _noteWork(p);
         } else {
+            // a fully funded contained step that failed: the action is Rejected and the module Faulted (design 3.3.1 outcome classes)
             _terminate(changeId, VRC.CH_REJECTED, VRC.R_ACTION_FAILED);
+            _fault(STEP_GOVERNANCE);
         }
         emit ModuleActionExecuted(changeId, $.changes[changeId].state);
     }

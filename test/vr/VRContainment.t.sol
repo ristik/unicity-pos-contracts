@@ -348,7 +348,8 @@ contract VRContainmentTest is VRBase {
         assertEq(_elect(), VRC.ELECT_DISABLED);
     }
 
-    function test_governanceStepFailureIsRejectedNotFaulted() public {
+    /// @dev astra VT-02 finding 6: a fully funded failing onGovernance rejects the action and faults the module.
+    function test_governanceStepFailureIsRejectedAndFaulted() public {
         uint8[4] memory modes = [REVERT, BURN, HUGE, RETURN_WORD];
         for (uint256 i = 0; i < modes.length; ++i) {
             uint256 snap = vm.snapshotState();
@@ -358,7 +359,8 @@ contract VRContainmentTest is VRBase {
             vr.execute(id);
             assertEq(_changeState(id), VRC.CH_REJECTED);
             assertEq(vr.change(id).rejectReason, VRC.R_ACTION_FAILED);
-            assertEq(vr.health(), VRC.HEALTHY);
+            assertEq(vr.health(), VRC.FAULTED, "a funded step failure is a module fault");
+            _assertUnlocked();
             vm.revertToState(snap);
         }
     }

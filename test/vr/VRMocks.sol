@@ -93,7 +93,7 @@ contract MockModule is IElectionModule {
     address public attachPrevious;
     address public attachNamespace;
     uint256 public attachMembers;
-    bytes public attachInit;
+    bytes32 public attachInitHash;
     bytes32 public lastContextHash;
     uint256 public griefLeave = 20_000;
     bool public invalidatedInStep;
@@ -349,7 +349,7 @@ contract MockModule is IElectionModule {
         attachPrevious = a.previousModule;
         attachNamespace = a.namespace;
         attachMembers = a.committee.length;
-        attachInit = a.initData;
+        attachInitHash = keccak256(a.initData);
         _behave(S_ATTACH);
     }
 

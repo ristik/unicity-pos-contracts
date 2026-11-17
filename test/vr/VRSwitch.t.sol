@@ -57,7 +57,7 @@ contract VRSwitchTest is VRBase {
         assertEq(m.attachPrevious(), address(module));
         assertEq(m.attachNamespace(), VR_ADDR, "liabilityNamespace = VR");
         assertEq(m.attachMembers(), 5);
-        assertEq(m.attachInit(), bytes("init"));
+        assertEq(m.attachInitHash(), keccak256("init"));
         assertEq(vr.holderCount(), 1);
         assertEq(vr.holderAt(0).holder, address(h));
         assertEq(vr.holderAt(0).module, address(m));

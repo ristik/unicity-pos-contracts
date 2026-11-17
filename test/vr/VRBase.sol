@@ -39,6 +39,7 @@ abstract contract VRBase is Test {
     }
 
     mapping(uint64 => Keys) internal keysOf;
+    uint64[] internal genesisWeights; // raw weights of the genesis members (default 1 each)
 
     // ---- keys ----
 
@@ -129,7 +130,7 @@ abstract contract VRBase is Test {
             g.identities[i].owner = address(uint160(0xA000 + i + 1));
             g.identities[i].binding =
                 _reg(k, vm.toString(i + 1), address(uint160(0xB000 + i + 1)), 0);
-            g.identities[i].rawWeight = 1;
+            g.identities[i].rawWeight = i < genesisWeights.length ? genesisWeights[i] : 1;
         }
     }
 
