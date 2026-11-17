@@ -1,0 +1,432 @@
+// SPDX-License-Identifier: Apache-2.0
+pragma solidity 0.8.37;
+
+// Loops are bounded by the frozen ceilings: 16 committee members, 32 pending changes, 16 bound changes, 64 activations, 8 holders and
+// the hook's maxBatch (at most 32 records). Calls into modules are contained steps (design section 3.3), never bubbling.
+// forge-lint: disable-start(calls-loop, reentrancy-no-eth, unsafe-typecast)
+
+import {VRC} from "./VRConstants.sol";
+import {VRCodec} from "./VRCodec.sol";
+import {VRChanges} from "./VRChanges.sol";
+import {VRLayout} from "./VRLayout.sol";
+import {VRShared} from "./VRShared.sol";
+import {Activation, VRRecord, IVRRecordSource, IElectionModule, IVRSteps} from "./VRTypes.sol";
+
+/// @title VRRecordsFacet
+/// @notice The root-record application of the ValidatorRegistry (design sections 3.4.2, 3.6.1, 4.1, 6.5, 7.1): the output table, the
+/// releases, committee installation, change activation, the activation schedule and latch, and the pointer switch. Run by DELEGATECALL
+/// from VR's `applyRootRecords` only (the fallback never routes here), in VR's storage under VR's lock.
+contract VRRecordsFacet is VRShared {
+    address internal immutable SELF;
+
+    constructor() {
+        SELF = address(this);
+    }
+
+    modifier onlyDelegated() {
+        if (address(this) == SELF || _tload(LOCK_SLOT) != 1 || msg.sender != VRC.SYSTEM_CALLER) {
+            revert NotSelf();
+        }
+        _;
+    }
+
+    /// @notice (VR's `applyRootRecords`, under its lock.) Applies exactly min(maxRecords, available) records (design sections 3.4.2 and 3.6.1). Never reverts for record content
+    /// or module behaviour: a record the projection guarantees make impossible is an anomaly (health Inconsistent, absorbing), and the
+    /// cursor advances regardless. The active module receives its records through a contained `onRecords`; a pointer-switching Boundary
+    /// splits the batch between the old and the new module.
+    function applyRecords(uint32 maxRecords) external onlyDelegated {
+        VRLayout.VRStorage storage $ = VRLayout.load();
+        if (maxRecords > $.hookLimits.maxBatch) revert BatchTooLarge();
+        IVRRecordSource seal = IVRRecordSource(VRC.SEAL_REGISTRY);
+        uint64 count = seal.recordCount();
+        uint64 cursor = $.status.recordCursor;
+        uint64 n = count > cursor ? count - cursor : 0;
+        if (n > maxRecords) n = maxRecords;
+        if (n == 0) return;
+        $.watch.cachedProgress = seal.progress();
+        uint64 seg = cursor;
+        for (uint64 i = cursor; i < cursor + n; ++i) {
+            VRRecord memory r = seal.recordAt(i);
+            uint64 sw = _applyRecord(i, r);
+            $.status.recordCursor = i + 1;
+            if (sw != 0) seg = _switchModule(sw, seg, i);
+        }
+        if (seg < cursor + n) _deliverRecords($.activeModule, seg, cursor + n - seg);
+        _settleWork(); // a Boundary or a refused switch may have emptied the outstanding work
+    }
+
+    function _anomaly(uint64 index, uint8 kind, uint8 code) internal {
+        VRLayout.load().status.health = VRC.INCONSISTENT;
+        emit RecordAnomaly(index, kind, code);
+    }
+
+    function _w(bytes memory d, uint256 i) internal pure returns (uint256) {
+        return VRCodec.wordAt(d, i);
+    }
+
+    /// @dev Applies one record. Returns the id of a bound SetModule whose switch the batch loop must perform at this record, else 0.
+    function _applyRecord(uint64 index, VRRecord memory r) internal returns (uint64 sw) {
+        VRLayout.VRStorage storage $ = VRLayout.load();
+        uint8 kind = r.kind;
+        bytes memory d = r.data;
+        if (!VRCodec.recordWellFormed(kind, d)) {
+            _anomaly(index, kind, AN_MALFORMED);
+            return 0;
+        }
+        if (kind == VRC.REC_CLOSURE || kind == VRC.REC_RETIREMENT) return 0; // holders' and modules' records
+        if (kind == VRC.REC_HOLDER_RETIREMENT) {
+            uint8 h = uint8(_w(d, 0));
+            uint64 id = uint64(_w(d, 1));
+            uint64 gen = uint64(_w(d, 2));
+            if (h >= $.status.holderCount || $.retired[h][id][gen]) {
+                _anomaly(index, kind, AN_HOLDER);
+                return 0;
+            }
+            $.retired[h][id][gen] = true;
+            emit RetirementMarked(h, id, gen);
+            return 0;
+        }
+        bytes32 rid = bytes32(_w(d, 0));
+        VRLayout.Output storage o = $.outputs[rid];
+        uint8 s = o.state;
+        if (s == VRC.OUT_NONE) {
+            _anomaly(index, kind, kind == VRC.REC_BOUNDARY ? AN_BOUNDARY : AN_UNKNOWN_OUTPUT);
+            return 0;
+        }
+        bool terminal = s == VRC.OUT_ACKNOWLEDGED || s == VRC.OUT_RECOVERED || s == VRC.OUT_CLOSED;
+        if (kind == VRC.REC_OUTPUT_REJECTED) {
+            if (s == VRC.OUT_RESERVED || s == VRC.OUT_PUBLISHED || s == VRC.OUT_INVALIDATED) {
+                uint8 reason = uint8(_w(d, 1));
+                o.state = VRC.OUT_REJECTED;
+                emit OutputRejected(rid, reason);
+                // a root rejection of the active module's output for an output-level reason faults it (design 3.6.3)
+                if (!o.native && o.sourceModule == $.activeModule) {
+                    bool outputLevel = reason == VRC.REJ_INVALID
+                        || (reason == VRC.REJ_INVALIDATED
+                            && o.invalidReason != 0
+                            && o.invalidReason != VRC.INVALID_LOST);
+                    if (outputLevel) _fault(0);
+                }
+            }
+            return 0; // Rejected or terminal: no-op
+        }
+        if (kind == VRC.REC_SESSION_CLOSED) {
+            if (terminal) return 0;
+            o.state = VRC.OUT_CLOSED;
+            emit OutputClosed(rid);
+            _release(rid, o, VRC.RES_CLOSED, 0, 0);
+            return 0;
+        }
+        if (kind == VRC.REC_ACK || kind == VRC.REC_RECOVERY_ACK) {
+            if (terminal) return 0;
+            if (s == VRC.OUT_PUBLISHED || s == VRC.OUT_INVALIDATED) {
+                if ($.pendingPair != 0) {
+                    _anomaly(index, kind, AN_SECOND_PAIR);
+                    return 0;
+                }
+                bool rec = kind == VRC.REC_RECOVERY_ACK;
+                $.pendingPair = rid;
+                $.pending.pairRecovered = rec;
+                emit PairStaged(rid, rec);
+                return 0;
+            }
+            _anomaly(index, kind, AN_STATE);
+            return 0;
+        }
+        // Boundary
+        bool recovered = _w(d, 5) == 1;
+        uint16 bitmap = uint16(_w(d, 6));
+        if (
+            $.pendingPair != rid || recovered != $.pending.pairRecovered
+                || (s != VRC.OUT_PUBLISHED && s != VRC.OUT_INVALIDATED)
+                || (bitmap >> $.outputChanges[rid].length) != 0
+        ) {
+            _anomaly(index, kind, AN_BOUNDARY);
+            return 0;
+        }
+        uint64 epoch = uint64(_w(d, 2));
+        o.state = recovered ? VRC.OUT_RECOVERED : VRC.OUT_ACKNOWLEDGED;
+        $.lastAcked = rid;
+        $.pendingPair = 0;
+        $.pending.pairRecovered = false;
+        // A primary acknowledgement installs J, the output's captured committee. A recovery installs K, the committee the roots
+        // carried over, which is the committee in force here (no Boundary happened since R's reservation): seats, digest, bindings and
+        // staging stay as they are (design 4.1, 8.2).
+        if (!recovered) _install(rid, o.membersDigest);
+        $.status.knownRootEpoch = epoch;
+        $.watch.epochStartProgress = $.watch.cachedProgress;
+        emit OutputAcknowledged(rid, recovered, epoch);
+        sw = _release(rid, o, recovered ? VRC.RES_RECOVERED : VRC.RES_ACKNOWLEDGED, bitmap, epoch);
+        _latch(epoch);
+        if (!o.native && o.sourceModule == $.activeModule) _resetWork();
+    }
+
+    /// @dev Installs the output's captured committee (design 3.1 binding snapshots): each member's identity takes the captured binding
+    /// and generation, and its staging is cleared only if it equals the captured binding, so a later staging survives.
+    function _install(bytes32 rid, bytes32 digest) internal {
+        VRLayout.VRStorage storage $ = VRLayout.load();
+        VRLayout.Seat[] storage seats = $.outputSeats[rid];
+        uint256 n = seats.length;
+        VRLayout.Seat[] storage c = $.committee;
+        while (c.length > n) c.pop();
+        for (uint256 i = 0; i < n; ++i) {
+            VRLayout.Seat memory s = seats[i];
+            if (i < c.length) c[i] = s;
+            else c.push(s);
+            VRLayout.Identity storage idn = $.identities[s.id];
+            idn.generation = s.generation;
+            idn.currentRef = s.bindingRef;
+            if (idn.stagedRef == s.bindingRef) idn.stagedRef = 0;
+        }
+        $.committeeDigest = digest;
+    }
+
+    /// @dev Releases the output's bound changes exactly once (design 3.4.2): back to Scheduled at closure, Active or Rejected by the
+    /// committed bitmap at Boundary. A bound SetModule is returned for the switch instead of being activated here. Then `onResolved` to
+    /// the source module unless the output is native or its source is detached.
+    function _release(
+        bytes32 rid,
+        VRLayout.Output storage o,
+        uint8 resolution,
+        uint16 bitmap,
+        uint64 epoch
+    ) internal returns (uint64 sw) {
+        VRLayout.VRStorage storage $ = VRLayout.load();
+        uint64[] storage ids = $.outputChanges[rid];
+        uint256 n = ids.length;
+        for (uint256 i = 0; i < n; ++i) {
+            uint64 id = ids[i];
+            VRLayout.Change storage ch = $.changes[id];
+            if (ch.state != VRC.CH_BOUND || ch.boundTo != rid) continue; // released once
+            if (resolution == VRC.RES_CLOSED) {
+                ch.state = VRC.CH_SCHEDULED;
+                ch.boundTo = 0;
+                emit ChangeReleased(id, rid, VRC.CH_SCHEDULED, 0);
+            } else if (bitmap & (1 << i) != 0) {
+                // the Boundary record carries only the bitmap: Conflict (1) is the generic marker of a root rejection; the exact fold
+                // verdict is the committed candidate's RegistryChanges entry (schema 3.3)
+                _terminate(id, VRC.CH_REJECTED, VRC.V_CONFLICT);
+                emit ChangeReleased(id, rid, VRC.CH_REJECTED, VRC.V_CONFLICT);
+            } else if (ch.kind == VRC.K_SET_MODULE) {
+                sw = id;
+            } else {
+                _activate(id, epoch);
+                emit ChangeReleased(id, rid, $.changes[id].state, $.changes[id].rejectReason);
+            }
+        }
+        if ($.openOutput == rid) $.openOutput = 0;
+        if (!o.native && !$.detached[o.sourceModule]) {
+            _voidStep(
+                o.sourceModule,
+                _cap($.module, G_RESOLVED, CAP_RESOLVED),
+                abi.encodeCall(IElectionModule.onResolved, (rid, resolution)),
+                STEP_RESOLVED,
+                true
+            );
+        }
+    }
+
+    function _deliverRecords(address module, uint64 from, uint64 count) internal {
+        VRLayout.VRStorage storage $ = VRLayout.load();
+        if ($.detached[module]) return;
+        uint256 cap = _cap($.module, G_RECORD, CAP_RECORD) * count;
+        _voidStep(
+            module,
+            cap,
+            abi.encodeCall(IElectionModule.onRecords, (from, uint32(count))),
+            STEP_RECORDS,
+            true
+        );
+    }
+
+    /// @dev The effect of an Accepted boundary change at its Boundary (design 3.5.1, 6.5, 7.1).
+    function _activate(uint64 id, uint64 epoch) internal {
+        VRLayout.VRStorage storage $ = VRLayout.load();
+        VRLayout.Change storage ch = $.changes[id];
+        bytes memory p = $.changePayload[id];
+        uint8 kind = ch.kind;
+        if (kind == VRC.K_SET_GOVERNOR) {
+            address gov = address(uint160(VRChanges.field(p, 0)));
+            if (gov.codehash != bytes32(VRChanges.field(p, 1))) {
+                _terminate(id, VRC.CH_REJECTED, VRC.R_CODE_MISMATCH);
+                return;
+            }
+            $.governor = gov;
+        } else if (kind == VRC.K_COMMITTEE_LIMITS) {
+            $.committeeLimits = VRLayout.CommitteeLimits(
+                uint32(VRChanges.field(p, 0)),
+                uint32(VRChanges.field(p, 1)),
+                uint32(VRChanges.field(p, 2))
+            );
+        } else if (kind == VRC.K_FEE_PARAMS) {
+            $.feesPrevious = $.feesCurrent;
+            $.feesCurrent = VRLayout.Fees(
+                uint64(VRChanges.field(p, 0)),
+                uint64(VRChanges.field(p, 1)),
+                address(uint160(VRChanges.field(p, 2)))
+            );
+            $.feesEffectiveBlock = uint64(block.number + 1);
+        } else if (kind == VRC.K_SCHEDULE_ACTIVATION) {
+            _appendActivation(
+                id,
+                bytes32(VRChanges.field(p, 0)),
+                bytes32(VRChanges.field(p, 1)),
+                uint64(VRChanges.field(p, 2)),
+                uint64(VRChanges.field(p, 3))
+            );
+        }
+        ch.activeRootEpoch = epoch;
+        _terminate(id, VRC.CH_ACTIVE, 0);
+    }
+
+    /// @dev Appends an accepted schedule or postponement; the rule's effective (latest non-Superseded) Active entry is superseded.
+    function _appendActivation(
+        uint64 changeId,
+        bytes32 ruleId,
+        bytes32 releaseDigest,
+        uint64 epoch,
+        uint64 notBefore
+    ) internal {
+        VRLayout.VRStorage storage $ = VRLayout.load();
+        uint32 n = $.status.activationCount;
+        for (uint32 i = n; i > 0; --i) {
+            VRLayout.Activation storage a = $.activations[i - 1];
+            if (a.ruleId != ruleId || a.state == VRC.ACT_SUPERSEDED) continue;
+            if (a.state == VRC.ACT_ACTIVE) a.state = VRC.ACT_SUPERSEDED;
+            break;
+        }
+        $.activations[n] =
+            VRLayout.Activation(ruleId, releaseDigest, epoch, notBefore, VRC.ACT_ACTIVE, changeId);
+        $.status.activationCount = n + 1;
+        emit ActivationRecorded(n, ruleId, epoch);
+    }
+
+    /// @dev Latches every effective schedule whose epoch the installed root epoch has reached (design 7.1).
+    function _latch(uint64 epoch) internal {
+        VRLayout.VRStorage storage $ = VRLayout.load();
+        uint32 n = $.status.activationCount;
+        for (uint32 i = 0; i < n; ++i) {
+            VRLayout.Activation storage a = $.activations[i];
+            if (a.state == VRC.ACT_ACTIVE && a.rootEpoch <= epoch) {
+                a.state = VRC.ACT_LATCHED;
+                emit RuleLatched(i, a.ruleId);
+            }
+        }
+    }
+
+    /// @dev The switch at the Boundary record `rec` of a batch whose current old-module segment starts at `seg`: code and holder checks,
+    /// adoption, then the old module's records through and including the Boundary, detach, the pointer and metadata, attach and the
+    /// holder entry. A refused switch makes no module call and leaves the whole batch to the old module. Returns the new segment start.
+    function _switchModule(uint64 changeId, uint64 seg, uint64 rec) internal returns (uint64) {
+        VRLayout.VRStorage storage $ = VRLayout.load();
+        bytes memory p = $.changePayload[changeId];
+        address next = address(uint160(VRChanges.field(p, 0)));
+        bytes32 codeHash = bytes32(VRChanges.field(p, 1));
+        VRLayout.ModuleCache memory meta = $.changeModule[changeId];
+        bool holder = meta.capabilities & VRC.CAP_LIABILITY_HOLDER != 0;
+        uint8 idx = VRC.NO_HOLDER;
+        uint8 reason = 0;
+        if (next.codehash != codeHash) {
+            reason = VRC.R_CODE_MISMATCH;
+        } else if (holder) {
+            uint8 known = $.holderIndexPlusOne[meta.liabilityHolder];
+            if (meta.liabilityHolder.codehash != meta.liabilityHolderCodeHash) {
+                reason = VRC.R_HOLDER_MISMATCH;
+            } else if (known != 0) {
+                idx = known - 1;
+                if ($.holders[idx].holderCodeHash != meta.liabilityHolderCodeHash) {
+                    reason = VRC.R_HOLDER_MISMATCH;
+                }
+            } else if ($.status.holderCount >= VRC.MAX_HOLDERS) {
+                reason = VRC.R_HOLDER_CEILING;
+            } else {
+                idx = $.status.holderCount;
+            }
+        }
+        if (reason != 0) {
+            _terminate(changeId, VRC.CH_REJECTED, reason);
+            emit ChangeReleased(changeId, $.changes[changeId].boundTo, VRC.CH_REJECTED, reason);
+            return seg;
+        }
+        address old = $.activeModule;
+        bytes memory ctx = VRCodec.encodeAttachContext(
+            _attachContext(old, $.module.moduleTag, idx, VRChanges.dynField(p, 2))
+        );
+        if (meta.capabilities & VRC.CAP_ADOPTION_CHECK != 0) {
+            uint256 cap = meta.gasBounds[G_ADOPT] < CAP_ADOPT ? meta.gasBounds[G_ADOPT] : CAP_ADOPT;
+            (bool ok, bool short) = _contained(
+                STEP_ADOPTION,
+                _inner(cap) + VOID_VR_GAS,
+                abi.encodeCall(IVRSteps.stepAdoption, (next, cap, ctx))
+            );
+            if (!ok || short || _tload(RESULT_SLOT) != VRC.STATUS_READY) {
+                _terminate(changeId, VRC.CH_REJECTED, VRC.R_ADOPTION_NOT_READY);
+                emit ChangeReleased(
+                    changeId, $.changes[changeId].boundTo, VRC.CH_REJECTED, VRC.R_ADOPTION_NOT_READY
+                );
+                return seg;
+            }
+        }
+        _deliverRecords(old, seg, rec - seg + 1);
+        _voidStep(
+            old,
+            _cap($.module, G_DETACH, CAP_DETACH),
+            abi.encodeCall(IElectionModule.detach, ()),
+            STEP_DETACH,
+            false
+        );
+        $.detached[old] = true;
+        $.detached[next] = false;
+        $.activeModule = next;
+        $.activeModuleCodeHash = codeHash;
+        $.module = meta;
+        $.changes[changeId].activeRootEpoch = $.status.knownRootEpoch;
+        _terminate(changeId, VRC.CH_ACTIVE, 0);
+        emit ChangeReleased(changeId, $.changes[changeId].boundTo, VRC.CH_ACTIVE, 0);
+        bool attached = _voidStep(
+            next,
+            _cap($.module, G_ATTACH, CAP_ATTACH),
+            abi.encodeCall(IElectionModule.attach, (ctx)),
+            STEP_ATTACH,
+            false
+        );
+        if (attached) {
+            if (holder && $.holderIndexPlusOne[meta.liabilityHolder] == 0) {
+                $.holders[idx] = VRLayout.Holder(
+                    meta.liabilityHolder,
+                    $.status.knownRootEpoch,
+                    meta.liabilityHolderCodeHash,
+                    next
+                );
+                $.holderIndexPlusOne[meta.liabilityHolder] = idx + 1;
+                $.status.holderCount = idx + 1;
+                emit HolderAllocated(idx, meta.liabilityHolder, next);
+            }
+            if ($.status.health != VRC.INCONSISTENT) $.status.health = VRC.HEALTHY;
+            _resetWork();
+        } else {
+            _fault(STEP_ATTACH);
+        }
+        emit ModuleSwitched(old, next, changeId, attached);
+        return rec + 1;
+    }
+
+    function _attachContext(address prev, bytes32 prevTag, uint8 idx, bytes memory initData)
+        internal
+        view
+        returns (VRCodec.AttachContext memory a)
+    {
+        VRLayout.VRStorage storage $ = VRLayout.load();
+        a.lastAcked = $.lastAcked;
+        a.knownRootEpoch = $.status.knownRootEpoch;
+        a.progress = $.watch.cachedProgress;
+        a.ucTime = IVRRecordSource(VRC.SEAL_REGISTRY).ucTime();
+        a.identityCount = $.counters.identityCount;
+        a.namespace = address(this);
+        a.previousModule = prev;
+        a.previousTag = prevTag;
+        a.holderIndex = idx;
+        a.committee = _committeeMembers();
+        a.initData = initData;
+    }
+}

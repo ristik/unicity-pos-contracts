@@ -1,0 +1,721 @@
+// SPDX-License-Identifier: Apache-2.0
+pragma solidity 0.8.37;
+
+// Loops are bounded by the frozen ceilings: 16 committee members, 32 pending changes, 16 bound changes, 64 activations, 8 holders and
+// the hook's maxBatch (at most 32 records). Calls into modules are contained steps (design section 3.3), never bubbling.
+// forge-lint: disable-start(calls-loop, reentrancy-no-eth, unsafe-typecast, boolean-cst)
+
+import {VRC} from "./VRConstants.sol";
+import {VRCodec} from "./VRCodec.sol";
+import {VRChanges} from "./VRChanges.sol";
+import {VRLayout} from "./VRLayout.sol";
+import {Member, IElectionModule, IVRSteps} from "./VRTypes.sol";
+import {Quantize} from "../p85/Quantize.sol";
+import {Continuity} from "../p85/Continuity.sol";
+
+/// @title VRShared
+/// @notice The ValidatorRegistry's shared state machine pieces: errors, events, constants, the lock, the outer containment layer and
+/// the internal helpers the VR core and its two facets (VRGovernanceFacet, VRRepairFacet) compile in. VR is one account at 0xff..03 with
+/// one storage (VRLayout); the facets run only by DELEGATECALL from it, so their code operates on that storage under that lock.
+abstract contract VRShared {
+    // ---- errors ----
+    error NotSystemCaller();
+    error NotSelf();
+    error Locked();
+    error NotGovernor();
+    error NotOwner();
+    error NotSource();
+    error BatchTooLarge();
+    error BudgetShort(uint8 step);
+    error QueueRefused(uint8 code);
+    error RegistrationRefused(uint8 code);
+    error NotCancellable();
+    error PreconditionFailed();
+    error Inconsistent();
+    error DelayNotElapsed();
+    error BadGenesis(uint8 code);
+    error StepFailed();
+    error EndpointsTooLong();
+
+    // ---- events ----
+    event Registered(uint64 indexed id, address indexed owner, bytes32 bindingRef);
+    event BindingProposed(uint64 indexed id, uint64 nonce, bytes32 bindingRef);
+    event EndpointsSet(uint64 indexed id);
+    event ChangeQueued(
+        uint64 indexed id,
+        uint8 indexed kind,
+        bytes32 payloadHash,
+        uint64 notBeforeProgress,
+        uint64 notBeforeTime
+    );
+    event ChangeScheduled(uint64 indexed id, uint64 scheduledAt);
+    event ChangeCancelled(uint64 indexed id);
+    event ChangeBound(uint64 indexed id, bytes32 indexed resultId);
+    event ChangeReleased(uint64 indexed id, bytes32 indexed resultId, uint8 state, uint8 reason);
+    event ModuleActionExecuted(uint64 indexed id, uint8 state);
+    event OutputReserved(bytes32 indexed resultId, address indexed source, bool native);
+    event OutputPublished(bytes32 indexed resultId, bytes32 outputCommit);
+    event OutputInvalidated(bytes32 indexed resultId, uint8 reason);
+    event OutputRejected(bytes32 indexed resultId, uint8 reason);
+    event OutputClosed(bytes32 indexed resultId);
+    event PairStaged(bytes32 indexed resultId, bool recovered);
+    event OutputAcknowledged(bytes32 indexed resultId, bool recovered, uint64 rootEpoch);
+    event RecordAnomaly(uint64 indexed index, uint8 kind, uint8 code);
+    event ModuleFaulted(address indexed module, uint8 step);
+    event ModuleStalled(address indexed module, uint8 reason);
+    event StepBudgetShort(uint8 step, uint256 needed, uint256 available);
+    event ModuleSwitched(
+        address indexed previous, address indexed module, uint64 changeId, bool attached
+    );
+    event HolderAllocated(uint8 indexed index, address indexed holder, address indexed module);
+    event ActivationRecorded(uint32 indexed index, bytes32 indexed ruleId, uint64 rootEpoch);
+    event RuleLatched(uint32 indexed index, bytes32 indexed ruleId);
+    event RetirementMarked(uint8 indexed holder, uint64 indexed id, uint64 indexed generation);
+
+    // ---- registration refusal codes ----
+    uint8 internal constant REG_NODE_ID = 1;
+    uint8 internal constant REG_KEY_SHAPE = 2;
+    uint8 internal constant REG_EQUAL_KEYS = 3;
+    uint8 internal constant REG_ZERO_PAYEE = 4;
+    uint8 internal constant REG_NONCE = 5;
+    uint8 internal constant REG_KEY_IN_USE = 6;
+    uint8 internal constant REG_BAD_POP = 7;
+    uint8 internal constant REG_UNCHANGED = 8;
+
+    // ---- record anomaly codes ----
+    uint8 internal constant AN_MALFORMED = 1;
+    uint8 internal constant AN_UNKNOWN_OUTPUT = 2;
+    uint8 internal constant AN_STATE = 3; // a record the output's state cannot take
+    uint8 internal constant AN_SECOND_PAIR = 4;
+    uint8 internal constant AN_BOUNDARY = 5; // a Boundary without its matching pair
+    uint8 internal constant AN_HOLDER = 6;
+
+    // ---- steps ----
+    uint8 internal constant STEP_ELECT = 1;
+    uint8 internal constant STEP_OUTPUT = 2;
+    uint8 internal constant STEP_RECORDS = 3;
+    uint8 internal constant STEP_RESOLVED = 4;
+    uint8 internal constant STEP_ATTACH = 5;
+    uint8 internal constant STEP_DETACH = 6;
+    uint8 internal constant STEP_GOVERNANCE = 7;
+    uint8 internal constant STEP_ADOPTION = 8;
+
+    // gasBounds indices
+    uint256 internal constant G_ELECT = 0;
+    uint256 internal constant G_OUTPUT = 1;
+    uint256 internal constant G_RECORD = 2;
+    uint256 internal constant G_RESOLVED = 3;
+    uint256 internal constant G_ATTACH = 4;
+    uint256 internal constant G_DETACH = 5;
+    uint256 internal constant G_GOV = 6;
+    uint256 internal constant G_ADOPT = 7;
+
+    /// @dev VR's immutable per-call caps (design section 3.3.4: cap_* = min(module's cached gasBounds, these)). A SetModule whose bounds
+    /// exceed them is refused at queue. Provisional: the compound measurements are test/vr/VRGas.t.sol.
+    uint64 internal constant CAP_ELECT = 4_000_000;
+    uint64 internal constant CAP_OUTPUT = 1_000_000;
+    uint64 internal constant CAP_RECORD = 1_500_000; // per record of an onRecords segment
+    uint64 internal constant CAP_RESOLVED = 500_000;
+    uint64 internal constant CAP_ATTACH = 3_000_000;
+    uint64 internal constant CAP_DETACH = 500_000;
+    uint64 internal constant CAP_GOV = 1_000_000;
+    uint64 internal constant CAP_ADOPT = 1_000_000;
+
+    /// @dev VR's own work inside a step, on top of the module caps: the self-call and calldata, the inner call's /63 headroom, decoding,
+    /// validation and the writes (a 16-member output with 16 bound changes is the worst case).
+    uint256 internal constant ELECT_VR_GAS = 2_600_000;
+    uint256 internal constant PUBLISH_VR_GAS = 2_600_000;
+    uint256 internal constant VOID_VR_GAS = 40_000;
+    /// @dev What `_callModule` requires on top of the cap before it calls (the inner call's EIP-150 headroom check).
+    uint256 internal constant INNER_SLACK = 5_000;
+    /// @dev Covers the failure write, the event, the lock clear and the return after the worst failing step.
+    uint256 internal constant OUTER_RESERVE = 60_000;
+    uint256 internal constant ENDPOINTS_MAX = 1024;
+
+    // transient slots
+    bytes32 internal constant LOCK_SLOT = keccak256("unicity.vr.lock");
+    bytes32 internal constant RESULT_SLOT = keccak256("unicity.vr.step-result");
+
+    modifier locked() {
+        _enter();
+        _;
+        _exit();
+    }
+
+    modifier onlySystem() {
+        if (msg.sender != VRC.SYSTEM_CALLER) revert NotSystemCaller();
+        _;
+    }
+
+    modifier onlySelf() {
+        if (msg.sender != address(this) || _tload(LOCK_SLOT) != 1) revert NotSelf();
+        _;
+    }
+
+    function _enter() internal {
+        if (_tload(LOCK_SLOT) != 0) revert Locked();
+        _tstore(LOCK_SLOT, 1);
+    }
+
+    function _exit() internal {
+        _tstore(LOCK_SLOT, 0);
+    }
+
+    function _tload(bytes32 slot) internal view returns (uint256 v) {
+        assembly ("memory-safe") {
+            v := tload(slot)
+        }
+    }
+
+    function _tstore(bytes32 slot, uint256 v) internal {
+        assembly ("memory-safe") {
+            tstore(slot, v)
+        }
+    }
+
+    /// @dev The outer layer of a contained step: a gas check, then a self-call with an explicit cap whose return data is never copied.
+    /// `short` reports that the precondition gas was not there (no call was made, no health change).
+    function _contained(uint8 step, uint256 budget, bytes memory data)
+        internal
+        returns (bool ok, bool short)
+    {
+        uint256 need = budget + budget / 63 + OUTER_RESERVE;
+        if (gasleft() < need) {
+            emit StepBudgetShort(step, need, gasleft());
+            return (false, true);
+        }
+        assembly ("memory-safe") {
+            ok := call(budget, address(), 0, add(data, 0x20), mload(data), 0, 0)
+        }
+    }
+
+    function _cap(VRLayout.ModuleCache storage m, uint256 g, uint64 vrCap)
+        internal
+        view
+        returns (uint256)
+    {
+        uint64 b = m.gasBounds[g];
+        return b < vrCap ? b : vrCap;
+    }
+
+    function _fault(uint8 step) internal {
+        VRLayout.VRStorage storage $ = VRLayout.load();
+        if ($.status.health != VRC.INCONSISTENT) $.status.health = VRC.FAULTED;
+        emit ModuleFaulted($.activeModule, step);
+    }
+
+    /// @dev The gas a step frame must hold for one inner call capped at `cap`: the cap, its 1/63 EIP-150 headroom and the check slack.
+    /// Every step budget is a sum of these plus VR's own work in the frame, so a module answering within its legal cap is always
+    /// actually called with that cap (design 3.3.1, 3.3.4).
+    function _inner(uint256 cap) internal pure returns (uint256) {
+        return cap + cap / 63 + INNER_SLACK;
+    }
+
+    /// @dev Outstanding boundary work for the generic work deadline: a change Scheduled or Bound (an open output's binding does not
+    /// complete it; only its Boundary does), other than ModuleAction and ForceRemove. A ForceRemove ages on its own, feasibility-qualified
+    /// clock (design 3.6.3: an infeasible removal never stalls the module), so it never feeds this one.
+    function _hasBoundaryWork() internal view returns (bool) {
+        VRLayout.VRStorage storage $ = VRLayout.load();
+        uint256 n = $.pendingIds.length;
+        for (uint256 i = 0; i < n; ++i) {
+            VRLayout.Change storage ch = $.changes[$.pendingIds[i]];
+            if (ch.kind == VRC.K_MODULE_ACTION || ch.kind == VRC.K_FORCE_REMOVE) continue;
+            if (ch.state == VRC.CH_SCHEDULED || ch.state == VRC.CH_BOUND) return true;
+        }
+        return false;
+    }
+
+    function _noteWork(uint64 p) internal {
+        VRLayout.Watch storage w = VRLayout.load().watch;
+        if (!w.workPending) {
+            w.workPending = true;
+            w.workSince = p;
+        }
+    }
+
+    /// @dev FORCE_DEADLINE and the stall deadline: maxElectionInterval + 2 * LIFETIME.
+    function _deadline() internal view returns (uint256) {
+        return uint256(VRLayout.load().module.maxElectionInterval) + 2 * uint256(VRC.LIFETIME);
+    }
+
+    /// @dev Ends the work clock at the transition that empties the outstanding work (a cancel, a Boundary's activations or
+    /// rejections, a refused switch), so later work always starts a fresh clock whatever the election timing.
+    function _settleWork() internal {
+        VRLayout.Watch storage w = VRLayout.load().watch;
+        if (w.workPending && !w.actionWork && !_hasBoundaryWork()) {
+            w.workPending = false;
+            w.workSince = 0;
+        }
+    }
+
+    function _resetWork() internal {
+        VRLayout.Watch storage w = VRLayout.load().watch;
+        w.actionWork = false;
+        w.workPending = false;
+        if (_hasBoundaryWork()) {
+            w.workPending = true;
+            w.workSince = w.cachedProgress;
+        }
+    }
+
+    function _reserve(bytes32 rid, address source, bool native, uint64 attempt) internal {
+        VRLayout.VRStorage storage $ = VRLayout.load();
+        uint64 p = $.watch.cachedProgress;
+        VRLayout.Output storage o = $.outputs[rid];
+        o.state = VRC.OUT_RESERVED;
+        o.attempt = attempt;
+        o.reservedProgress = p;
+        o.expiresAtProgress = p + VRC.LIFETIME;
+        o.predecessor = $.lastAcked;
+        o.sourceModule = source;
+        o.native = native;
+        o.moduleTag = native ? VRC.REGISTRY_NATIVE : $.module.moduleTag;
+        o.kDigest = $.committeeDigest;
+        $.openOutput = rid;
+        emit OutputReserved(rid, source, native);
+    }
+
+    /// @dev Writes the members and digests of a validated output and marks it Published.
+    function _publish(bytes32 rid, VRLayout.Output storage o, Member[] memory ms) internal {
+        VRLayout.VRStorage storage $ = VRLayout.load();
+        VRLayout.Seat[] storage seats = $.outputSeats[rid];
+        for (uint256 i = 0; i < ms.length; ++i) {
+            Member memory m = ms[i];
+            seats.push(
+                VRLayout.Seat(
+                    m.id,
+                    m.generation,
+                    m.weight,
+                    m.rawWeight,
+                    _ref(m.rootNodeWord, m.rootKeyHash, m.evmNodeWord, m.evmKeyHash, m.payee),
+                    m.exposureDigest
+                )
+            );
+        }
+        o.membersDigest = VRCodec.membersDigest(ms);
+        o.changesDigest = _changesDigest(rid);
+        o.outputCommit = VRCodec.outputCommit(
+            VRCodec.CommitInput({
+                network: $.network,
+                registry: address(this),
+                resultId: rid,
+                predecessor: o.predecessor,
+                attempt: o.attempt,
+                moduleTag: o.moduleTag,
+                native: o.native,
+                snapshotDigest: o.snapshotDigest,
+                policyDigest: o.policyDigest,
+                membersDigest: o.membersDigest,
+                kDigest: o.kDigest,
+                changesDigest: o.changesDigest
+            })
+        );
+        o.state = VRC.OUT_PUBLISHED;
+        emit OutputPublished(rid, o.outputCommit);
+    }
+
+    function _changesDigest(bytes32 rid) internal view returns (bytes32) {
+        VRLayout.VRStorage storage $ = VRLayout.load();
+        uint64[] storage ids = $.outputChanges[rid];
+        uint256 n = ids.length;
+        uint64[] memory is_ = new uint64[](n);
+        uint8[] memory ks = new uint8[](n);
+        bytes32[] memory hs = new bytes32[](n);
+        for (uint256 i = 0; i < n; ++i) {
+            is_[i] = ids[i];
+            ks[i] = $.changes[ids[i]].kind;
+            hs[i] = $.changes[ids[i]].payloadHash;
+        }
+        return VRCodec.changesDigest(is_, ks, hs);
+    }
+
+    /// @dev Binds Scheduled changes to `rid` in ascending id: at most 8 root-side and 16 in total, at most 64 KiB of payload, one change
+    /// per scope; ModuleAction never; a ForceRemove only if its id is in `performed`. A change that does not fit is deferred and stays
+    /// Scheduled. With `extend`, only performed ForceRemoves are added to the selection already bound to `rid` (an asynchronous output
+    /// binds its other changes at reservation and its performed ForceRemoves at publication); otherwise the selection starts empty.
+    function _bind(bytes32 rid, uint64[] memory performed, bool extend) internal {
+        VRLayout.VRStorage storage $ = VRLayout.load();
+        VRChanges.Selection memory sel;
+        uint64[] storage bound = $.outputChanges[rid];
+        uint64[] memory existing = new uint64[](bound.length);
+        for (uint256 i = 0; i < bound.length; ++i) {
+            existing[i] = bound[i];
+            VRLayout.Change storage ch = $.changes[bound[i]];
+            VRChanges.take(sel, ch.kind, ch.payloadLength, $.changeScope[bound[i]]);
+        }
+        if (!extend && existing.length != 0) revert StepFailed();
+        uint256 n = $.pendingIds.length;
+        uint64[] memory add = new uint64[](n);
+        uint256 k = 0;
+        for (uint256 i = 0; i < n; ++i) {
+            uint64 id = $.pendingIds[i];
+            VRLayout.Change storage ch = $.changes[id];
+            if (ch.state != VRC.CH_SCHEDULED) continue;
+            if (extend && ch.kind != VRC.K_FORCE_REMOVE) continue;
+            bool perf = false;
+            if (ch.kind == VRC.K_FORCE_REMOVE) {
+                uint64 target = _frId(id);
+                for (uint256 j = 0; j < performed.length; ++j) {
+                    if (performed[j] == target) perf = true;
+                }
+            }
+            if (!VRChanges.fits(sel, ch.kind, ch.payloadLength, $.changeScope[id], perf)) continue;
+            VRChanges.take(sel, ch.kind, ch.payloadLength, $.changeScope[id]);
+            ch.state = VRC.CH_BOUND;
+            ch.boundTo = rid;
+            add[k++] = id;
+            emit ChangeBound(id, rid);
+        }
+        if (k == 0) return;
+        // merge `existing` and `add` (both ascending) into the stored list
+        uint256 total = existing.length + k;
+        uint64[] memory merged = new uint64[](total);
+        uint256 a = 0;
+        uint256 b = 0;
+        for (uint256 i = 0; i < total; ++i) {
+            if (b == k || (a < existing.length && existing[a] < add[b])) merged[i] = existing[a++];
+            else merged[i] = add[b++];
+        }
+        delete $.outputChanges[rid];
+        for (uint256 i = 0; i < total; ++i) {
+            $.outputChanges[rid].push(merged[i]);
+        }
+    }
+
+    /// @dev Moves a change to a terminal state and out of the pending set.
+    function _terminate(uint64 id, uint8 state, uint8 reason) internal {
+        VRLayout.VRStorage storage $ = VRLayout.load();
+        VRLayout.Change storage ch = $.changes[id];
+        ch.state = state;
+        if (state == VRC.CH_REJECTED) ch.rejectReason = reason;
+        if (ch.kind == VRC.K_FORCE_REMOVE) --$.pending.pendingForce;
+        if (ch.kind == VRC.K_SCHEDULE_ACTIVATION) --$.pending.pendingSchedules;
+        --$.pending.pendingCount;
+        uint64[] storage p = $.pendingIds;
+        uint256 n = p.length;
+        for (uint256 i = 0; i < n; ++i) {
+            if (p[i] != id) continue;
+            for (uint256 j = i; j + 1 < n; ++j) {
+                p[j] = p[j + 1];
+            }
+            p.pop();
+            break;
+        }
+    }
+
+    /// @dev The SetModule chain checks (design 3.3.3, 3.5.3): code present with the queued hash, and every metadata getter read with a
+    /// bounded staticcall, decoded exactly and checked against VR's caps. Returns 0 or the refusal code.
+    function _readModule(address module, bytes32 codeHash)
+        internal
+        view
+        returns (uint8, VRLayout.ModuleCache memory m)
+    {
+        if (module.code.length == 0) return (VRChanges.NO_CODE, m);
+        if (module.codehash != codeHash) return (VRChanges.CODE_HASH_MISMATCH, m);
+        uint16[8] memory bits;
+        bool ok;
+        uint256[8] memory w;
+        bits[0] = 256;
+        (ok, w) = _getter(module, IElectionModule.moduleTag.selector, 1, bits);
+        if (!ok) return (VRChanges.BAD_METADATA, m);
+        m.moduleTag = bytes32(w[0]);
+        // the reserved tag marks registry-native outputs only (schema 2.2: native == (moduleTag == REGISTRY_NATIVE))
+        if (m.moduleTag == VRC.REGISTRY_NATIVE) return (VRChanges.BAD_METADATA, m);
+        bits[0] = 32;
+        (ok, w) = _getter(module, IElectionModule.capabilities.selector, 1, bits);
+        if (!ok || w[0] > (VRC.CAP_LIABILITY_HOLDER | VRC.CAP_ADOPTION_CHECK)) {
+            return (VRChanges.BAD_METADATA, m);
+        }
+        m.capabilities = uint32(w[0]);
+        uint16[8] memory b64 = [uint16(64), 64, 64, 64, 64, 64, 64, 64];
+        (ok, w) = _getter(module, IElectionModule.gasBounds.selector, 8, b64);
+        if (!ok) return (VRChanges.BAD_METADATA, m);
+        uint64[8] memory caps = [
+            CAP_ELECT,
+            CAP_OUTPUT,
+            CAP_RECORD,
+            CAP_RESOLVED,
+            CAP_ATTACH,
+            CAP_DETACH,
+            CAP_GOV,
+            CAP_ADOPT
+        ];
+        for (uint256 i = 0; i < 8; ++i) {
+            if (w[i] > caps[i]) return (VRChanges.BAD_METADATA, m);
+            m.gasBounds[i] = uint64(w[i]);
+        }
+        bits[0] = 64;
+        (ok, w) = _getter(module, IElectionModule.maxElectionInterval.selector, 1, bits);
+        if (!ok) return (VRChanges.BAD_METADATA, m);
+        m.maxElectionInterval = uint64(w[0]);
+        if (m.capabilities & VRC.CAP_LIABILITY_HOLDER != 0) {
+            bits[0] = 160;
+            bits[1] = 256;
+            (ok, w) = _getter(module, IElectionModule.liabilityHolder.selector, 2, bits);
+            if (!ok || w[0] == 0 || w[1] == 0) return (VRChanges.BAD_METADATA, m);
+            m.liabilityHolder = address(uint160(w[0]));
+            m.liabilityHolderCodeHash = bytes32(w[1]);
+            if (m.liabilityHolder.codehash != m.liabilityHolderCodeHash) {
+                return (VRChanges.BAD_METADATA, m);
+            }
+        }
+        return (0, m);
+    }
+
+    /// @dev One metadata getter: a 50,000-gas staticcall whose return is refused above 32 x 8 bytes before any copy.
+    function _getter(address module, bytes4 selector, uint256 k, uint16[8] memory bits)
+        internal
+        view
+        returns (bool, uint256[8] memory out)
+    {
+        bool ok;
+        uint256 rs;
+        assembly ("memory-safe") {
+            let ptr := mload(0x40)
+            mstore(ptr, selector)
+            ok := staticcall(50000, module, ptr, 4, 0, 0)
+            rs := returndatasize()
+        }
+        if (!ok || rs > VRC.MAX_RET_METADATA) return (false, out);
+        bytes memory ret = new bytes(rs);
+        assembly ("memory-safe") {
+            returndatacopy(add(ret, 0x20), 0, rs)
+        }
+        uint8 err;
+        (err, out) = VRCodec.decodeMetadata(ret, k, bits);
+        return (err == VRCodec.OK, out);
+    }
+
+    function _shape(
+        string memory rootNodeID,
+        bytes memory rootKey,
+        string memory evmNodeID,
+        bytes memory evmKey,
+        address payee
+    ) internal pure returns (uint8) {
+        uint256 rl = bytes(rootNodeID).length;
+        uint256 el = bytes(evmNodeID).length;
+        if (rl < 1 || rl > 128 || el < 1 || el > 128) return REG_NODE_ID;
+        if (
+            rootKey.length != 33 || evmKey.length != 33
+                || (uint8(rootKey[0]) != 2 && uint8(rootKey[0]) != 3)
+                || (uint8(evmKey[0]) != 2 && uint8(evmKey[0]) != 3)
+        ) return REG_KEY_SHAPE;
+        if (keccak256(rootKey) == keccak256(evmKey)) return REG_EQUAL_KEYS;
+        if (payee == address(0)) return REG_ZERO_PAYEE;
+        return 0;
+    }
+
+    function _ref(bytes32 rn, bytes32 rk, bytes32 en, bytes32 ek, address payee)
+        internal
+        pure
+        returns (bytes32)
+    {
+        return keccak256(abi.encode(rn, rk, en, ek, payee));
+    }
+
+    function _storeBinding(
+        string memory rootNodeID,
+        bytes memory rootKey,
+        string memory evmNodeID,
+        bytes memory evmKey,
+        address payee
+    ) internal returns (bytes32 ref) {
+        VRLayout.VRStorage storage $ = VRLayout.load();
+        bytes32 rn = keccak256(bytes(rootNodeID));
+        bytes32 rk = keccak256(rootKey);
+        bytes32 en = keccak256(bytes(evmNodeID));
+        bytes32 ek = keccak256(evmKey);
+        ref = _ref(rn, rk, en, ek, payee);
+        VRLayout.BindingRecord storage b = $.bindings[ref];
+        if (b.rootKeyHash != 0) return ref; // write-once
+        b.rootNodeWord = rn;
+        b.rootKeyHash = rk;
+        b.evmNodeWord = en;
+        b.evmKeyHash = ek;
+        b.payee = payee;
+        b.rootNodeID = rootNodeID;
+        b.rootKey = rootKey;
+        b.evmNodeID = evmNodeID;
+        b.evmKey = evmKey;
+    }
+
+    function _frId(uint64 changeId) internal view returns (uint64) {
+        return uint64(VRChanges.field(VRLayout.load().changePayload[changeId], 0));
+    }
+
+    function _seatIndex(uint64 id) internal view returns (bool, uint256) {
+        VRLayout.Seat[] storage c = VRLayout.load().committee;
+        for (uint256 i = 0; i < c.length; ++i) {
+            if (c[i].id == id) return (true, i);
+        }
+        return (false, 0);
+    }
+
+    function _committeeIds() internal view returns (uint64[] memory ids) {
+        VRLayout.Seat[] storage c = VRLayout.load().committee;
+        ids = new uint64[](c.length);
+        for (uint256 i = 0; i < c.length; ++i) {
+            ids[i] = c[i].id;
+        }
+    }
+
+    function _seatMember(VRLayout.Seat memory s) internal view returns (Member memory m) {
+        VRLayout.BindingRecord storage b = VRLayout.load().bindings[s.bindingRef];
+        m.id = s.id;
+        m.generation = s.generation;
+        m.weight = s.weight;
+        m.rawWeight = s.rawWeight;
+        m.rootNodeWord = b.rootNodeWord;
+        m.rootKeyHash = b.rootKeyHash;
+        m.evmNodeWord = b.evmNodeWord;
+        m.evmKeyHash = b.evmKeyHash;
+        m.payee = b.payee;
+        m.exposureDigest = s.exposureDigest;
+    }
+
+    function _committeeMembers() internal view returns (Member[] memory ms) {
+        VRLayout.Seat[] storage c = VRLayout.load().committee;
+        ms = new Member[](c.length);
+        for (uint256 i = 0; i < c.length; ++i) {
+            ms[i] = _seatMember(c[i]);
+        }
+    }
+
+    function _contBinding(bytes32 rn, bytes32 rk, bytes32 en, bytes32 ek)
+        internal
+        pure
+        returns (bytes32)
+    {
+        return keccak256(abi.encode(rn, rk, en, ek));
+    }
+
+    function _committeeCont() internal view returns (Continuity.Member[] memory o) {
+        VRLayout.VRStorage storage $ = VRLayout.load();
+        VRLayout.Seat[] storage c = $.committee;
+        o = new Continuity.Member[](c.length);
+        for (uint256 i = 0; i < c.length; ++i) {
+            VRLayout.BindingRecord storage b = $.bindings[c[i].bindingRef];
+            o[i] = Continuity.Member(
+                c[i].id,
+                _contBinding(b.rootNodeWord, b.rootKeyHash, b.evmNodeWord, b.evmKeyHash),
+                c[i].weight
+            );
+        }
+    }
+
+    function _membersCont(Member[] memory ms) internal pure returns (Continuity.Member[] memory s) {
+        s = new Continuity.Member[](ms.length);
+        for (uint256 i = 0; i < ms.length; ++i) {
+            s[i] = Continuity.Member(
+                ms[i].id,
+                _contBinding(
+                    ms[i].rootNodeWord, ms[i].rootKeyHash, ms[i].evmNodeWord, ms[i].evmKeyHash
+                ),
+                ms[i].weight
+            );
+        }
+    }
+
+    function _contParams() internal view returns (Continuity.Params memory) {
+        VRLayout.GenerationParams storage g = VRLayout.load().params;
+        return Continuity.Params(g.maxM, g.distNum, g.distDen);
+    }
+
+    function _contains(uint64[] memory xs, uint64 x) internal pure returns (bool) {
+        for (uint256 i = 0; i < xs.length; ++i) {
+            if (xs[i] == x) return true;
+        }
+        return false;
+    }
+
+    function _sortIds(uint64[] memory xs) internal pure {
+        for (uint256 i = 1; i < xs.length; ++i) {
+            uint64 x = xs[i];
+            uint256 j = i;
+            while (j > 0 && xs[j - 1] > x) {
+                xs[j] = xs[j - 1];
+                --j;
+            }
+            xs[j] = x;
+        }
+    }
+
+    function _popcount(uint256 x) internal pure returns (uint256 c) {
+        while (x != 0) {
+            c += x & 1;
+            x >>= 1;
+        }
+    }
+
+    function _absDiff(uint256 a, uint256 b) internal pure returns (uint256) {
+        return a > b ? a - b : b - a;
+    }
+
+    /// @dev The committee in force, read once for a series of continuity trials.
+    struct Snap {
+        Continuity.Member[] o;
+        uint256[] raw;
+        Continuity.Params p;
+    }
+
+    function _snap() internal view returns (Snap memory s) {
+        VRLayout.Seat[] storage c = VRLayout.load().committee;
+        s.o = _committeeCont();
+        s.raw = new uint256[](c.length);
+        for (uint256 i = 0; i < c.length; ++i) {
+            s.raw[i] = c[i].rawWeight;
+        }
+        s.p = _contParams();
+    }
+
+    /// @dev Whether removing `id` alone from the committee in force passes continuity ("individually feasible", design 3.6.3).
+    function _feasible(Snap memory s, uint64 id) internal pure returns (bool) {
+        bool member = false;
+        for (uint256 i = 0; i < s.o.length; ++i) {
+            if (s.o[i].id == id) member = true;
+        }
+        if (!member) return false;
+        uint64[] memory ids = new uint64[](1);
+        ids[0] = id;
+        return _passesWithout(s, ids);
+    }
+
+    /// @dev Continuity from the committee in force to the committee without `removed` (bindings unchanged, raw weights re-quantized).
+    function _passesWithout(Snap memory s, uint64[] memory removed) internal pure returns (bool) {
+        uint256 n = s.o.length;
+        uint256 keep = n;
+        for (uint256 i = 0; i < n; ++i) {
+            if (_contains(removed, s.o[i].id)) --keep;
+        }
+        if (keep == 0) return false;
+        uint256[] memory raw = new uint256[](keep);
+        uint256 k = 0;
+        for (uint256 i = 0; i < n; ++i) {
+            if (!_contains(removed, s.o[i].id)) raw[k++] = s.raw[i];
+        }
+        uint256[] memory q = Quantize.quantize(raw);
+        Continuity.Member[] memory next = new Continuity.Member[](keep);
+        k = 0;
+        for (uint256 i = 0; i < n; ++i) {
+            if (_contains(removed, s.o[i].id)) continue;
+            next[k] = Continuity.Member(s.o[i].id, s.o[i].binding, uint64(q[k]));
+            ++k;
+        }
+        (uint8 failed,) = Continuity.check(s.o, next, s.p);
+        return failed == 0;
+    }
+
+    /// @dev A contained void step on a hook path: BudgetShort is an event, a failure faults the module when `faults` (it is the active
+    /// module's step) and never reverts.
+    function _voidStep(address module, uint256 cap, bytes memory data, uint8 step, bool faults)
+        internal
+        returns (bool ok)
+    {
+        bool short;
+        (ok, short) = _contained(
+            step, _inner(cap) + VOID_VR_GAS, abi.encodeCall(IVRSteps.stepVoid, (module, cap, data))
+        );
+        if (!ok && !short && faults) _fault(step);
+    }
+}

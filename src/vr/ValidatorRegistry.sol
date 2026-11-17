@@ -1,0 +1,562 @@
+// SPDX-License-Identifier: Apache-2.0
+pragma solidity 0.8.37;
+
+// Loops are bounded by the frozen ceilings: 16 committee members, 32 pending changes, 16 bound changes, 64 activations, 8 holders and
+// the hook's maxBatch (at most 32 records). Calls into modules are contained steps (design section 3.3), never bubbling.
+// forge-lint: disable-start(calls-loop, reentrancy-no-eth, unsafe-typecast)
+
+import {VRC} from "./VRConstants.sol";
+import {VRCodec} from "./VRCodec.sol";
+import {VRChanges} from "./VRChanges.sol";
+import {VRLayout} from "./VRLayout.sol";
+import {VRShared} from "./VRShared.sol";
+import {VRRepairFacet} from "./VRRepairFacet.sol";
+import {VRRecordsFacet} from "./VRRecordsFacet.sol";
+import {
+    Registration,
+    Member,
+    OutputView,
+    FeeSet,
+    IVRRecordSource,
+    IElectionModule,
+    IVRSteps
+} from "./VRTypes.sol";
+import {KeyLib} from "../p85/KeyLib.sol";
+import {Quantize} from "../p85/Quantize.sol";
+import {Continuity} from "../p85/Continuity.sol";
+
+/// @title ValidatorRegistry (VR)
+/// @notice The on-chain validator registry of a VR generation (bft-core briefs/validator-registry-design-final.md, schema v1). It owns
+/// identities, bindings and key history; holds the governed configuration and its change queue; drives the active election module
+/// through contained steps; publishes outputs the roots prove; and applies the root records that resolve them.
+///
+/// Immutable code, no proxy. Only `activeModule` and `governor` change, and only through governance. Genesis writes the storage through
+/// the constructor (the genesis plan deploys it in a simulated chain and allocates the resulting runtime code and storage at 0xff..03).
+///
+/// Containment (design section 3.3). Every call into a module is a contained step: the outer frame checks its preconditions and its gas
+/// (`gasleft() >= budget + budget/63 + OUTER_RESERVE`, else BudgetShort), then self-calls the step with an explicit gas cap and ignores the
+/// self-call's return data. The step calls the module with its own explicit cap, never copies a module revert, refuses a return above the
+/// step's cap before copying it, decodes it with VRCodec, and writes VR's own effects; any failure reverts only the step, and the outer
+/// frame records a fault within its reserve. One transient lock (EIP-1153) guards every mutator except `invalidate`.
+contract ValidatorRegistry is VRShared {
+    /// @dev The two facets, created by the genesis plan and pinned here: VR's runtime code (whose hash the genesis EVM PDR, the ureth
+    /// flags and the B1 profile pin) carries their addresses and code hashes as immutables, so the pin covers all three. The fallback
+    /// routes every selector the core does not implement to the governance facet; the repair facet is reachable only from `elect`.
+    address internal immutable GOVERNANCE_FACET;
+    bytes32 internal immutable GOVERNANCE_FACET_HASH;
+    address internal immutable REPAIR_FACET;
+    bytes32 internal immutable REPAIR_FACET_HASH;
+    address internal immutable RECORDS_FACET;
+    bytes32 internal immutable RECORDS_FACET_HASH;
+
+    struct GenesisIdentity {
+        address owner;
+        Registration binding; // nonce ignored; genesis bindings carry no proof of possession
+        uint64 rawWeight; // nonzero for a member of the genesis committee
+    }
+
+    struct Genesis {
+        bytes32 network;
+        address governor;
+        address module;
+        bytes32 moduleCodeHash;
+        uint32 nMin;
+        uint32 nTarget;
+        uint32 nMax;
+        uint32 vMax;
+        uint32 lMax;
+        uint32 rMax;
+        uint32 maxBatch;
+        uint64 knownRootEpoch;
+        uint64 epochStartProgress;
+        FeeSet fees;
+        uint64 maxGas;
+        uint64 systemGas;
+        uint64 maxM;
+        uint64 distNum;
+        uint64 distDen;
+        GenesisIdentity[] identities; // ids 1..n in order
+        address governanceFacet; // deployed VRGovernanceFacet
+        address repairFacet; // deployed VRRepairFacet
+        address recordsFacet; // deployed VRRecordsFacet
+    }
+
+    constructor(Genesis memory g) {
+        VRLayout.VRStorage storage $ = VRLayout.load();
+        if (g.network == 0 || g.governor == address(0)) revert BadGenesis(1);
+        if (g.nMin < 1 || g.nMin > g.nTarget || g.nTarget > g.nMax || g.nMax > VRC.MAX_COMMITTEE) {
+            revert BadGenesis(2);
+        }
+        if (g.maxBatch == 0 || g.maxBatch > 32) revert BadGenesis(3);
+        if (
+            VRChanges.validateFees(
+                    g.maxGas,
+                    g.systemGas,
+                    g.fees.baseFeeFloor,
+                    g.fees.changeDenominator,
+                    g.fees.feeCollector
+                ) != 0
+        ) revert BadGenesis(4);
+        if (g.distDen == 0) revert BadGenesis(5);
+        (uint8 me, VRLayout.ModuleCache memory meta) = _readModule(g.module, g.moduleCodeHash);
+        if (me != 0) revert BadGenesis(6);
+        if (g.governanceFacet.code.length == 0 || g.repairFacet.code.length == 0) {
+            revert BadGenesis(11);
+        }
+        GOVERNANCE_FACET = g.governanceFacet;
+        GOVERNANCE_FACET_HASH = g.governanceFacet.codehash;
+        REPAIR_FACET = g.repairFacet;
+        REPAIR_FACET_HASH = g.repairFacet.codehash;
+        if (g.recordsFacet.code.length == 0) revert BadGenesis(11);
+        RECORDS_FACET = g.recordsFacet;
+        RECORDS_FACET_HASH = g.recordsFacet.codehash;
+
+        $.network = g.network;
+        $.lastAcked = VRC.GENESIS_RESULT;
+        $.committeeLimits = VRLayout.CommitteeLimits(g.nMin, g.nTarget, g.nMax);
+        $.hookLimits = VRLayout.HookLimits(g.vMax, g.lMax, g.rMax, g.maxBatch);
+        $.status.knownRootEpoch = g.knownRootEpoch;
+        $.activeModule = g.module;
+        $.activeModuleCodeHash = g.moduleCodeHash;
+        $.module = meta;
+        $.governor = g.governor;
+        $.counters.nextChangeId = 1;
+        $.feesPrevious =
+            VRLayout.Fees(g.fees.baseFeeFloor, g.fees.changeDenominator, g.fees.feeCollector);
+        $.feesCurrent = $.feesPrevious;
+        $.watch.epochStartProgress = g.epochStartProgress;
+        $.params = VRLayout.GenerationParams(g.maxM, g.distNum, g.distDen, g.maxGas, g.systemGas);
+
+        uint256 n = g.identities.length;
+        uint256 members = 0;
+        for (uint256 i = 0; i < n; ++i) {
+            GenesisIdentity memory gi = g.identities[i];
+            if (gi.owner == address(0)) revert BadGenesis(7);
+            Registration memory r = gi.binding;
+            if (_shape(r.rootNodeID, r.rootKey, r.evmNodeID, r.evmKey, r.payee) != 0) {
+                revert BadGenesis(8);
+            }
+            KeyLib.toAddress(r.rootKey); // on the curve
+            KeyLib.toAddress(r.evmKey);
+            uint64 id = uint64(i + 1);
+            bytes32 rk = keccak256(r.rootKey);
+            bytes32 ek = keccak256(r.evmKey);
+            if ($.keyOwner[rk] != 0 || $.keyOwner[ek] != 0) revert BadGenesis(9);
+            $.keyOwner[rk] = (uint256(id) << 8) | 1;
+            $.keyOwner[ek] = (uint256(id) << 8) | 2;
+            VRLayout.Identity storage idn = $.identities[id];
+            idn.owner = gi.owner;
+            idn.generation = 1;
+            idn.currentRef = _storeBinding(r.rootNodeID, r.rootKey, r.evmNodeID, r.evmKey, r.payee);
+            if (gi.rawWeight != 0) ++members;
+        }
+        if (members < 1 || members > VRC.MAX_COMMITTEE) revert BadGenesis(10);
+        $.counters.identityCount = uint64(n);
+
+        uint256[] memory raw = new uint256[](members);
+        uint256 k = 0;
+        for (uint256 i = 0; i < n; ++i) {
+            if (g.identities[i].rawWeight != 0) raw[k++] = g.identities[i].rawWeight;
+        }
+        uint256[] memory q = Quantize.quantize(raw);
+        Member[] memory ms = new Member[](members);
+        k = 0;
+        for (uint256 i = 0; i < n; ++i) {
+            if (g.identities[i].rawWeight == 0) continue;
+            uint64 id = uint64(i + 1);
+            VRLayout.Seat memory s = VRLayout.Seat({
+                id: id,
+                generation: 1,
+                weight: uint64(q[k]),
+                rawWeight: g.identities[i].rawWeight,
+                bindingRef: $.identities[id].currentRef,
+                exposureDigest: VRCodec.exposureDigest(
+                    g.network, address(this), VRC.GENESIS_RESULT, id
+                )
+            });
+            $.committee.push(s);
+            ms[k++] = _seatMember(s);
+        }
+        $.committeeDigest = VRCodec.membersDigest(ms);
+
+        if (meta.capabilities & VRC.CAP_LIABILITY_HOLDER != 0) {
+            $.holders[0] = VRLayout.Holder(
+                meta.liabilityHolder, g.knownRootEpoch, meta.liabilityHolderCodeHash, g.module
+            );
+            $.holderIndexPlusOne[meta.liabilityHolder] = 1;
+            $.status.holderCount = 1;
+        }
+    }
+
+    /// @notice A void step (attach, detach, onRecords, onResolved, onGovernance): only VR itself, under its lock.
+    function stepVoid(address module, uint256 cap, bytes calldata data) external onlySelf {
+        bytes memory ret = _callModule(module, cap, data, 0, false);
+        if (VRCodec.decodeVoid(ret.length) != VRCodec.OK) revert StepFailed();
+    }
+
+    /// @notice The adoption step: a staticcall of `adoptionReady`, its status passed back in transient storage.
+    function stepAdoption(address module, uint256 cap, bytes calldata ctx) external onlySelf {
+        bytes memory ret = _callModule(
+            module,
+            cap,
+            abi.encodeCall(IElectionModule.adoptionReady, (ctx)),
+            VRC.MAX_RET_ADOPTION,
+            true
+        );
+        (uint8 err, uint8 status) = VRCodec.decodeAdoption(ret);
+        if (err != VRCodec.OK) revert StepFailed();
+        _tstore(RESULT_SLOT, status);
+    }
+
+    /// @notice The election step: the module's `elect`, a reservation, and when the module reports it ready, its `outputOf`, the
+    /// validation and the publication, all in this frame so a failure anywhere rolls the reservation back.
+    function stepElect(bytes calldata ctx) external onlySelf {
+        VRLayout.VRStorage storage $ = VRLayout.load();
+        address m = $.activeModule;
+        bytes memory ret = _callModule(
+            m,
+            _cap($.module, G_ELECT, CAP_ELECT),
+            abi.encodeCall(IElectionModule.elect, (ctx)),
+            VRC.MAX_RET_ELECT,
+            false
+        );
+        (uint8 err, uint8 outcome, bool ready, bytes32 rid) = VRCodec.decodeElect(ret);
+        if (err != VRCodec.OK) revert StepFailed();
+        if (outcome == VRC.ELECT_RESERVED) {
+            // fresh: never seen, never the genesis sentinel; the gates (no open output, no pair) cannot change during the call
+            if (
+                rid == VRC.GENESIS_RESULT || $.outputs[rid].state != VRC.OUT_NONE
+                    || $.openOutput != 0 || $.pendingPair != 0
+            ) revert StepFailed();
+            _reserve(rid, m, false, 0);
+            if (ready) {
+                _readyOutput(rid, m, true);
+            } else {
+                _bind(rid, new uint64[](0), false);
+            }
+        }
+        _tstore(RESULT_SLOT, outcome);
+    }
+
+    /// @notice The publication step of an asynchronous module: `outputOf`, then validation and publication when Ready.
+    function stepPublish(bytes32 rid) external onlySelf {
+        VRLayout.VRStorage storage $ = VRLayout.load();
+        _tstore(RESULT_SLOT, _readyOutput(rid, $.outputs[rid].sourceModule, false));
+    }
+
+    /// @dev The inner layer: one call or staticcall into the module with an explicit cap below 63/64 of what is available, its revert
+    /// data never copied, and a successful return above `maxRet` refused before any copy.
+    function _callModule(
+        address module,
+        uint256 cap,
+        bytes memory data,
+        uint256 maxRet,
+        bool isStatic
+    ) private returns (bytes memory ret) {
+        if (gasleft() < _inner(cap)) revert StepFailed();
+        bool ok;
+        uint256 rs;
+        assembly ("memory-safe") {
+            switch isStatic
+            case 0 { ok := call(cap, module, 0, add(data, 0x20), mload(data), 0, 0) }
+            default { ok := staticcall(cap, module, add(data, 0x20), mload(data), 0, 0) }
+            rs := returndatasize()
+        }
+        if (!ok || rs > maxRet) revert StepFailed();
+        ret = new bytes(rs);
+        assembly ("memory-safe") {
+            returndatacopy(add(ret, 0x20), 0, rs)
+        }
+    }
+
+    /// @dev outputOf(R), decoded; Pending and NotMine pass through (unless `mustBeReady`); Ready is validated, its performed
+    /// ForceRemoves bound (or, when `fullBind`, the whole selection made) and the output published.
+    function _readyOutput(bytes32 rid, address m, bool fullBind) private returns (uint8) {
+        VRLayout.VRStorage storage $ = VRLayout.load();
+        bytes memory ret = _callModule(
+            m,
+            _cap($.module, G_OUTPUT, CAP_OUTPUT),
+            abi.encodeCall(IElectionModule.outputOf, (rid)),
+            VRC.MAX_RET_READY,
+            true
+        );
+        (uint8 err, uint8 status, VRCodec.OutputHeader memory h, Member[] memory ms) =
+            VRCodec.decodeOutput(ret);
+        if (err != VRCodec.OK) revert StepFailed();
+        if (status != VRC.STATUS_READY) {
+            if (fullBind) revert StepFailed(); // reported ready in the same call, so it must be Ready
+            return status == VRC.STATUS_PENDING ? VRC.PUB_PENDING : VRC.PUB_NOT_MINE;
+        }
+        VRLayout.Output storage o = $.outputs[rid];
+        if (h.resultId != rid || h.predecessor != o.predecessor) revert StepFailed();
+        if (!_validMembers(ms, true)) revert StepFailed();
+        (uint64[] memory removed, uint256 nRemoved) = _removedIds(ms);
+        uint64[] memory rem = new uint64[](nRemoved);
+        for (uint256 i = 0; i < nRemoved; ++i) {
+            rem[i] = removed[i];
+        }
+        _bind(rid, rem, !fullBind);
+        o.attempt = h.attempt;
+        o.snapshotDigest = h.snapshotDigest;
+        o.policyDigest = h.policyDigest;
+        _publish(rid, o, ms);
+        return VRC.PUB_PUBLISHED;
+    }
+
+    function recordCursor() external view returns (uint64) {
+        return VRLayout.load().status.recordCursor;
+    }
+
+    function limits()
+        external
+        view
+        returns (uint32 vMax, uint32 lMax, uint32 rMax, uint32 maxBatch)
+    {
+        VRLayout.HookLimits storage l = VRLayout.load().hookLimits;
+        return (l.vMax, l.lMax, l.rMax, l.maxBatch);
+    }
+
+    /// @notice Applies exactly min(maxRecords, available) records (design sections 3.4.2 and 3.6.1). Never reverts for record content
+    /// or module behaviour: a record the projection guarantees make impossible is an anomaly (health Inconsistent, absorbing), and the
+    /// cursor advances regardless. The active module receives its records through a contained `onRecords`; a pointer-switching Boundary
+    /// splits the batch between the old and the new module.
+    function applyRootRecords(uint32 maxRecords) external onlySystem locked {
+        _delegate(
+            RECORDS_FACET,
+            RECORDS_FACET_HASH,
+            abi.encodeCall(VRRecordsFacet.applyRecords, (maxRecords))
+        );
+    }
+
+    /// @notice The election hook (design sections 2.3, 3.6.2 and 3.7.2). Returns 0 Disabled unless VR's cursor is caught up with the
+    /// SealRegistry and no output or pair is open; then either the module path (a contained `elect`) or, when the module is Faulted
+    /// or Stalled, the registry-native repair path. A failed contained `elect` returns 3 and faults the module.
+    function elect(bytes32 origin) external onlySystem locked returns (uint8 outcome) {
+        VRLayout.VRStorage storage $ = VRLayout.load();
+        IVRRecordSource seal = IVRRecordSource(VRC.SEAL_REGISTRY);
+        uint64 p = seal.progress();
+        $.watch.cachedProgress = p;
+        if ($.status.health == VRC.INCONSISTENT) return VRC.ELECT_DISABLED;
+        if ($.status.recordCursor != seal.recordCount()) return VRC.ELECT_DISABLED;
+        _delegate(REPAIR_FACET, REPAIR_FACET_HASH, abi.encodeCall(VRRepairFacet.watch, (p)));
+        if ($.openOutput != 0 || $.pendingPair != 0) return VRC.ELECT_DISABLED;
+        uint8 h = $.status.health;
+        if (h == VRC.FAULTED || h == VRC.STALLED) {
+            return abi.decode(
+                _delegate(
+                    REPAIR_FACET,
+                    REPAIR_FACET_HASH,
+                    abi.encodeCall(VRRepairFacet.electNative, (origin, p))
+                ),
+                (uint8)
+            );
+        }
+
+        uint256 budget = _inner(_cap($.module, G_ELECT, CAP_ELECT))
+            + _inner(_cap($.module, G_OUTPUT, CAP_OUTPUT)) + ELECT_VR_GAS;
+        bytes memory ctx = VRCodec.encodeContext(_context(origin, p, seal.ucTime()));
+        (bool ok, bool short) =
+            _contained(STEP_ELECT, budget, abi.encodeCall(IVRSteps.stepElect, (ctx)));
+        if (short) return VRC.ELECT_DISABLED;
+        if (!ok) {
+            _fault(STEP_ELECT);
+            return VRC.ELECT_NO_CANDIDATE;
+        }
+        return uint8(_tload(RESULT_SLOT));
+    }
+
+    function _context(bytes32 origin, uint64 p, uint64 t)
+        private
+        view
+        returns (VRCodec.Context memory c)
+    {
+        VRLayout.VRStorage storage $ = VRLayout.load();
+        c.origin = origin;
+        c.progress = p;
+        c.ucTime = t;
+        c.knownRootEpoch = $.status.knownRootEpoch;
+        c.lastAcked = $.lastAcked;
+        c.nMin = $.committeeLimits.nMin;
+        c.nTarget = $.committeeLimits.nTarget;
+        c.nMax = $.committeeLimits.nMax;
+        uint256 n = $.pendingIds.length;
+        uint256 due = 0;
+        uint16 fr = 0;
+        for (uint256 i = 0; i < n; ++i) {
+            uint64 id = $.pendingIds[i];
+            VRLayout.Change storage ch = $.changes[id];
+            if (ch.state != VRC.CH_SCHEDULED || ch.kind == VRC.K_MODULE_ACTION) continue;
+            if (ch.kind == VRC.K_FORCE_REMOVE) {
+                (bool found, uint256 pos) = _seatIndex(_frId(id));
+                if (found) fr |= uint16(1 << pos);
+            } else {
+                ++due;
+            }
+        }
+        c.dueWork = uint32(due);
+        c.forceRemoved = fr;
+    }
+
+    /// @dev VR's validation of an output's member set (design sections 3.1 and 3.5.4): known identities whose words are exactly their
+    /// current binding (generation g) or their staged binding (generation g + 1); positive raw weights quantized by the shared rule; and,
+    /// for module outputs, the committee limits (in range or strictly toward it) and the O -> S continuity budget.
+    function _validMembers(Member[] memory ms, bool moduleOutput) private view returns (bool) {
+        VRLayout.VRStorage storage $ = VRLayout.load();
+        uint256 n = ms.length;
+        if (n == 0 || n > VRC.MAX_COMMITTEE) return false;
+        uint256[] memory raw = new uint256[](n);
+        for (uint256 i = 0; i < n; ++i) {
+            Member memory m = ms[i];
+            if (i > 0 && ms[i - 1].id >= m.id) return false;
+            VRLayout.Identity storage idn = $.identities[m.id];
+            if (idn.generation == 0 || m.rawWeight == 0) return false;
+            bytes32 ref = _ref(m.rootNodeWord, m.rootKeyHash, m.evmNodeWord, m.evmKeyHash, m.payee);
+            bool current = m.generation == idn.generation && ref == idn.currentRef;
+            bool staged =
+                idn.stagedRef != 0 && m.generation == idn.generation + 1 && ref == idn.stagedRef;
+            if (!current && !staged) return false;
+            raw[i] = m.rawWeight;
+        }
+        uint256 total = 0;
+        for (uint256 i = 0; i < n; ++i) {
+            total += raw[i];
+        }
+        if (total > type(uint64).max) return false;
+        uint256[] memory q = Quantize.quantize(raw);
+        for (uint256 i = 0; i < n; ++i) {
+            if (q[i] != ms[i].weight) return false;
+        }
+        if (!moduleOutput) return true;
+        uint256 o = $.committee.length;
+        if (_limitDistance(n) != 0 && _limitDistance(n) >= _limitDistance(o)) return false;
+        (uint8 failed,) = Continuity.check(_committeeCont(), _membersCont(ms), _contParams());
+        return failed == 0;
+    }
+
+    function _limitDistance(uint256 n) private view returns (uint256) {
+        VRLayout.CommitteeLimits storage l = VRLayout.load().committeeLimits;
+        if (n < l.nMin) return l.nMin - n;
+        if (n > l.nMax) return n - l.nMax;
+        return 0;
+    }
+
+    /// @dev Committee ids absent from `ms` (ascending), for ForceRemove performance.
+    function _removedIds(Member[] memory ms) private view returns (uint64[] memory out, uint256 k) {
+        VRLayout.Seat[] storage c = VRLayout.load().committee;
+        out = new uint64[](c.length);
+        uint256 j = 0;
+        for (uint256 i = 0; i < c.length; ++i) {
+            uint64 id = c[i].id;
+            while (j < ms.length && ms[j].id < id) ++j;
+            if (j == ms.length || ms[j].id != id) out[k++] = id;
+        }
+    }
+
+    /// @notice Publishes a Reserved output of an asynchronous module (design section 3.4.2 row `publish`). Anyone may call it.
+    /// Returns NotMine for an unknown id; PreconditionFailed (no state change) when VR is Inconsistent or the output is not a Reserved
+    /// output of the active module; otherwise the module's answer: Pending, NotMine, or Published after VR validation. A Ready output
+    /// that VR validation rejects, or a malformed or oversized return, faults the module (and returns PreconditionFailed). Reverts
+    /// BudgetShort when the call cannot fund the step.
+    function publish(bytes32 resultId) external locked returns (uint8 status) {
+        VRLayout.VRStorage storage $ = VRLayout.load();
+        VRLayout.Output storage o = $.outputs[resultId];
+        if (o.state == VRC.OUT_NONE) return VRC.PUB_NOT_MINE;
+        if (
+            $.status.health == VRC.INCONSISTENT || o.state != VRC.OUT_RESERVED || o.native
+                || o.sourceModule != $.activeModule
+        ) return VRC.PUB_PRECONDITION_FAILED;
+        uint256 budget = _inner(_cap($.module, G_OUTPUT, CAP_OUTPUT)) + PUBLISH_VR_GAS;
+        (bool ok, bool short) =
+            _contained(STEP_OUTPUT, budget, abi.encodeCall(IVRSteps.stepPublish, (resultId)));
+        if (short) revert BudgetShort(STEP_OUTPUT);
+        if (!ok) {
+            _fault(STEP_OUTPUT);
+            return VRC.PUB_PRECONDITION_FAILED;
+        }
+        return uint8(_tload(RESULT_SLOT));
+    }
+
+    /// @notice Total and lock-exempt (design section 3.4.2): by the output's source module it moves Reserved or Published to
+    /// Invalidated and is a no-op in every other state; by anyone else it reverts NotSource for a known id and is a no-op for an unknown
+    /// one. Reason 0 is the storage sentinel "not invalidated", so a source call with reason 0 is a no-op (FD-5). It writes only the
+    /// named output's state and reason bits and calls nothing.
+    function invalidate(bytes32 resultId, uint8 reason) external returns (bool changed) {
+        VRLayout.VRStorage storage $ = VRLayout.load();
+        VRLayout.Output storage o = $.outputs[resultId];
+        uint8 s = o.state;
+        if (s == VRC.OUT_NONE) return false;
+        if (msg.sender != o.sourceModule || o.native) revert NotSource();
+        if (reason == 0) return false;
+        if (s != VRC.OUT_RESERVED && s != VRC.OUT_PUBLISHED) return false;
+        o.state = VRC.OUT_INVALIDATED;
+        o.invalidReason = reason;
+        o.invalidAtProgress = $.watch.cachedProgress;
+        emit OutputInvalidated(resultId, reason);
+        return true;
+    }
+
+    // ---- views served by the core (the governance facet is at its size limit) ----
+
+    function output(bytes32 resultId) external view returns (OutputView memory v) {
+        VRLayout.VRStorage storage $ = VRLayout.load();
+        VRLayout.Output storage o = $.outputs[resultId];
+        v.state = o.state;
+        v.attempt = o.attempt;
+        v.reservedProgress = o.reservedProgress;
+        v.expiresAtProgress = o.expiresAtProgress;
+        v.predecessor = o.predecessor;
+        v.sourceModule = o.sourceModule;
+        v.native = o.native;
+        v.moduleTag = o.moduleTag;
+        v.membersDigest = o.membersDigest;
+        v.kDigest = o.kDigest;
+        v.changesDigest = o.changesDigest;
+        v.snapshotDigest = o.snapshotDigest;
+        v.policyDigest = o.policyDigest;
+        v.outputCommit = o.outputCommit;
+        v.invalidReason = o.invalidReason;
+        v.invalidAtProgress = o.invalidAtProgress;
+        VRLayout.Seat[] storage seats = $.outputSeats[resultId];
+        v.members = new Member[](seats.length);
+        for (uint256 i = 0; i < seats.length; ++i) {
+            v.members[i] = _seatMember(seats[i]);
+        }
+        v.changes = $.outputChanges[resultId];
+    }
+
+    function committee() external view returns (Member[] memory) {
+        return _committeeMembers();
+    }
+
+    // =============================================================================================
+    // facets
+    // =============================================================================================
+
+    /// @dev A delegatecall into one of VR's own facets (trusted code at a pinned hash): its revert, if any, bubbles.
+    function _delegate(address f, bytes32 h, bytes memory data) private returns (bytes memory ret) {
+        if (f.codehash != h) revert BadGenesis(12);
+        bool ok;
+        // the target is one of VR's own facets, an immutable whose code hash is checked above
+        // forge-lint: disable-next-line(controlled-delegatecall)
+        (ok, ret) = f.delegatecall(data);
+        if (!ok) {
+            assembly ("memory-safe") {
+                revert(add(ret, 0x20), mload(ret))
+            }
+        }
+    }
+
+    /// @notice Everything else (governance, identities, views) is the governance facet's, run in VR's context.
+    fallback() external {
+        address f = GOVERNANCE_FACET;
+        if (f.codehash != GOVERNANCE_FACET_HASH) revert BadGenesis(12);
+        assembly {
+            calldatacopy(0, 0, calldatasize())
+            let ok := delegatecall(gas(), f, 0, calldatasize(), 0, 0)
+            returndatacopy(0, 0, returndatasize())
+            switch ok
+            case 0 { revert(0, returndatasize()) }
+            default { return(0, returndatasize()) }
+        }
+    }
+}
