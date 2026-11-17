@@ -25,6 +25,7 @@ via_ir = true
 # untouched: the restriction names only src/p85.
 #
 # The v2 bridge verifier (src/nb2/verifier) is size-first for the same reason: it exceeds EIP-170 at 200 runs.
+
 additional_compiler_profiles = [{ name = "p85", optimizer_runs = 1 }]
 compilation_restrictions = [
     { paths = "src/p85/**", optimizer_runs = 1 },
@@ -45,6 +46,7 @@ fs_permissions = [
     { access = "read", path = "./test/nb2" },
     { access = "read-write", path = "./test/p85/fixtures" },
     { access = "read-write", path = "./test/vr/fixtures" },
+    { access = "read", path = "./test/vr/poa/fixtures" },
     { access = "read-write", path = "./script/genesis-out" },
 ]
 
