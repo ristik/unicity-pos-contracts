@@ -5,6 +5,7 @@ import {RewardsBase} from "./Rewards.t.sol";
 import {RewardPool} from "../../src/p85/RewardPool.sol";
 import {StakeCustody} from "../../src/p85/StakeCustody.sol";
 import {CustodyStorage} from "../../src/p85/CustodyStorage.sol";
+import {OutputView} from "../../src/vr/VRTypes.sol";
 import {
     RecordKind,
     RecoveryAckData,
@@ -13,6 +14,25 @@ import {
     HolderRetirementData,
     SessionClosedData
 } from "../../src/p85/P85Types.sol";
+
+/// @dev The two ValidatorRegistry views RewardPool's tail bound reads, etched at the canonical VR address: one open output and the
+/// progress it was reserved at.
+contract MockOpenOutput {
+    bytes32 public openOutput;
+    uint64 internal _reserved;
+
+    function setOpen(bytes32 rid, uint64 reservedProgress) external {
+        openOutput = rid;
+        _reserved = reservedProgress;
+    }
+
+    function output(bytes32 rid) external view returns (OutputView memory v) {
+        if (rid == openOutput) {
+            v.state = 1;
+            v.reservedProgress = _reserved;
+        }
+    }
+}
 
 /// @notice VT-15 (bft-core#1157), the consumer half of the shared acceptance contract AC-LR (validator-registry design sections 4.2 and
 /// 4.4): P85 custody and the RewardPool read a validator-registry log. Kinds 6 and 7, HolderRetirements of other holders and records of
@@ -384,5 +404,187 @@ contract RegistryRecordsTest is RewardsBase {
     function _dust() internal pure returns (uint256) {
         return (uint256(0.9 ether) - 3 * (uint256(0.9 ether) / 3))
             + (uint256(1 ether) - 3 * (uint256(1 ether) / 3));
+    }
+
+    // --- the tail bound: a handoff pending in VR (reviews of #88: astra HIGH, sol P1) ---------------------
+
+    bytes32 internal constant RES_FOREIGN = keccak256("result/foreign-pending");
+
+    function _registry() internal returns (MockOpenOutput vr) {
+        address registryAt = pool.REGISTRY();
+        vm.etch(registryAt, address(new MockOpenOutput()).code);
+        vr = MockOpenOutput(registryAt);
+    }
+
+    /// @dev [0,1000) is settled and partly claimed; then VR reserves a foreign output at 1000, commits it, and the root closes G at
+    /// H = 1900 while progress runs to 2100 before the foreign acknowledgement is projected.
+    function _pendingForeignHandoff() internal returns (MockOpenOutput vr, uint256 claimed) {
+        vr = _registry();
+        clock(1_000, 100);
+        assertEq(_drain(), 1, "[0,1000) settles while no output is open");
+        claimed = pool.credits(payee(0)) / 2;
+        vm.prank(payee(0));
+        pool.claim(claimed, payable(payee(0)));
+        vr.setOpen(RES_FOREIGN, 1_000);
+        clock(1_950, 195);
+        pushRecord(RecordKind.Closure, closureData(GENESIS_ASSIGNMENT, 1_900, "G"));
+        applyAll();
+        _advanceAll();
+        assertTrue(asg(GENESIS_ASSIGNMENT).closed);
+        clock(2_100, 210);
+        // caught up with every imported record, yet the tail does not settle past the open output's reservation
+        assertEq(pool.recordCursor(), roots.recordCount());
+        vm.expectRevert(RewardPool.NothingToDo.selector);
+        pool.closeInterval();
+        // a claim of what was earned before is unaffected
+        vm.prank(payee(1));
+        pool.claim(0.1 ether, payable(payee(1)));
+        claimed += 0.1 ether;
+    }
+
+    function _assertGEndsAt(uint64 end, uint256 claimed) internal {
+        assertEq(pool.segmentAt(0).end, end);
+        assertTrue(pool.segmentAt(0).ended);
+        assertEq(pool.segmentAt(1).assignmentID, bytes32(0), "NONE from the foreign offset");
+        assertEq(pool.segmentAt(1).start, end);
+        uint256 closed = _drain();
+        assertEq(closed, 1, "[1000,end) G, then the open NONE tail");
+        assertEq(pool.nextStart(), end);
+        uint256[4] memory expect;
+        uint256 distributed = _oracle(Interval(GENESIS_ASSIGNMENT, 0, 1_000), expect);
+        distributed += _oracle(Interval(GENESIS_ASSIGNMENT, 1_000, end), expect);
+        uint256 paid0 = claimed - 0.1 ether;
+        assertEq(
+            pool.credits(payee(0)), expect[0] - paid0, "earlier credit kept, less what was claimed"
+        );
+        assertEq(pool.credits(payee(1)), expect[1] - 0.1 ether);
+        assertEq(pool.credits(payee(2)), expect[2]);
+        assertEq(pool.credits(payee(3)), expect[3]);
+        assertEq(pool.totalCredits(), distributed - claimed);
+        assertEq(pool.available(), REWARD_FUNDING - distributed, "nothing past the end was paid");
+        _conserved();
+    }
+
+    function test_aPendingForeignAckIsNotSettledPastAndEndsTheOwnerWhenItArrives() public {
+        (MockOpenOutput vr, uint256 claimed) = _pendingForeignHandoff();
+        // the acknowledgement arrives with offset 1900; VR imports its Boundary only later (a lagging VR cursor keeps the bound)
+        pushRecord(RecordKind.Ack, ackData(RES_FOREIGN, 1_900, 1_900, 1_901));
+        applyAll();
+        _advanceAll();
+        assertEq(
+            pool.recordCursor(),
+            roots.recordCount(),
+            "the foreign Ack is consumed, no TimelineMismatch"
+        );
+        _assertGEndsAt(1_900, claimed);
+        // VR releases the output (Boundary imported): the NONE tail still settles nothing
+        pushRecord(RecordKind.Boundary, _boundary(RES_FOREIGN, 2, false));
+        applyAll();
+        _advanceAll();
+        vr.setOpen(bytes32(0), 0);
+        clock(9_000, 900);
+        vm.expectRevert(RewardPool.NothingToDo.selector);
+        pool.closeInterval();
+    }
+
+    function test_aPendingForeignRecoveryAckIsNotSettledPastAndEndsTheOwnerAtJOffset() public {
+        (, uint256 claimed) = _pendingForeignHandoff();
+        pushRecord(
+            RecordKind.RecoveryAck,
+            abi.encode(
+                RecoveryAckData(
+                    RES_FOREIGN,
+                    keccak256("assignment/foreign-K"),
+                    1_900,
+                    1_901,
+                    1_950,
+                    1_960,
+                    1_961,
+                    3,
+                    3
+                )
+            )
+        );
+        pushRecord(RecordKind.Boundary, _boundary(RES_FOREIGN, 2, true));
+        applyAll();
+        _advanceAll();
+        _assertGEndsAt(1_900, claimed);
+    }
+
+    function test_delayedImportsKeepTheTailBounded() public {
+        (MockOpenOutput vr,) = _pendingForeignHandoff();
+        // imported by the registry, not yet applied by custody: the pool cannot read it and the tail is NotCaughtUp
+        pushRecord(RecordKind.Ack, ackData(RES_FOREIGN, 1_900, 1_900, 1_901));
+        vm.expectRevert(RewardPool.NotCaughtUp.selector);
+        pool.closeInterval();
+        // applied by custody, not yet read by the pool: still NotCaughtUp
+        applyAll();
+        vm.expectRevert(RewardPool.NotCaughtUp.selector);
+        pool.closeInterval();
+        // VR released the output before this pool read the Ack (VR imported the Boundary): the caught-up check still comes first
+        vr.setOpen(bytes32(0), 0);
+        pushRecord(RecordKind.Boundary, _boundary(RES_FOREIGN, 2, false));
+        applyAll();
+        vm.expectRevert(RewardPool.NotCaughtUp.selector);
+        pool.closeInterval();
+        // once the pool has read the Ack, G's end is final: [1000,1900) settles even with the Boundary still unread, and no more
+        pool.advanceRecords(1);
+        assertEq(pool.segmentAt(0).end, 1_900);
+        assertEq(_drain(), 1, "[1000,1900) G only");
+        assertEq(pool.nextStart(), 1_900);
+        pool.advanceRecords(1);
+        vm.expectRevert(RewardPool.NothingToDo.selector);
+        pool.closeInterval();
+    }
+
+    function test_theOpenOutputBoundAppliesToAnOwnedTailAndLiftsAtRelease() public {
+        MockOpenOutput vr = _registry();
+        // a native repair output reserved at 1500 while G owns the tail: settlement stops at the last grid point below it
+        vr.setOpen(keccak256("result/native-repair"), 1_500);
+        clock(3_200, 320);
+        assertEq(_drain(), 1, "[0,1000) only: [1000,2000) ends above the reservation");
+        vm.expectRevert(RewardPool.NothingToDo.selector);
+        pool.closeInterval();
+        // the output is released without a handoff (SessionClosed): the tail settles to the current progress again
+        pushRecord(RecordKind.OutputRejected, _rejected(keccak256("result/native-repair")));
+        pushRecord(
+            RecordKind.SessionClosed,
+            abi.encode(SessionClosedData(keccak256("result/native-repair")))
+        );
+        applyAll();
+        _advanceAll();
+        vr.setOpen(bytes32(0), 0);
+        assertEq(_drain(), 2, "[1000,2000) and [2000,3000)");
+        assertEq(pool.totalCredits(), 3 ether);
+        _conserved();
+    }
+
+    /// @dev The reviewers' timeline (astra on #88): G closes at H = 900 before the foreign Ack exists, settlement is attempted at 1000,
+    /// and the Ack at offset 900 arrives at 1100. With the foreign output open in VR since 850 nothing past 850 settles, so the Ack is
+    /// consumed and G is paid exactly [0,900).
+    function test_theReviewersTimelineNoLongerOverCredits() public {
+        MockOpenOutput vr = _registry();
+        assertEq(
+            election.openResult(),
+            bytes32(0),
+            "the other module's election is absent from this pool's ElectionPolicy"
+        );
+        vr.setOpen(RES_FOREIGN, 850);
+        clock(900, 90);
+        pushRecord(RecordKind.Closure, closureData(GENESIS_ASSIGNMENT, 900, "G"));
+        applyAll();
+        _advanceAll();
+        clock(1_000, 100);
+        vm.expectRevert(RewardPool.NothingToDo.selector);
+        pool.closeInterval();
+        assertEq(pool.totalCredits(), 0);
+        clock(1_100, 200);
+        pushRecord(RecordKind.Ack, ackData(RES_FOREIGN, 900, 900, 901));
+        applyAll();
+        _advanceAll();
+        assertEq(pool.recordCursor(), 2, "the foreign transition is consumed");
+        assertEq(_drain(), 1);
+        assertEq(pool.totalCredits(), 0.9 ether, "G is paid [0,900) and nothing beyond");
+        _conserved();
     }
 }
