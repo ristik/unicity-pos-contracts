@@ -37,6 +37,10 @@ jobs:
         # test/nb2/vectors/nb2-vectors.json is native-bridge-plugins protocol/vectors/nb2/nb2-vectors.json verbatim; the script
         # checks it against its pinned sha256 and that the forge-shaped file the vault tests read is its exact conversion.
         run: python3 script/nb2-vectors.py --check
+      - name: The PoA composer vectors are the exact-rational model's output
+        # tools/poa_composer_vectors.py is an independent Fraction-arithmetic reading of design 3.7.3; PoaComposerVectors.t.sol
+        # requires the production composer to choose exactly its trials.
+        run: python3 tools/poa_composer_vectors.py | cmp - test/vr/poa/fixtures/poa-composer.json
       - name: Shared fixtures agree with bft-core at the pinned commit
         # The cross-repository consistency suite (bft-core xrepo/README.md): every file this repository shares with bft-core, in either
         # direction, is byte-identical to bft-core's at the commit pinned in xrepo/bft-core-pin.json. The manifest and the check are
