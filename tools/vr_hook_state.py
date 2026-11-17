@@ -45,6 +45,7 @@ ACCOUNTS = {
     "holder": "0x00000000000000000000000000000000000c0de3",
     "holderNext": "0x00000000000000000000000000000000000c0de4",
     "governorNext": "0x00000000000000000000000000000000000c0de5",
+    "publishDriver": "0x00000000000000000000000000000000000c0de6",
 }
 
 
@@ -77,7 +78,9 @@ def main(raw, dest):
         meta = json.loads(meta_path.read_text())
         pre = {k.lower(): v for k, v in json.loads((raw / f"{name}.pre.json").read_text()).items()}
         post = {k.lower(): v for k, v in json.loads((raw / f"{name}.post.json").read_text()).items()}
-        pre_s, diff = {}, {}
+        hooks_path = raw / f"{name}.hooks.json"
+        hooks = {k.lower(): v for k, v in json.loads(hooks_path.read_text()).items()} if hooks_path.exists() else None
+        pre_s, diff, hooks_diff = {}, {}, {}
         for role, addr in ACCOUNTS.items():
             if addr not in pre:
                 assert addr not in post, (name, role)
@@ -97,9 +100,17 @@ def main(raw, dest):
             changed = {k: after.get(k, word("0x0")) for k in set(before) | set(after) if before.get(k) != after.get(k)}
             if changed:
                 diff[addr] = dict(sorted(changed.items()))
+            if hooks is not None:
+                mid = storage(hooks[addr])
+                changed = {k: mid.get(k, word("0x0")) for k in set(before) | set(mid) if before.get(k) != mid.get(k)}
+                if changed:
+                    hooks_diff[addr] = dict(sorted(changed.items()))
         n = meta["recordCount"]
         recs = meta["records"] if isinstance(meta["records"], dict) else json.loads(meta["records"])
         records = [recs[f"r{i}"] for i in range(n)] if n else []
+        txs = meta["txs"] if isinstance(meta["txs"], dict) else json.loads(meta["txs"])
+        txs = [txs[f"t{i}"] for i in range(len(txs))]
+        assert (hooks is not None) == bool(txs), (name, "the hooks dump goes with public transactions")
         scenarios[name] = {
             "h": meta["h"],
             "progress": meta["progress"],
@@ -108,6 +119,7 @@ def main(raw, dest):
             "records": records,
             "pre": pre_s,
             "changed": diff,
+            **({"changedByHooks": hooks_diff, "txs": txs} if txs else {}),
             "expect": {
                 "applied": meta["applied"],
                 "outcome": meta["outcome"],

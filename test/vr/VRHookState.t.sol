@@ -5,7 +5,7 @@ import {PoaBase} from "./poa/PoaBase.sol";
 import {MockSeal, MockModule} from "./VRMocks.sol";
 import {ValidatorRegistry} from "../../src/vr/ValidatorRegistry.sol";
 import {VRC} from "../../src/vr/VRConstants.sol";
-import {VRRecord} from "../../src/vr/VRTypes.sol";
+import {VRRecord, IVR} from "../../src/vr/VRTypes.sol";
 import {PoaElection} from "../../src/vr/poa/PoaElection.sol";
 import {PoaComposerEngine} from "../../src/vr/poa/PoaComposer.sol";
 
@@ -22,8 +22,11 @@ import {PoaComposerEngine} from "../../src/vr/poa/PoaComposer.sol";
 ///     python3 tools/vr_hook_state.py test/vr/fixtures/vr-hook-raw test/vr/fixtures/vr-hook.json
 ///
 /// The SealRegistry here is the record-source stand-in (MockSeal); in ureth it is the real registry, whose `recordAt`, `recordCount`,
-/// `progress` and `ucTime` must hand VR the same records and clock. Nothing is pushed to it before the block, so its log is the
-/// block's import and VR's cursor starts at zero, as in a genesis whose first records the block imports.
+/// `progress` and `ucTime` must hand VR the same records and clock. ureth's block imports the whole log; records a scenario pushed and
+/// applied before the block (an Ack delivered a block before its Boundary) are imported too and VR's cursor already covers them.
+///
+/// A scenario may also carry public transactions that follow the hooks in the same block (`_publicTx`); forge runs them as calls and
+/// ureth as signed transactions, and the state after the hooks alone is dumped as well.
 contract VRHookStateTest is PoaBase {
     // ---- genesis addresses (VT-14 default; owner-questions.md "VT-02 ureth hook") ----
     address internal constant GOV_FACET_ADDR = address(uint160((uint256(0xff) << 152) | 0x04));
@@ -38,6 +41,7 @@ contract VRHookStateTest is PoaBase {
     address internal constant HOLDER_ADDR = address(uint160(0xc0de3));
     address internal constant HOLDER_NEXT_ADDR = address(uint160(0xc0de4));
     address internal constant GOVERNOR_NEXT_ADDR = address(uint160(0xc0de5));
+    address internal constant DRIVER_ADDR = address(uint160(0xc0de6));
 
     uint64 internal constant CHAIN_ID = 1337;
     /// @dev The identity of the root origin the ureth test block carries (`RootInputV2::origin_identity` of `input(1, 1, genesis)`);
@@ -63,8 +67,30 @@ contract VRHookStateTest is PoaBase {
     uint8 internal constant S_RESOLVED = 4;
     uint8 internal constant S_ATTACH = 5;
 
+    uint8 internal constant M_OVERSIZE = 11;
+    uint8 internal constant S_DETACH = 6;
+    uint8 internal constant S_ADOPT = 8;
+
+    /// @dev VR's immutable per-call caps (src/vr/VRShared.sol): a module at these bounds is the most VR accepts.
+    uint64 internal constant CAP_ELECT = 4_000_000;
+    uint64 internal constant CAP_OUTPUT = 1_000_000;
+    uint64 internal constant CAP_RECORD = 1_500_000;
+    uint64 internal constant CAP_RESOLVED = 500_000;
+    uint64 internal constant CAP_ATTACH = 3_000_000;
+    uint64 internal constant CAP_DETACH = 500_000;
+    uint64 internal constant CAP_GOV = 1_000_000;
+    uint64 internal constant CAP_ADOPT = 1_000_000;
+
+    struct PublicTx {
+        address to;
+        bytes data;
+        uint64 gasLimit; // the ureth transaction's limit; forge forwards it less the intrinsic cost
+        bool success;
+    }
+
     string internal _name;
     uint32 internal _h;
+    PublicTx[] internal _txs;
 
     // =============================================================================================
     // the harness
@@ -129,8 +155,8 @@ contract VRHookStateTest is PoaBase {
     /// @dev Opens the block: its clock (one progress unit and one second after the setup) and the ureth block number. Records pushed
     /// after this are the block's import.
     function _openBlock() internal {
-        assertEq(seal.recordCount(), 0, "the block's import is the registry's whole log");
-        assertEq(vr.recordCursor(), 0);
+        assertLe(seal.recordCount(), 32, "ureth imports the registry's whole log in one block");
+        assertEq(vr.recordCursor(), seal.recordCount(), "VR is caught up when the block opens");
         _advance(1, 1);
         vm.roll(BLOCK_NUMBER);
     }
@@ -152,7 +178,20 @@ contract VRHookStateTest is PoaBase {
         for (uint256 i = 0; i < all.length; ++i) {
             t += all[i].balance + all[i].code.length;
         }
-        t += GOVERNOR_NEXT_ADDR.code.length;
+        t += GOVERNOR_NEXT_ADDR.code.length + DRIVER_ADDR.code.length;
+    }
+
+    /// @dev A public transaction after the block's hooks: `gasLimit` is the ureth transaction's limit, forge forwards it less the
+    /// intrinsic cost (21,000 plus calldata), so both execute it with the same gas.
+    function _queueTx(address to, bytes memory data, uint64 gasLimit) internal {
+        _txs.push(PublicTx(to, data, gasLimit, false));
+    }
+
+    function _intrinsic(bytes memory data) internal pure returns (uint256 g) {
+        g = 21_000;
+        for (uint256 i = 0; i < data.length; ++i) {
+            g += data[i] == 0 ? 4 : 16;
+        }
     }
 
     /// @dev The block's hooks as ureth runs them (hook.rs `run_hooks`): the cursor gate, exactly one `applyRootRecords(min(H,
@@ -179,6 +218,16 @@ contract VRHookStateTest is PoaBase {
         outcome = vr.elect(ORIGIN);
         assertLe(outcome, 3);
         assertGt(_touch(), 0);
+        if (_txs.length != 0) {
+            if (bytes(dir).length != 0) {
+                vm.dumpState(string.concat(dir, "/", _name, ".hooks.json"));
+            }
+            for (uint256 i = 0; i < _txs.length; ++i) {
+                PublicTx storage t = _txs[i];
+                (bool ok,) = t.to.call{gas: t.gasLimit - _intrinsic(t.data)}(t.data);
+                t.success = ok;
+            }
+        }
         if (bytes(dir).length != 0) {
             vm.dumpState(string.concat(dir, "/", _name, ".post.json"));
             _meta(dir, outcome, n);
@@ -202,8 +251,22 @@ contract VRHookStateTest is PoaBase {
         vm.serializeBytes32(m, "lastAcked", vr.lastAcked());
         vm.serializeAddress(m, "activeModule", vr.activeModule().module);
         vm.serializeUint(m, "recordCount", seal.recordCount());
+        vm.serializeString(m, "txs", _txsJson());
         string memory body = vm.serializeString(m, "records", _records());
         vm.writeJson(body, string.concat(dir, "/", _name, ".meta.json"));
+    }
+
+    function _txsJson() internal returns (string memory out) {
+        string memory arr = string.concat("txs-", _name);
+        out = "{}";
+        for (uint256 i = 0; i < _txs.length; ++i) {
+            string memory k = string.concat("t", vm.toString(i));
+            vm.serializeAddress(k, "to", _txs[i].to);
+            vm.serializeBytes(k, "data", _txs[i].data);
+            vm.serializeUint(k, "gasLimit", _txs[i].gasLimit);
+            string memory last = vm.serializeBool(k, "success", _txs[i].success);
+            out = vm.serializeString(arr, k, last);
+        }
     }
 
     function _records() internal returns (string memory out) {
@@ -239,7 +302,7 @@ contract VRHookStateTest is PoaBase {
             abi.encode(
                 assignment,
                 uint256(1),
-                keccak256("h-record"),
+                keccak256(abi.encode("h-record", assignment)), // the registry keys a Closure by (epoch, hRecordID, hRound)
                 keccak256("terminal"),
                 keccak256("exposure"),
                 keccak256("key-history")
@@ -562,12 +625,19 @@ contract VRHookStateTest is PoaBase {
         assertEq(vr.openOutput(), bytes32(0));
     }
 
-    /// @dev The module re-enters every VR mutator (each refused), then answers: the reservation stands and nothing faults.
+    /// @dev The module re-enters every VR mutator with a well-formed call, then answers: register, proposeBinding and the other
+    /// locked mutators are refused with Locked, the hooks with NotSystemCaller and the step entry points with NotSelf; the lock-exempt
+    /// `invalidate` (of an unknown result) succeeds and changes nothing. The reservation stands and nothing faults.
     function test_electReenter() public {
         assertEq(_electVariant("elect-reenter", M_REENTER), VRC.ELECT_RESERVED);
         assertEq(vr.health(), VRC.HEALTHY);
-        assertEq(module.reentryRefusals(), module.reentryAttempts());
-        assertEq(module.reentryAttempts(), 12);
+        assertEq(module.reentryAttempts(), 14);
+        assertEq(module.reentryRefusals(), 13);
+        bytes4 locked = bytes4(keccak256("Locked()"));
+        assertEq(module.reentryErrors(11), locked, "register");
+        assertEq(module.reentryErrors(12), locked, "proposeBinding");
+        assertEq(module.reentryErrors(13), bytes4(0), "invalidate is lock-exempt");
+        assertEq(module.reentryErrors(0), locked, "publish");
     }
 
     /// @dev The module re-enters `publish` and lets the revert bubble: a fault.
@@ -601,6 +671,26 @@ contract VRHookStateTest is PoaBase {
         _outputVariant("output-malformed", M_MALFORMED, false);
     }
 
+    /// @dev A successful 16-member Ready answer one byte above the 5,408-byte cap (VR refuses it before copying): a fault.
+    function test_outputOversize() public {
+        _begin("output-oversize");
+        _mockGenesis(16, 1, 16, 16);
+        module.setElect(VRC.ELECT_RESERVED, true, _rid("R"));
+        module.setMode(S_OUTPUT, M_OVERSIZE);
+        _openBlock();
+        assertEq(_runBlock(32), VRC.ELECT_NO_CANDIDATE);
+        assertEq(vr.health(), VRC.FAULTED);
+        assertEq(vr.openOutput(), bytes32(0));
+        assertEq(_state(_rid("R")), VRC.OUT_NONE);
+        // the same module without the extra byte returns exactly the cap and is accepted
+        (bool ok, bytes memory ret) =
+            address(module).staticcall(abi.encodeCall(MockModule.outputOf, (_rid("R"))));
+        assertTrue(ok);
+        assertEq(ret.length, 5409);
+    }
+
+    /// @dev The module builds a 1 MiB return and runs out of gas expanding memory in its own frame (MemoryOOG): a failed call, not
+    /// oversized return data; output-oversize covers the size check itself.
     function test_outputHuge() public {
         _outputVariant("output-huge", M_HUGE, false);
     }
@@ -670,5 +760,275 @@ contract VRHookStateTest is PoaBase {
         assertEq(vr.activeModule().module, MOCK_NEXT_ADDR);
         assertEq(vr.health(), VRC.FAULTED);
         assertEq(vr.holderCount(), 0);
+    }
+
+    // =============================================================================================
+    // the maximum compound paths: modules at VR's maximum accepted caps (design 3.3.4)
+    // =============================================================================================
+
+    function _maxBounds(MockModule m) internal {
+        m.setBounds(
+            [
+                CAP_ELECT,
+                CAP_OUTPUT,
+                CAP_RECORD,
+                CAP_RESOLVED,
+                CAP_ATTACH,
+                CAP_DETACH,
+                CAP_GOV,
+                CAP_ADOPT
+            ]
+        );
+    }
+
+    /// @dev A mock generation whose module advertises VR's maximum caps (read at genesis), with its output R reserved and published.
+    function _maxModuleWithPublishedOutput(uint256 n) internal returns (bytes32 rid) {
+        _maxBounds(module);
+        _mockGenesis(n, 1, uint32(n), 16);
+        rid = _rid("R");
+        assertEq(_moduleReserve(rid, true), VRC.ELECT_RESERVED);
+        assertEq(_state(rid), VRC.OUT_PUBLISHED);
+    }
+
+    /// @dev Ack(R), Boundary(R) and 30 foreign Closures: a full H = 32 batch, delivered to the module in one onRecords of 32.
+    function _batch32(bytes32 rid) internal {
+        _ackBoundary(rid);
+        for (uint256 i = 0; i < 30; ++i) {
+            _recClosure(keccak256(abi.encode("a foreign assignment", i)));
+        }
+        assertEq(seal.recordCount(), 32);
+    }
+
+    /// @dev H = 32 at the maximum record cap (1,500,000 per record, 48,000,000 for the batch) with a healthy delivery that burns its
+    /// whole cap before answering, and an onResolved that burns its 500,000 cap: every record applies, both callbacks ran with the
+    /// right content, and the module stays Healthy.
+    function test_batch32Max() public {
+        _begin("batch32-max");
+        bytes32 rid = _maxModuleWithPublishedOutput(5);
+        module.clearLog();
+        module.setGriefLeave(20_000);
+        module.setMode(S_RECORDS, M_GRIEF);
+        module.setMode(S_RESOLVED, M_GRIEF);
+        _openBlock();
+        _batch32(rid);
+        _runBlock(32);
+        assertEq(vr.recordCursor(), 32);
+        assertEq(_state(rid), VRC.OUT_ACKNOWLEDGED);
+        assertEq(vr.health(), VRC.HEALTHY);
+        assertEq(module.logLength(), 3);
+        assertEq(module.log(0), "onResolved:1");
+        assertEq(module.log(1), "onRecords:0:32");
+        assertEq(module.log(2), "elect");
+    }
+
+    /// @dev The same batch with an onRecords that exhausts its 48,000,000 cap: the 32 records still apply (cursor + 32, R
+    /// Acknowledged), the module's onRecords frame rolls back (no log entry) and the module is Faulted.
+    function test_batch32Exhausted() public {
+        _begin("batch32-exhausted");
+        bytes32 rid = _maxModuleWithPublishedOutput(5);
+        module.clearLog();
+        module.setMode(S_RECORDS, M_BURN);
+        _openBlock();
+        _batch32(rid);
+        _runBlock(32);
+        assertEq(vr.recordCursor(), 32);
+        assertEq(_state(rid), VRC.OUT_ACKNOWLEDGED);
+        assertEq(vr.lastAcked(), rid);
+        assertEq(vr.health(), VRC.FAULTED);
+        assertEq(module.logLength(), 1, "only onResolved ran to completion");
+        assertEq(module.log(0), "onResolved:1");
+    }
+
+    /// @dev Sixteen bound changes with the largest legal payloads: Σ exactly MAX_BOUND_PAYLOAD (64 KiB), the SetModule at
+    /// MAX_CHANGE_PAYLOAD (16 KiB, its initData 16,256 bytes), 8 root-side UpdatePartitions sharing the rest.
+    function _bindSixteenMax(address nextModule) internal returns (bytes memory initData) {
+        uint64[] memory ids = new uint64[](16);
+        uint256 k = 0;
+        uint256 total = 0;
+        initData = new bytes(VRC.MAX_CHANGE_PAYLOAD - 128);
+        for (uint256 i = 0; i < initData.length; ++i) {
+            initData[i] = bytes1(uint8(i * 7 + 1));
+        }
+        bytes memory p = abi.encode(nextModule, nextModule.codehash, initData);
+        assertEq(p.length, VRC.MAX_CHANGE_PAYLOAD);
+        ids[k++] = _queue(VRC.K_SET_MODULE, p);
+        total += p.length;
+        deployCodeTo("VRMocks.sol:MockHolder", GOVERNOR_NEXT_ADDR);
+        p = abi.encode(GOVERNOR_NEXT_ADDR, GOVERNOR_NEXT_ADDR.codehash);
+        ids[k++] = _queue(VRC.K_SET_GOVERNOR, p);
+        total += p.length;
+        p = _limitsPayload(1, 16, 16);
+        ids[k++] = _queue(VRC.K_COMMITTEE_LIMITS, p);
+        total += p.length;
+        p = abi.encode(uint64(2_000_000), uint64(8), address(0xFEE));
+        ids[k++] = _queue(VRC.K_FEE_PARAMS, p);
+        total += p.length;
+        uint64 e = vr.config().knownRootEpoch;
+        for (uint256 i = 0; i < 4; ++i) {
+            p = abi.encode(
+                keccak256(abi.encode("unicity.rule/gas", i)),
+                keccak256("rel"),
+                e + 3,
+                uint64(ucTime + 3600),
+                "gas"
+            );
+            ids[k++] = _queue(VRC.K_SCHEDULE_ACTIVATION, p);
+            total += p.length;
+        }
+        // 8 UpdatePartitions (224 bytes plus their last field each) fill the remaining bytes exactly
+        uint256 rest = VRC.MAX_BOUND_PAYLOAD - total;
+        uint256 each = ((rest / 8 - 224) / 32) * 32;
+        for (uint256 i = 0; i < 8; ++i) {
+            uint256 len = i == 0 ? rest - 7 * (224 + each) - 224 : each;
+            p = abi.encode(
+                uint32(7 + i),
+                abi.encodePacked(uint8(0x80), uint8(i)),
+                keccak256(abi.encode(i)),
+                new bytes(len)
+            );
+            assertLe(p.length, VRC.MAX_CHANGE_PAYLOAD);
+            ids[k++] = _queue(VRC.K_UPDATE_PARTITION, p);
+            total += p.length;
+        }
+        assertEq(total, VRC.MAX_BOUND_PAYLOAD, "the bound payloads sum to exactly 64 KiB");
+        _passDelays();
+        for (uint256 i = 0; i < 16; ++i) {
+            vr.execute(ids[i]);
+        }
+    }
+
+    /// @dev The next module of the switch at VR's maximum caps, with adoption and a liability holder.
+    function _maxNext() internal returns (MockModule next) {
+        next = _mockAt(MOCK_NEXT_ADDR, keccak256("unicity.vr.max-next"));
+        deployCodeTo("VRMocks.sol:MockHolder", HOLDER_NEXT_ADDR);
+        next.setCaps(VRC.CAP_ADOPTION_CHECK | VRC.CAP_LIABILITY_HOLDER);
+        next.setHolder(HOLDER_NEXT_ADDR);
+        _maxBounds(next);
+    }
+
+    /// @dev The compound module-path election at VR's maximum caps: 16 members, 16 bound changes with the largest legal payloads (8
+    /// root-side), the module's elect burning its 4,000,000 cap and its outputOf its 1,000,000 cap before serving the 16-member Ready
+    /// output, which VR validates, binds and publishes. Healthy.
+    function test_electMax() public {
+        _begin("elect-max");
+        _maxBounds(module);
+        _mockGenesis(16, 1, 16, 16);
+        MockModule next = _maxNext();
+        _bindSixteenMax(address(next));
+        module.setMembers(vr.committee());
+        module.setMode(S_ELECT, M_GRIEF);
+        module.setMode(S_OUTPUT, M_GRIEF);
+        module.setGriefLeave(700_000);
+        module.setElect(VRC.ELECT_RESERVED, true, _rid("R"));
+        _openBlock();
+        assertEq(_runBlock(32), VRC.ELECT_RESERVED);
+        assertEq(vr.health(), VRC.HEALTHY);
+        assertEq(vr.openOutput(), _rid("R"));
+        assertEq(vr.output(_rid("R")).members.length, 16);
+        assertEq(vr.output(_rid("R")).changes.length, 16);
+        assertEq(_state(_rid("R")), VRC.OUT_PUBLISHED);
+    }
+
+    /// @dev The 16-member pointer-switch Boundary at VR's maximum caps, delivered on its own: the Ack applied in an earlier block,
+    /// this block imports the Boundary alone. It installs 16 members, activates 15 changes with the largest legal payloads, and
+    /// switches with every callback burning its maximum cap: onResolved (500,000), adoption (1,000,000), the old module's onRecords
+    /// (1,500,000), detach (500,000) and attach (3,000,000, with the 16,256-byte initData in its context). Healthy, holder allocated.
+    function test_switchMax() public {
+        _begin("switch-max");
+        _maxBounds(module);
+        _mockGenesis(16, 1, 16, 16);
+        MockModule next = _maxNext();
+        bytes memory initData = _bindSixteenMax(address(next));
+        bytes32 r = _rid("R");
+        assertEq(_moduleReserve(r, true), VRC.ELECT_RESERVED);
+        assertEq(vr.output(r).changes.length, 16);
+        _recAck(r);
+        _apply(1);
+        assertEq(vr.pendingPair(), r, "the Ack staged the pair a block earlier");
+        module.clearLog();
+        module.setGriefLeave(20_000);
+        module.setMode(S_RECORDS, M_GRIEF);
+        module.setMode(S_RESOLVED, M_GRIEF);
+        module.setMode(S_DETACH, M_GRIEF);
+        next.setMode(S_ATTACH, M_GRIEF);
+        next.setMode(S_ADOPT, M_GRIEF);
+        next.setGriefLeave(60_000);
+        _openBlock();
+        _recBoundary(r, _nextEpoch(), false, 0);
+        _runBlock(32);
+        assertEq(vr.recordCursor(), 2);
+        assertEq(vr.activeModule().module, MOCK_NEXT_ADDR, "switched");
+        assertEq(vr.health(), VRC.HEALTHY, "every callback answered at its maximum cap");
+        assertEq(vr.committee().length, 16);
+        assertEq(vr.holderCount(), 1);
+        assertEq(module.log(0), "onResolved:1");
+        assertEq(
+            module.log(1), "onRecords:1:1", "the old module got the Boundary before the detach"
+        );
+        assertEq(module.log(2), "detach");
+        assertEq(next.log(0), "attach");
+        assertEq(next.attachMembers(), 16);
+        assertEq(next.attachInitHash(), keccak256(initData), "attach saw the whole initData");
+        assertEq(next.attachPrevious(), MOCK_ADDR);
+    }
+
+    // =============================================================================================
+    // fault attribution through public transactions after the hooks
+    // =============================================================================================
+
+    /// @dev An asynchronous output: the hook's election reserves R without publishing it (the module is Pending). Public transactions
+    /// in the same block: one that calls publish 100 times (each Pending, the lock taken and cleared 100 times in one transaction);
+    /// a publish with too little gas for its contained step (BudgetShort revert); the module turning Ready; and one transaction that
+    /// first makes a short publish (refused inside the transaction) and then a funded one, which publishes. Health stays Healthy
+    /// throughout: no early, short or refused publish is a fault.
+    function test_publishTrace() public {
+        _begin("publish-trace");
+        _mockGenesis(5, 1, 5, 16);
+        deployCodeTo("VRHookState.t.sol:PublishDriver", DRIVER_ADDR);
+        bytes32 rid = _rid("R");
+        module.setElect(VRC.ELECT_RESERVED, false, rid);
+        module.setOutputStatus(VRC.STATUS_PENDING);
+        _queueTx(DRIVER_ADDR, abi.encodeCall(PublishDriver.early, (rid, 100)), 20_000_000);
+        _queueTx(VR_ADDR, abi.encodeCall(vr.publish, (rid)), 250_000);
+        _queueTx(MOCK_ADDR, abi.encodeCall(MockModule.setOutputStatus, (VRC.STATUS_READY)), 100_000);
+        _queueTx(DRIVER_ADDR, abi.encodeCall(PublishDriver.shortThenPublish, (rid)), 10_000_000);
+        _openBlock();
+        assertEq(_runBlock(32), VRC.ELECT_RESERVED);
+        assertTrue(_txs[0].success, "100 early publishes");
+        assertFalse(_txs[1].success, "the low-gas publish reverts BudgetShort");
+        assertTrue(_txs[2].success);
+        assertTrue(_txs[3].success, "short then funded, in one transaction");
+        PublishDriver d = PublishDriver(DRIVER_ADDR);
+        assertEq(d.pendingSeen(), 100);
+        assertTrue(d.shortRefused());
+        assertTrue(d.published());
+        assertEq(_state(rid), VRC.OUT_PUBLISHED);
+        assertEq(vr.health(), VRC.HEALTHY);
+    }
+}
+
+/// @notice The public caller of the publish trace (test only, at 0xc0de6): it records what VR answered.
+contract PublishDriver {
+    address internal constant VR = address(uint160((uint256(0xff) << 152) | 0x03));
+    uint256 public pendingSeen;
+    bool public shortRefused;
+    bool public published;
+
+    function early(bytes32 rid, uint256 n) external {
+        for (uint256 i = 0; i < n; ++i) {
+            require(IVR(VR).publish(rid) == VRC.PUB_PENDING, "not pending");
+            ++pendingSeen;
+        }
+    }
+
+    function shortThenPublish(bytes32 rid) external {
+        try IVR(VR).publish{gas: 300_000}(rid) returns (uint8) {
+            revert("a short publish went through");
+        } catch (bytes memory err) {
+            require(bytes4(err) == bytes4(keccak256("BudgetShort(uint8)")), "not BudgetShort");
+            shortRefused = true;
+        }
+        require(IVR(VR).publish(rid) == VRC.PUB_PUBLISHED, "not published");
+        published = true;
     }
 }
