@@ -31,7 +31,6 @@ contract VRStateMachineTest is VRBase, FastJson {
     uint64 internal baseT;
     string internal vname;
     uint256 internal vectorsRun;
-    bool internal governanceFaulted; // set once the ModuleAction vector's failing onGovernance has run
 
     bytes32 internal constant RELEASED_TOPIC =
         keccak256("ChangeReleased(uint64,bytes32,uint8,uint8)");
@@ -102,7 +101,6 @@ contract VRStateMachineTest is VRBase, FastJson {
         vname = _js(_p(i, ".name"));
         uint256 steps = _ju(_p(i, ".input.steps"));
         delete names;
-        governanceFaulted = false;
         for (uint256 s = 0; s < steps; ++s) {
             string memory sp =
                 string.concat(".vectors[", vm.toString(i), "].expect.trace[", vm.toString(s), "]");
@@ -272,16 +270,30 @@ contract VRStateMachineTest is VRBase, FastJson {
     function _executeStep(string memory a, string memory want) internal {
         uint64 id = uint64(_ju(string.concat(a, ".id")));
         if (_jhas(string.concat(a, ".case"))) {
+            // ModuleAction outcome classes (design 3.3.1): step 0 succeeds, 1 is a fully funded failing onGovernance (ActionFailed and
+            // a module fault), 2 is BudgetShort (reverts, the change stays Queued, health unchanged). A retry names a Queued id.
             string memory c = _js(string.concat(a, ".case"));
-            address target = _is(c, "not the active module") ? address(0xBEEF) : address(module);
-            module.setMode(7, _is(c, "active, onGovernance fails") ? 1 : 0);
-            if (_is(c, "active, onGovernance fails")) governanceFaulted = true;
-            assertEq(
-                _queue(VRC.K_MODULE_ACTION, abi.encode(target, abi.encode(uint64(1), uint64(1)))),
-                id
-            );
-            _passDelays();
-            vr.execute(id);
+            uint256 step = _ju(string.concat(a, ".step"));
+            if (_changeState(id) == VRC.CH_NONE) {
+                address target = _is(c, "not the active module: NotActive, no call, no fault")
+                    ? address(0xBEEF)
+                    : address(module);
+                assertEq(
+                    _queue(
+                        VRC.K_MODULE_ACTION, abi.encode(target, abi.encode(uint64(1), uint64(1)))
+                    ),
+                    id
+                );
+                _passDelays();
+            }
+            module.setMode(7, step == 1 ? 1 : 0);
+            if (step == 2) {
+                assertEq(want, "BudgetShort");
+                vm.expectRevert(abi.encodeWithSelector(VRShared.BudgetShort.selector, uint8(7)));
+                vr.execute{gas: 200_000}(id);
+            } else {
+                vr.execute(id);
+            }
             module.setMode(7, 0);
             return;
         }
@@ -465,11 +477,7 @@ contract VRStateMachineTest is VRBase, FastJson {
             _js(string.concat(st, ".lastAcked")),
             _m(string.concat(op, ": lastAcked"))
         );
-        uint256 wantHealth = _ju(string.concat(st, ".health"));
-        // Documented deviation (astra VT-02 finding 6): a fully funded failing onGovernance is a module fault (design 3.3.1). The
-        // reference model's Execute does not model health (schema 14: a model's silence waives nothing), so the vector keeps 0 here.
-        if (governanceFaulted) wantHealth = VRC.FAULTED;
-        assertEq(vr.health(), wantHealth, _m(string.concat(op, ": health")));
+        assertEq(vr.health(), _ju(string.concat(st, ".health")), _m(string.concat(op, ": health")));
         assertEq(
             vr.recordCursor(), _ju(string.concat(st, ".cursor")), _m(string.concat(op, ": cursor"))
         );
