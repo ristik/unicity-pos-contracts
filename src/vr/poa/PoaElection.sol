@@ -129,7 +129,10 @@ contract PoaElection is IPoaElection {
     }
 
     /// @param vr the ValidatorRegistry (0xff..03 on a generation)
-    /// @param composer the PoaComposerEngine (immutable, stateless; the genesis plan deploys it first)
+    /// @param composer the PoaComposerEngine (immutable, stateless; the genesis plan deploys it first). This module's code hash commits
+    /// to the engine's address, not to its code: the genesis plan (VT-14) and every SetModule review must verify that the address holds
+    /// the reviewed engine's runtime code (record and check its hash) and that it is no proxy. The constructor checks only that code
+    /// exists.
     /// @param genesisMembers the genesis committee's ids, ascending (the genesis plan's VR alloc)
     constructor(address vr, PoaComposerEngine composer, uint64[] memory genesisMembers) {
         if (vr == address(0) || address(composer).code.length == 0) revert BadArgument();
@@ -231,8 +234,12 @@ contract PoaElection is IPoaElection {
     /// @notice ModuleAction (design 3.7.1): Admit `Applied -> Admitted`; Remove from any non-terminal state `-> Removing`; ConfirmExit
     /// `ExitRequested -> Removing`. A failing contained `onGovernance` faults the module (design 3.3.1), so an action the module cannot
     /// take (its guard, an unknown action, a malformed payload, a full queue) is refused without reverting: no transition, and an
-    /// `ActionRefused` event. Every executed action arms VR's work deadline until the module's next boundary (design 3.6.3); an
-    /// action that leaves the module no membership work (a refused one, a Remove of a non-member) therefore owes that boundary.
+    /// `ActionRefused` event. VR's Active state for the change then means "delivered and executed", not "accepted": clients read
+    /// `ActionRefused` and `status`. Only these explicit payload, state and queue checks refuse; any other failure (a dependency call,
+    /// an arithmetic or invariant failure) still reverts, and VR rejects the action with ActionFailed and faults the module.
+    /// Every executed action arms VR's work deadline until the module's next boundary (design 3.6.3); an action that leaves the module
+    /// no membership work (a refused one, a Remove of a non-member) therefore owes that boundary. Reserving or closing an output does
+    /// not settle it; only the Boundary of the module's own output (or an attach) does.
     function onGovernance(bytes calldata action) external onlyVR {
         (uint8 refusal, uint256 a, uint256 w) = _govern(action);
         if (refusal != 0) emit ActionRefused(a, w, refusal);
@@ -369,9 +376,11 @@ contract PoaElection is IPoaElection {
         }
     }
 
-    /// @notice Root records (design 3.4.2, 3.7.4), read from the SealRegistry: a Boundary syncs the membership (Joining -> Active,
-    /// leavers -> Exited); the module's own expiry OutputRejected parks the joiners its ready bitmap lacks; its SessionClosed returns the
-    /// rest (Joining -> Admitted, Leaving -> Removing).
+    /// @notice Root records (design 3.4.2, 3.7.4), read from the SealRegistry. A Boundary syncs the membership with the committee VR
+    /// actually installed: a primary Boundary installs the output (J), so its joiners become Active and its leavers Exited; a recovered
+    /// Boundary keeps K, so the output's joiners return to Admitted and its leavers to Removing, and the next election retries them.
+    /// The module's own expiry OutputRejected parks the joiners its ready bitmap lacks; its SessionClosed returns the rest (Joining ->
+    /// Admitted, Leaving -> Removing).
     function onRecords(uint64 fromIndex, uint32 count) external onlyVR {
         IVRRecordSource seal = IVRRecordSource(VRC.SEAL_REGISTRY);
         for (uint64 i = fromIndex; i < fromIndex + count; ++i) {
@@ -379,11 +388,12 @@ contract PoaElection is IPoaElection {
             if (!VRCodec.recordWellFormed(r.kind, r.data)) continue;
             bytes32 rid = bytes32(VRCodec.wordAt(r.data, 0));
             if (r.kind == VRC.REC_BOUNDARY) {
-                _sync(IVR(VR).committeeIds(), r.progress);
+                uint64[] memory installed = IVR(VR).committeeIds();
                 if (rid == _openRid && rid != 0) {
-                    _clearOpen();
+                    _resolveOpen(installed, r.progress);
                     _boundaryOwed = false;
                 }
+                _sync(installed, r.progress);
             } else if (rid == _openRid && rid != 0) {
                 if (r.kind == VRC.REC_OUTPUT_REJECTED) {
                     if (VRCodec.wordAt(r.data, 1) == VRC.REJ_EXPIRED) {
@@ -640,6 +650,23 @@ contract PoaElection is IPoaElection {
             if ((readyBitmap >> _openJoinerBits[i]) & 1 != 0) continue;
             if (st == JOINING || st == ADMITTED) _set(id, PARKED, p);
         }
+    }
+
+    /// @dev The Boundary of the open output, before the membership sync: a joiner the installed committee lacks (a recovered Boundary
+    /// keeps K) is Admitted again, a leaver it still holds is Removing again. Only entries still Joining or Leaving move, so a Remove
+    /// or a parking that intervened stands. Then the open-output bookkeeping is released.
+    function _resolveOpen(uint64[] memory installed, uint64 p) internal {
+        uint256 n = _openJoiners.length;
+        for (uint256 i = 0; i < n; ++i) {
+            uint64 id = _openJoiners[i];
+            if (_entries[id].state == JOINING && !_contains(installed, id)) _set(id, ADMITTED, p);
+        }
+        n = _openLeavers.length;
+        for (uint256 i = 0; i < n; ++i) {
+            uint64 id = _openLeavers[i];
+            if (_entries[id].state == LEAVING && _contains(installed, id)) _set(id, REMOVING, p);
+        }
+        _clearOpen();
     }
 
     /// @dev The open output closed without a boundary: its joiners are Admitted again and its leavers Removing again.
