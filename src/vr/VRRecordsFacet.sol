@@ -52,6 +52,7 @@ contract VRRecordsFacet is VRShared {
             if (sw != 0) seg = _switchModule(sw, seg, i);
         }
         if (seg < cursor + n) _deliverRecords($.activeModule, seg, cursor + n - seg);
+        _settleWork(); // a Boundary or a refused switch may have emptied the outstanding work
     }
 
     function _anomaly(uint64 index, uint8 kind, uint8 code) internal {

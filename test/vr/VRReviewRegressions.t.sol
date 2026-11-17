@@ -226,6 +226,72 @@ contract VRReviewRegressionsTest is VRBase {
         assertFalse(vr.activeModule().workPending, "genuine cancellation clears it");
     }
 
+    /// @dev astra r2: cancelling the last outstanding change ends its clock at once; work executed next starts a fresh one, with or
+    /// without an election in between.
+    function _cancelThenExecute(bool electBetween) internal {
+        uint64 a = _queue(VRC.K_COMMITTEE_LIMITS, _limitsPayload(1, 5, 16));
+        uint64 b = _queue(VRC.K_COMMITTEE_LIMITS, _limitsPayload(2, 5, 16));
+        _passDelays();
+        vr.execute(a);
+        uint64 since = vr.activeModule().workSince;
+        uint256 deadline = module.interval() + 2 * VRC.LIFETIME;
+        progress = uint64(since + deadline - 1);
+        seal.setClock(progress, ucTime);
+        _elect();
+        assertEq(vr.health(), VRC.HEALTHY);
+        vm.prank(governor);
+        vr.cancel(a);
+        assertFalse(vr.activeModule().workPending, "the cancel ended the clock");
+        assertEq(vr.activeModule().workSince, 0);
+        if (electBetween) _elect();
+        vr.execute(b);
+        assertEq(vr.activeModule().workSince, progress, "B starts a fresh clock");
+        _advance(2, 1);
+        _elect();
+        assertEq(vr.health(), VRC.HEALTHY, "B is two units old, not A's age");
+    }
+
+    function test_cancelOfTheLastWorkEndsItsClock() public {
+        _cancelThenExecute(false);
+    }
+
+    function test_cancelOfTheLastWorkEndsItsClockWithAnElectionBetween() public {
+        _cancelThenExecute(true);
+    }
+
+    function test_cancelKeepsTheClockWhileOtherWorkRemains() public {
+        uint64 a = _queueScheduled(VRC.K_COMMITTEE_LIMITS, _limitsPayload(1, 5, 16));
+        uint64 since = vr.activeModule().workSince;
+        _queueScheduled(VRC.K_FEE_PARAMS, abi.encode(uint64(2_000_000), uint64(8), address(0xFEE)));
+        vm.prank(governor);
+        vr.cancel(a);
+        assertTrue(vr.activeModule().workPending);
+        assertEq(vr.activeModule().workSince, since, "outstanding work keeps its age");
+    }
+
+    function test_bitmapRejectionOfAllWorkEndsTheClock() public {
+        _queueScheduled(VRC.K_COMMITTEE_LIMITS, _limitsPayload(1, 5, 16));
+        bytes32 r = _rid("R");
+        assertEq(_moduleReserve(r, true), VRC.ELECT_RESERVED);
+        _acknowledge(r, 1);
+        assertFalse(vr.activeModule().workPending);
+    }
+
+    function test_nativeBoundaryEmptyingTheWorkEndsTheClock() public {
+        _queueScheduled(VRC.K_COMMITTEE_LIMITS, _limitsPayload(1, 5, 16));
+        module.setMode(1, 1);
+        assertEq(_elect(), VRC.ELECT_NO_CANDIDATE);
+        module.setMode(1, 0);
+        _advance(VRC.MIN_EPOCH_GAP, 1);
+        assertEq(_elect(), VRC.ELECT_RESERVED);
+        bytes32 n = vr.openOutput();
+        assertTrue(vr.output(n).native);
+        assertTrue(vr.activeModule().workPending);
+        _acknowledge(n, 0);
+        assertFalse(vr.activeModule().workPending, "the native Boundary completed the last work");
+        assertEq(vr.activeModule().workSince, 0);
+    }
+
     // ---------------------------------------------------------------------------------------------
     // astra 4: the reserved native tag is refused from modules
     // ---------------------------------------------------------------------------------------------

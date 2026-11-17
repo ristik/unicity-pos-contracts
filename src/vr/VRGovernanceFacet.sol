@@ -103,6 +103,7 @@ contract VRGovernanceFacet is VRShared {
         uint8 s = $.changes[changeId].state;
         if (s != VRC.CH_QUEUED && s != VRC.CH_SCHEDULED) revert NotCancellable();
         _terminate(changeId, VRC.CH_CANCELLED, 0);
+        _settleWork();
         emit ChangeCancelled(changeId);
     }
 

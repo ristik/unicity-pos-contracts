@@ -238,6 +238,16 @@ abstract contract VRShared {
         return uint256(VRLayout.load().module.maxElectionInterval) + 2 * uint256(VRC.LIFETIME);
     }
 
+    /// @dev Ends the work clock at the transition that empties the outstanding work (a cancel, a Boundary's activations or
+    /// rejections, a refused switch), so later work always starts a fresh clock whatever the election timing.
+    function _settleWork() internal {
+        VRLayout.Watch storage w = VRLayout.load().watch;
+        if (w.workPending && !w.actionWork && !_hasBoundaryWork()) {
+            w.workPending = false;
+            w.workSince = 0;
+        }
+    }
+
     function _resetWork() internal {
         VRLayout.Watch storage w = VRLayout.load().watch;
         w.actionWork = false;
