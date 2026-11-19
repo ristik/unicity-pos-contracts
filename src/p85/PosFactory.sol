@@ -49,6 +49,8 @@ contract PosFactory {
         address governanceAuthority; // the fixed development authority that may queue and cancel a policy proposal (T8)
         uint256 rewardFunding; // the initial reward pool funding, sent with the factory's value in addition to the bonds (T8)
         GenesisIdentity[] identities;
+        address hookCaller; // VT-04: the adapter that calls `elect` and takes `outputLost` (zero: SYSTEM_CALLER, no callback)
+        address deployment; // VT-04: the exposure-digest deployment domain (the VR address; zero: custody itself)
     }
 
     error GenesisValueMismatch();
@@ -91,7 +93,9 @@ contract PosFactory {
             electionParams: c.electionParams,
             rootNetwork: c.rootNetwork,
             rootGenesis: c.rootGenesis,
-            identities: c.identities
+            identities: c.identities,
+            hookCaller: c.hookCaller,
+            deployment: c.deployment
         });
         bytes32 h = keccak256(abi.encode(m));
         MANIFEST_HASH = h;
@@ -107,7 +111,8 @@ contract PosFactory {
                 bondUnit: c.bondUnit,
                 minBond: c.minBond,
                 limits: c.limits,
-                genesis: c.genesis
+                genesis: c.genesis,
+                deployment: c.deployment
             })
         );
         uint256 total = 0;

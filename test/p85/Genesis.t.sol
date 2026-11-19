@@ -516,7 +516,9 @@ contract GenesisTest is P85Base {
             governanceAuthority: governanceAuthority,
             rewardFunding: 0,
             electionParams: _electionParams(),
-            identities: ids
+            identities: ids,
+            hookCaller: address(0),
+            deployment: address(0)
         });
     }
 

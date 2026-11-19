@@ -81,6 +81,12 @@ struct Manifest {
     uint64 rootNetwork;
     bytes32 rootGenesis;
     GenesisIdentity[] identities;
+    // The validator-registry generation's two hooks (VT-04, design 3.8 changes 1 and 3). `hookCaller` is the account that calls
+    // `ElectionPolicy.elect` and receives its atomic loss callback `outputLost`: the PosElectionAdapter on a VR generation; zero on the
+    // plain P85 generation (SYSTEM_CALLER calls `elect`, no callback). `deployment` is the deployment-domain address custody forms its
+    // exposure digests under: the VR address on a VR generation; zero means custody itself.
+    address hookCaller;
+    address deployment;
 }
 
 /// @notice A staged EVM binding with its operator payee. Owned by ElectionPolicy, keyed by
@@ -116,6 +122,7 @@ struct CustodyConfig {
     uint128 minBond;
     Limits limits;
     GenesisAssignment genesis;
+    address deployment; // the deployment-domain address of the exposure digests (VR on a VR generation); zero: custody itself
 }
 
 struct ReserveMember {

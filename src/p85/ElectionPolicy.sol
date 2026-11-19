@@ -14,7 +14,14 @@ import {
     ReserveInput,
     ReserveMember
 } from "./P85Types.sol";
-import {IRootRecords, IStakeCustody, IPolicySource, IEvidence, IGovernance} from "./IP85.sol";
+import {
+    IRootRecords,
+    IStakeCustody,
+    IPolicySource,
+    IEvidence,
+    IGovernance,
+    IPosAdapter
+} from "./IP85.sol";
 import {KeyLib} from "./KeyLib.sol";
 import {Continuity} from "./Continuity.sol";
 import {Selection} from "./Selection.sol";
@@ -139,6 +146,10 @@ contract ElectionPolicy {
         uint64 weight; // the committed (quantized) weight q
         uint64 raw; // the raw bonded weight x the member's lots must cover
         bytes32 bindingHash;
+        // The node words of the frozen binding (a later `admitDelegation` replaces the staged record, never a frozen one): the adapter
+        // serves them as the output's member words, so they are part of the frozen record.
+        bytes32 rootNodeID;
+        bytes32 evmNodeID;
     }
 
     /// @dev The fixed proof slots of one result (design v5 section 5): everything Prepare proves at the last certified EVM state. The
@@ -236,6 +247,10 @@ contract ElectionPolicy {
     /// @dev The result of the last election attempt, reserved or NoCandidate: the system hook's attempt emits no log a client can read, so the
     /// outcome of the last attempt (and for a NoCandidate its Reason) is read as `result(lastAttemptResult)`. Appended last: no slot moves.
     bytes32 public lastAttemptResult;
+    /// @dev VT-04 (design 3.8 changes 1 and 2): the PosElectionAdapter of a validator-registry generation, set from the manifest. It alone calls
+    /// `elect` (the system hook calls VR, which calls the adapter) and it receives `outputLost` when a result is first marked lost. Zero on the
+    /// plain P85 generation: SYSTEM_CALLER calls `elect` and there is no callback. Appended last: no slot moves.
+    address public hookCaller;
 
     /// @param factory_ the deployment factory that will initialize this module, fixed at construction. The module is deployed first so
     /// the factory's own creation code stays small; only that factory can initialize it, and it can do so once.
@@ -273,6 +288,8 @@ contract ElectionPolicy {
         }
         reader = r;
         policySource = IPolicySource(m.policySource);
+        // forge-lint: disable-next-line(missing-events-access-control)
+        hookCaller = m.hookCaller;
         ElectionParams calldata p = m.electionParams;
         if (
             p.nMin == 0 || p.nTarget < p.nMin || p.nMax < p.nTarget || p.nMax > 16 || p.distDen == 0
@@ -456,7 +473,9 @@ contract ElectionPolicy {
     /// @notice The system hook's election step (design v5 section 5, step 4). `origin` is the authenticated root origin of the block.
     /// Never reverts for a chain-state reason: an election or reservation failure is stored as an ordered `NoCandidate`.
     function elect(bytes32 origin) external returns (Outcome) {
-        if (msg.sender != SYSTEM_CALLER) revert NotSystem();
+        if (msg.sender != (hookCaller == address(0) ? SYSTEM_CALLER : hookCaller)) {
+            revert NotSystem();
+        }
         if (!initialized || openResult != bytes32(0)) return Outcome.Disabled;
         (bool ok, uint64 p, uint64 t) = _clock();
         if (!ok) return Outcome.Disabled;
@@ -544,6 +563,8 @@ contract ElectionPolicy {
         bytes32 rootKeyHash;
         bytes32 evmKeyHash;
         address payee;
+        bytes32 rootNodeID;
+        bytes32 evmNodeID;
         uint256[] lots;
     }
 
@@ -611,7 +632,15 @@ contract ElectionPolicy {
         for (uint256 i = 0; i < chosen.length; ++i) {
             while (c[k].id != chosen[i].id) ++k;
             f.push(
-                Frozen(c[k].id, c[k].generation, chosen[i].weight, c[k].weight, c[k].bindingHash)
+                Frozen(
+                    c[k].id,
+                    c[k].generation,
+                    chosen[i].weight,
+                    c[k].weight,
+                    c[k].bindingHash,
+                    c[k].rootNodeID,
+                    c[k].evmNodeID
+                )
             );
         }
         _openPublication(resultID, in_.assignmentID, predecessor, digest);
@@ -688,6 +717,8 @@ contract ElectionPolicy {
             tmp[n].rootKeyHash = rk;
             tmp[n].evmKeyHash = s.evmKeyHash;
             tmp[n].payee = s.binding.operatorPayee;
+            tmp[n].rootNodeID = s.binding.rootNodeID;
+            tmp[n].evmNodeID = s.binding.evmNodeID;
             dl[n] = EligibilityReader.Delegated(
                 ps[i].id, ps[i].generation, rk, s.evmKeyHash, s.bindingHash
             );
@@ -924,6 +955,10 @@ contract ElectionPolicy {
         if (!reader.stillCovered(m.id, m.generation, m.raw, eid)) {
             pub.lost = true;
             emit CoverageLostFor(resultID, m.id);
+            // The atomic loss (design 3.8 change 2): at the one place `lost` is first set, the adapter invalidates the result in VR. No
+            // try/catch: `VR.invalidate` is total for its source, so with enough gas the loss transaction always succeeds, and with too
+            // little the whole transaction reverts and can be retried.
+            if (hookCaller != address(0)) IPosAdapter(hookCaller).outputLost(resultID);
         }
     }
 

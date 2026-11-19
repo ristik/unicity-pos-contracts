@@ -112,7 +112,9 @@ contract P85Genesis is Script {
             rewardRate: uint128(vm.envOr("P85_REWARD_RATE", uint256(1 ether))),
             governanceAuthority: vm.envAddress("P85_GOVERNANCE_AUTHORITY"),
             rewardFunding: vm.envOr("P85_REWARD_FUNDING", uint256(10_000 ether)),
-            identities: ids
+            identities: ids,
+            hookCaller: address(0),
+            deployment: address(0)
         });
         // The election reads the record source's clock when it is initialized, so a record source with code must exist at the address the
         // manifest names. Here it is a stand-in that is not part of the genesis alloc (the lane's registry is allocated by the B1 genesis).

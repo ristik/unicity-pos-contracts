@@ -100,6 +100,16 @@ abstract contract P85Base is Test {
     /// @dev B_min of manual deployments (the factory's deployments use the unit).
     uint128 internal manualMinBond = uint128(100 * UCT);
 
+    /// @dev VT-04: the validator-registry generation's hooks (the adapter that calls `elect`, the exposure-digest deployment domain). Zero
+    /// on the plain P85 generation.
+    function _hookCaller() internal view virtual returns (address) {
+        return address(0);
+    }
+
+    function _digestDomain() internal view virtual returns (address) {
+        return address(0);
+    }
+
     /// @dev The manifest's resource ceilings; a test whose result depends on them overrides it.
     function _rootNetwork() internal view virtual returns (uint64) {
         return ROOT_NETWORK;
@@ -182,7 +192,9 @@ abstract contract P85Base is Test {
             governanceAuthority: governanceAuthority,
             rewardFunding: _rewardFunding(),
             electionParams: _electionParams(),
-            identities: ids
+            identities: ids,
+            hookCaller: _hookCaller(),
+            deployment: _digestDomain()
         });
         vm.deal(address(this), N_GENESIS * GENESIS_BOND + _rewardFunding());
         factory = new PosFactory{value: N_GENESIS * GENESIS_BOND + _rewardFunding()}(c);
@@ -239,7 +251,9 @@ abstract contract P85Base is Test {
             electionParams: _electionParams(),
             rootNetwork: _rootNetwork(),
             rootGenesis: _rootGenesis(),
-            identities: ids
+            identities: ids,
+            hookCaller: _hookCaller(),
+            deployment: _digestDomain()
         });
         bytes32 h = keccak256(abi.encode(m));
         custody.initialize(
@@ -254,7 +268,8 @@ abstract contract P85Base is Test {
                 bondUnit: uint128(100 * UCT),
                 minBond: manualMinBond,
                 limits: limits,
-                genesis: g
+                genesis: g,
+                deployment: _digestDomain()
             })
         );
         vm.deal(address(this), N_GENESIS * GENESIS_BOND);

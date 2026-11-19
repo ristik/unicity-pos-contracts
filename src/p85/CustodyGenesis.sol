@@ -26,6 +26,7 @@ import {
 import {IRootRecords, IPolicySource, IEvidence, IElectionPolicy, CaseView} from "./IP85.sol";
 import {KeyLib} from "./KeyLib.sol";
 import {Quantize} from "./Quantize.sol";
+import {VRC} from "../vr/VRConstants.sol";
 
 import {CustodyStorage} from "./CustodyStorage.sol";
 
@@ -63,6 +64,7 @@ contract CustodyGenesis is CustodyStorage {
         bondUnit = c.bondUnit;
         minBond = c.minBond;
         limits = c.limits;
+        deploymentDomain = c.deployment == address(0) ? address(this) : c.deployment;
         // forge-lint: disable-end(missing-events-access-control)
         genesisAssignmentID = c.genesis.assignmentID;
         Assignment storage a = assignments[c.genesis.assignmentID];
@@ -97,9 +99,7 @@ contract CustodyGenesis is CustodyStorage {
         positions[id] = Position(owner, withdrawal, rootHash, bytes32(0), 1, 0, 0, 0, false);
         uint256[] memory seeded = new uint256[](1);
         seeded[0] = _newLot(id, msg.value);
-        assignments[genesisAssignmentID].exposureIDs
-            .push(
-                _createExposure(
+        bytes32 eid = _createExposure(
                     genesisAssignmentID,
                     id,
                     1,
@@ -112,8 +112,16 @@ contract CustodyGenesis is CustodyStorage {
                     evmHash,
                     operatorPayee,
                     seeded
+        );
+        assignments[genesisAssignmentID].exposureIDs.push(eid);
+        // a VR generation: the genesis seat's member digest is VR's (the VR-domain exposure formula over GENESIS_RESULT)
+        if (deploymentDomain != address(this)) {
+            exposureMemberDigest[eid] = keccak256(
+                abi.encode(
+                    EXPOSURE_DOMAIN, network, block.chainid, deploymentDomain, VRC.GENESIS_RESULT, id
                 )
             );
+        }
     }
 
     /// @notice Factory-only genesis step 3: commit the exposure digests and seal initialization.

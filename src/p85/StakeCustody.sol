@@ -27,6 +27,7 @@ import {
 import {IRootRecords, IPolicySource, IEvidence, IElectionPolicy, CaseView} from "./IP85.sol";
 import {KeyLib} from "./KeyLib.sol";
 import {Quantize} from "./Quantize.sol";
+import {VRLiability} from "../vr/VRLiability.sol";
 
 import {CustodyStorage} from "./CustodyStorage.sol";
 
@@ -234,6 +235,7 @@ contract StakeCustody is CustodyStorage {
         if (p.retirementRequested) revert RetirementAlreadyRequested();
         if (p.openLots == 0) revert NoOpenLots();
         p.retirementRequested = true;
+        VRLiability.load().facts[id][p.generation].requested = true; // sticky (design 3.9.2)
         uint256[] storage ids = _generationLots[id][p.generation];
         for (uint256 i = 0; i < ids.length; ++i) {
             Lot storage l = lots[ids[i]];
@@ -379,6 +381,7 @@ contract StakeCustody is CustodyStorage {
             lastRecordID = r.recordID;
         }
         recordCursor = end;
+        VRLiability.load().cursor = end;
         emit RootRecordsApplied(first, end - 1, lastRecordID);
     }
 
@@ -506,20 +509,22 @@ contract StakeCustody is CustodyStorage {
         for (uint256 i = 0; i < ids.length; ++i) {
             Exposure storage old = exposures[ids[i]];
             uint256[] memory oldLots = old.lotIDs;
-            k.exposureIDs
-                .push(
-                    _createExposure(
-                        d.recoveryAssignmentID,
-                        old.id,
-                        old.generation,
-                        old.weight,
-                        old.rawWeight,
-                        old.rootKeyHash,
-                        old.evmKeyHash,
-                        old.operatorPayee,
-                        oldLots
-                    )
-                );
+            bytes32 kid = _createExposure(
+                d.recoveryAssignmentID,
+                old.id,
+                old.generation,
+                old.weight,
+                old.rawWeight,
+                old.rootKeyHash,
+                old.evmKeyHash,
+                old.operatorPayee,
+                oldLots
+            );
+            k.exposureIDs.push(kid);
+            // K is exactly the incumbent committee: its members keep their member digest (VT-04)
+            if (exposureMemberDigest[ids[i]] != bytes32(0)) {
+                exposureMemberDigest[kid] = exposureMemberDigest[ids[i]];
+            }
         }
         k.exposureDigest = _digestExposures(k.exposureIDs);
         k.keyDigest = _digestKeys(k.exposureIDs);
@@ -597,6 +602,7 @@ contract StakeCustody is CustodyStorage {
             Exposure storage e = exposures[a.exposureIDs[i]];
             if (anchor > maxLiabilityAnchor[e.id][e.generation]) {
                 maxLiabilityAnchor[e.id][e.generation] = anchor;
+                _writeFacts(e.id, e.generation);
             }
             for (uint256 j = 0; j < e.lotIDs.length; ++j) {
                 Lot storage l = lots[e.lotIDs[j]];
@@ -780,6 +786,7 @@ contract StakeCustody is CustodyStorage {
                 _move(l, retiring ? CAT_DRAINING : CAT_FREE);
             }
         }
+        _writeFacts(e.id, e.generation);
     }
 
     // --- getters ------------------------------------------------------------------------------
