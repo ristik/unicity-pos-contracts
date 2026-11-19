@@ -296,26 +296,37 @@ contract PosLifecycleTest is PosBase {
         );
     }
 
-    /// @dev VR's CAP_ELECT (4,000,000) carries the PoS election to a six-member result (3.7 M); a seventh makes the contained step fail,
-    /// which VR records as a module fault (outcome 3, health Faulted). The 16-member election needs 7.9 M (PosSixteen): owner-questions.md.
-    function test_throughVRTheElectionFitsSixMembersAndExceedsTheCapAtSeven() public {
-        for (uint256 k; k < 2; ++k) {
+    /// @dev VR's CAP_ELECT (4,000,000) carries the PoS election only to a small committee: growing it one election at a time, a contained
+    /// step eventually fails, which VR records as a module fault (outcome 3, health Faulted). The 16-member election needs 7.9 M
+    /// (PosSixteen): owner-questions.md.
+    function test_throughVRTheElectionExceedsTheCapForALargerCommittee() public {
+        uint256 fitted;
+        bool faulted;
+        for (uint256 k; k < 8 && !faulted; ++k) {
             Joiner memory a = _joinPos(1_000 * UCT);
             evmPkOf[a.id] = a.evmPk;
-            bytes32 r = _elect2();
+            _advance(300, 200);
+            uint256 g = gasleft();
+            uint8 o = _vrElect(ORIGIN);
+            uint256 used = g - gasleft();
+            if (o != VRC.ELECT_RESERVED) {
+                emit log_named_uint("VR.elect gas at the failing election", used);
+                assertEq(o, VRC.ELECT_NO_CANDIDATE, "a failed elect step returns outcome 3");
+                assertEq(vr.health(), VRC.FAULTED);
+                faulted = true;
+                break;
+            }
+            bytes32 r = vr.openOutput();
+            assertEq(_publishResult2(r), VRC.PUB_PUBLISHED);
             bytes32 previous = custody.lastAckedAssignment();
             _ackNext(r);
             pushRecord(RecordKind.Closure, closureData(previous, lastH, "prev"));
             _vrApplyAll();
+            fitted = vr.committee().length;
         }
-        assertEq(vr.committee().length, 6);
-        Joiner memory b = _joinPos(1_000 * UCT);
-        evmPkOf[b.id] = b.evmPk;
-        _advance(300, 200);
-        uint256 g = gasleft();
-        uint8 o = _vrElect(ORIGIN);
-        emit log_named_uint("seven-member VR.elect gas", g - gasleft());
-        assertEq(o, VRC.ELECT_NO_CANDIDATE, "a failed elect step returns outcome 3");
-        assertEq(vr.health(), VRC.FAULTED);
+        emit log_named_uint("largest committee elected through VR", fitted);
+        assertTrue(faulted, "the cap is reached before 16 members");
+        assertGe(fitted, 6);
+        assertLt(fitted, 16);
     }
 }

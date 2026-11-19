@@ -63,7 +63,7 @@ exclude_lints = [
 ]
 # Linting is enforced on contract sources. Tests use low-level calls, cheatcodes and helper casts on
 # purpose, and deny_warnings would otherwise turn those lint findings into build failures.
-ignore = ["test/**/*.sol", "script/P85Genesis.s.sol", "script/VRGenesis.s.sol"]
+ignore = ["test/**/*.sol", "script/P85Genesis.s.sol", "script/VRGenesis.s.sol", "script/VRPosGenesis.s.sol"]
 
 [fmt]
 line_length = 100
