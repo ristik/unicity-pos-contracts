@@ -146,10 +146,6 @@ contract ElectionPolicy {
         uint64 weight; // the committed (quantized) weight q
         uint64 raw; // the raw bonded weight x the member's lots must cover
         bytes32 bindingHash;
-        // The node words of the frozen binding (a later `admitDelegation` replaces the staged record, never a frozen one): the adapter
-        // serves them as the output's member words, so they are part of the frozen record.
-        bytes32 rootNodeID;
-        bytes32 evmNodeID;
     }
 
     /// @dev The fixed proof slots of one result (design v5 section 5): everything Prepare proves at the last certified EVM state. The
@@ -563,8 +559,6 @@ contract ElectionPolicy {
         bytes32 rootKeyHash;
         bytes32 evmKeyHash;
         address payee;
-        bytes32 rootNodeID;
-        bytes32 evmNodeID;
         uint256[] lots;
     }
 
@@ -632,15 +626,7 @@ contract ElectionPolicy {
         for (uint256 i = 0; i < chosen.length; ++i) {
             while (c[k].id != chosen[i].id) ++k;
             f.push(
-                Frozen(
-                    c[k].id,
-                    c[k].generation,
-                    chosen[i].weight,
-                    c[k].weight,
-                    c[k].bindingHash,
-                    c[k].rootNodeID,
-                    c[k].evmNodeID
-                )
+                Frozen(c[k].id, c[k].generation, chosen[i].weight, c[k].weight, c[k].bindingHash)
             );
         }
         _openPublication(resultID, in_.assignmentID, predecessor, digest);
@@ -717,8 +703,6 @@ contract ElectionPolicy {
             tmp[n].rootKeyHash = rk;
             tmp[n].evmKeyHash = s.evmKeyHash;
             tmp[n].payee = s.binding.operatorPayee;
-            tmp[n].rootNodeID = s.binding.rootNodeID;
-            tmp[n].evmNodeID = s.binding.evmNodeID;
             dl[n] = EligibilityReader.Delegated(
                 ps[i].id, ps[i].generation, rk, s.evmKeyHash, s.bindingHash
             );

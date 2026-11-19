@@ -77,10 +77,9 @@ abstract contract PosBase is P85Flow {
             ADAPTER
         );
         adapter = PosElectionAdapter(ADAPTER);
-        address[5] memory signers = [address(0xA1), address(0xA2), address(0xA3), address(0xA4), address(0xA5)];
-        deployCodeTo(
-            "FoundationMultisig.sol:FoundationMultisig", abi.encode(signers), MULTISIG
-        );
+        address[5] memory signers =
+            [address(0xA1), address(0xA2), address(0xA3), address(0xA4), address(0xA5)];
+        deployCodeTo("FoundationMultisig.sol:FoundationMultisig", abi.encode(signers), MULTISIG);
         ValidatorRegistry.Genesis memory g = _vrGenesis();
         g.governanceFacet = address(new VRGovernanceFacet());
         g.repairFacet = address(new VRRepairFacet());
@@ -192,11 +191,16 @@ abstract contract PosBase is P85Flow {
         _advance(300, 200);
         uint256 g0 = gasleft();
         uint8 o = _vrElect(ORIGIN);
-        emit log_named_uint(string.concat("elect gas, committee ", vm.toString(vr.committee().length)), g0 - gasleft());
+        emit log_named_uint(
+            string.concat("elect gas, committee ", vm.toString(vr.committee().length)),
+            g0 - gasleft()
+        );
         if (o != VRC.ELECT_RESERVED) {
             emit log_named_uint("elect outcome", o);
             emit log_named_uint("vr health", vr.health());
-            emit log_named_uint("p85 reason", uint8(election.result(election.lastAttemptResult()).reason));
+            emit log_named_uint(
+                "p85 reason", uint8(election.result(election.lastAttemptResult()).reason)
+            );
             emit log_named_uint("committee", vr.committee().length);
         }
         assertEq(o, VRC.ELECT_RESERVED, "an election from stake");
@@ -224,9 +228,7 @@ abstract contract PosBase is P85Flow {
     }
 
     function _rejectedRecord(bytes32 rid, uint8 reason) internal {
-        pushRecord(
-            RecordKind.OutputRejected, abi.encode(OutputRejectedData(rid, reason, 0, 0))
-        );
+        pushRecord(RecordKind.OutputRejected, abi.encode(OutputRejectedData(rid, reason, 0, 0)));
     }
 
     function _closedRecord(bytes32 rid) internal {
@@ -385,5 +387,4 @@ abstract contract PosBase is P85Flow {
         election.finalizeCandidate(rid);
         return vr.publish(rid);
     }
-
 }

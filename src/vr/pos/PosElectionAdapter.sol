@@ -10,7 +10,7 @@ import {VRCodec} from "../VRCodec.sol";
 import {Member, IVR, IElectionModule} from "../VRTypes.sol";
 import {ElectionPolicy} from "../../p85/ElectionPolicy.sol";
 import {IStakeCustody, IPosAdapter} from "../../p85/IP85.sol";
-import {Limits} from "../../p85/P85Types.sol";
+import {Delegation} from "../../p85/P85Types.sol";
 
 /// @notice The two custody calls the adapter makes that `IStakeCustody` does not carry.
 interface IPosCustody is IStakeCustody {
@@ -142,7 +142,9 @@ contract PosElectionAdapter is IElectionModule, IPosAdapter {
         if (o == ElectionPolicy.Outcome.Reserved) {
             return VRCodec.packElect(VRC.ELECT_RESERVED, false, ELECTION.lastAttemptResult());
         }
-        if (o == ElectionPolicy.Outcome.NotDue) return VRCodec.packElect(VRC.ELECT_NOT_DUE, false, 0);
+        if (o == ElectionPolicy.Outcome.NotDue) {
+            return VRCodec.packElect(VRC.ELECT_NOT_DUE, false, 0);
+        }
         if (o == ElectionPolicy.Outcome.NoCandidateRecorded) {
             return VRCodec.packElect(VRC.ELECT_NO_CANDIDATE, false, 0);
         }
@@ -169,7 +171,7 @@ contract PosElectionAdapter is IElectionModule, IPosAdapter {
         Member[] memory ms = new Member[](f.length);
         for (uint256 i = 0; i < f.length; ++i) {
             Member memory m = _member(f[i], eids[i]);
-            if (!_aligned(m)) return VRCodec.packStatus(VRC.STATUS_NOT_MINE);
+            if (m.id == 0 || !_aligned(m)) return VRCodec.packStatus(VRC.STATUS_NOT_MINE);
             ms[i] = m;
         }
         VRCodec.OutputHeader memory h;
@@ -181,26 +183,31 @@ contract PosElectionAdapter is IElectionModule, IPosAdapter {
         return VRCodec.packOutput(h, ms);
     }
 
-    /// @dev One frozen member as VR's member words: the frozen node words and generation, the quantized and raw weights, the exposure's
+    /// @dev One frozen member as VR's member words: the staged-and-still-frozen delegation's node words, the frozen generation, the quantized and raw weights, the exposure's
     /// frozen key hashes and operator payee, and custody's member digest of the exposure (a recovery copy or genesis seat: VR's; a primary: the keccak of the lot list).
     function _member(ElectionPolicy.Frozen memory f, bytes32 exposureId)
         internal
         view
         returns (Member memory m)
     {
+        // the node words are the staged delegation's, valid only while it is still the frozen record: a later `admitDelegation` replaced
+        // it, so the frozen binding's words are gone and the result is not served (it expires)
+        (Delegation memory d, bytes32 bindingHash,) = ELECTION.delegation(f.id, f.generation);
+        if (bindingHash != f.bindingHash) return m; // id 0: the caller refuses it
         (,,,,, bytes32 rootKeyHash, bytes32 evmKeyHash, address payee,,) =
             CUSTODY.exposures(exposureId);
         m.id = f.id;
         m.generation = f.generation;
         m.weight = f.weight;
         m.rawWeight = f.raw;
-        m.rootNodeWord = f.rootNodeID;
+        m.rootNodeWord = d.rootNodeID;
         m.rootKeyHash = rootKeyHash;
-        m.evmNodeWord = f.evmNodeID;
+        m.evmNodeWord = d.evmNodeID;
         m.evmKeyHash = evmKeyHash;
         m.payee = payee;
-        bytes32 d = CUSTODY.exposureMemberDigest(exposureId);
-        m.exposureDigest = d != bytes32(0) ? d : keccak256(abi.encode(CUSTODY.exposureLots(exposureId)));
+        bytes32 md = CUSTODY.exposureMemberDigest(exposureId);
+        m.exposureDigest =
+            md != bytes32(0) ? md : keccak256(abi.encode(CUSTODY.exposureLots(exposureId)));
     }
 
     /// @dev VR accepts only words equal to the identity's current binding (generation g) or its staged one (g + 1); a member that is not

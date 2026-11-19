@@ -100,25 +100,30 @@ contract CustodyGenesis is CustodyStorage {
         uint256[] memory seeded = new uint256[](1);
         seeded[0] = _newLot(id, msg.value);
         bytes32 eid = _createExposure(
-                    genesisAssignmentID,
-                    id,
-                    1,
-                    // weight <= B is checked in seedGenesis, and the factory caps their total at B
-                    // forge-lint: disable-next-line(unsafe-typecast)
-                    uint64(weight),
-                    // forge-lint: disable-next-line(unsafe-typecast)
-                    uint64(weight), // at genesis q = x
-                    rootHash,
-                    evmHash,
-                    operatorPayee,
-                    seeded
+            genesisAssignmentID,
+            id,
+            1,
+            // weight <= B is checked in seedGenesis, and the factory caps their total at B
+            // forge-lint: disable-next-line(unsafe-typecast)
+            uint64(weight),
+            // forge-lint: disable-next-line(unsafe-typecast)
+            uint64(weight), // at genesis q = x
+            rootHash,
+            evmHash,
+            operatorPayee,
+            seeded
         );
         assignments[genesisAssignmentID].exposureIDs.push(eid);
         // a VR generation: the genesis seat's member digest is VR's (the VR-domain exposure formula over GENESIS_RESULT)
         if (deploymentDomain != address(this)) {
             exposureMemberDigest[eid] = keccak256(
                 abi.encode(
-                    EXPOSURE_DOMAIN, network, block.chainid, deploymentDomain, VRC.GENESIS_RESULT, id
+                    EXPOSURE_DOMAIN,
+                    network,
+                    block.chainid,
+                    deploymentDomain,
+                    VRC.GENESIS_RESULT,
+                    id
                 )
             );
         }

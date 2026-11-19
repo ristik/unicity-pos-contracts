@@ -20,7 +20,14 @@ import {
 contract PosSixteenTest is PosBase {
     function _electionParams() internal pure override returns (ElectionParams memory) {
         return ElectionParams({
-            nMin: 4, nTarget: 16, nMax: 16, maxM: 4, distNum: 1, distDen: 1, cadenceRounds: 200, cadenceSeconds: 100
+            nMin: 4,
+            nTarget: 16,
+            nMax: 16,
+            maxM: 4,
+            distNum: 1,
+            distDen: 1,
+            cadenceRounds: 200,
+            cadenceSeconds: 100
         });
     }
 
@@ -86,13 +93,18 @@ contract PosSixteenTest is PosBase {
     function test_aSixteenMemberElectionAndItsPublication() public {
         _toSixteen();
         bytes32 rid = _p85Elect();
-        emit log_named_uint("16-member ElectionPolicy.elect gas (reservation incl. holder facts)", lastElectGas);
+        emit log_named_uint(
+            "16-member ElectionPolicy.elect gas (reservation incl. holder facts)", lastElectGas
+        );
         assertEq(election.frozenMembers(rid).length, 16);
         _p85Publish(rid);
         // the adapter serves the 16-member output (outputOf is a staticcall; its gas is reported)
         uint256 g = gasleft();
         bytes memory out = adapter.outputOf(rid);
-        emit log_named_uint("16-member PosElectionAdapter.outputOf gas (no VR alignment: VR was not advanced)", g - gasleft());
+        emit log_named_uint(
+            "16-member PosElectionAdapter.outputOf gas (no VR alignment: VR was not advanced)",
+            g - gasleft()
+        );
         assertGt(out.length, 64 + 32 + 192 + 320 * 15);
         for (uint64 id = 1; id <= 16; ++id) {
             _assertFacts(id, 1);
@@ -107,11 +119,26 @@ contract PosSixteenTest is PosBase {
         bytes32 recovery = keccak256("recovery-assignment");
         pushRecord(
             RecordKind.RecoveryAck,
-            abi.encode(RecoveryAckData(rid, recovery, progress + 5, progress + 6, 100 + progress, progress + 7, progress + 8, 3, 3))
+            abi.encode(
+                RecoveryAckData(
+                    rid,
+                    recovery,
+                    progress + 5,
+                    progress + 6,
+                    100 + progress,
+                    progress + 7,
+                    progress + 8,
+                    3,
+                    3
+                )
+            )
         );
         uint256 g = gasleft();
         custody.applyRootRecords(1);
-        emit log_named_uint("16-member RecoveryAck record gas (custody.applyRootRecords(1), holder facts included)", g - gasleft());
+        emit log_named_uint(
+            "16-member RecoveryAck record gas (custody.applyRootRecords(1), holder facts included)",
+            g - gasleft()
+        );
         assertEq(custody.lastAckedAssignment(), recovery);
         assertEq(custody.assignmentExposures(recovery).length, 16, "K re-derived");
         // retirement of a K member is refused until closure: its recovery exposure is live
@@ -137,9 +164,7 @@ contract PosSixteenTest is PosBase {
         bytes32 rid = _p85Elect();
         _p85Publish(rid);
         _advance(10, 10);
-        pushRecord(
-            RecordKind.Ack, ackData(rid, 150 + progress, 160 + progress, 161 + progress)
-        );
+        pushRecord(RecordKind.Ack, ackData(rid, 150 + progress, 160 + progress, 161 + progress));
         pushRecord(
             RecordKind.Closure, closureData(custody.lastAckedAssignment(), 150 + progress, "batch")
         );

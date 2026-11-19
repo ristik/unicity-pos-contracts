@@ -6,14 +6,26 @@ import {VRC} from "../../../src/vr/VRConstants.sol";
 import {VRCodec} from "../../../src/vr/VRCodec.sol";
 import {Member, OutputView} from "../../../src/vr/VRTypes.sol";
 import {ElectionPolicy} from "../../../src/p85/ElectionPolicy.sol";
-import {ElectionParams, RecordKind, RetirementData, HolderRetirementData} from "../../../src/p85/P85Types.sol";
+import {
+    ElectionParams,
+    RecordKind,
+    RetirementData,
+    HolderRetirementData
+} from "../../../src/p85/P85Types.sol";
 
 /// @notice The PoS prototype through VR (design 3.8): an election from stake, the handoff, the boundary, a joiner, the exit, the holder
 /// facts after every step. AC-LR's PoS half (design section 11).
 contract PosLifecycleTest is PosBase {
     function _electionParams() internal pure override returns (ElectionParams memory) {
         return ElectionParams({
-            nMin: 4, nTarget: 10, nMax: 16, maxM: 4, distNum: 1, distDen: 1, cadenceRounds: 200, cadenceSeconds: 100
+            nMin: 4,
+            nTarget: 10,
+            nMax: 16,
+            maxM: 4,
+            distNum: 1,
+            distDen: 1,
+            cadenceRounds: 200,
+            cadenceSeconds: 100
         });
     }
 
@@ -54,8 +66,15 @@ contract PosLifecycleTest is PosBase {
         Member[] memory c = vr.committee();
         for (uint256 i; i < c.length; ++i) {
             bytes32 eid = _eid(GENESIS_ASSIGNMENT, gid(i));
-            assertEq(custody.exposureMemberDigest(eid), c[i].exposureDigest, "custody carries VR's seat digest");
-            assertEq(c[i].exposureDigest, VRCodec.exposureDigest(NETWORK, VR_ADDR, VRC.GENESIS_RESULT, gid(i)));
+            assertEq(
+                custody.exposureMemberDigest(eid),
+                c[i].exposureDigest,
+                "custody carries VR's seat digest"
+            );
+            assertEq(
+                c[i].exposureDigest,
+                VRCodec.exposureDigest(NETWORK, VR_ADDR, VRC.GENESIS_RESULT, gid(i))
+            );
             assertEq(expo(eid).id, gid(i), "the exposure id is in the VR domain");
         }
     }
@@ -178,7 +197,9 @@ contract PosLifecycleTest is PosBase {
         for (uint256 g = 20_000; g <= 140_000; g += 6_000) {
             uint256 snap = vm.snapshotState();
             vm.prank(address(evidence));
-            (bool ok,) = address(election).call{gas: g}(abi.encodeCall(ElectionPolicy.coverageChanged, (gid(1))));
+            (bool ok,) = address(election).call{gas: g}(
+                abi.encodeCall(ElectionPolicy.coverageChanged, (gid(1)))
+            );
             bool lost = election.publication(rid).lost;
             uint8 st = _state(rid);
             if (ok) {
@@ -216,7 +237,9 @@ contract PosLifecycleTest is PosBase {
         // the genesis assignment closes
         pushRecord(RecordKind.Closure, closureData(GENESIS_ASSIGNMENT, lastH, "genesis"));
         _vrApplyAll();
-        assertEq(custody.liveExposures(1, 1), 1, "genesis exposures are released at closure, r1's remain");
+        assertEq(
+            custody.liveExposures(1, 1), 1, "genesis exposures are released at closure, r1's remain"
+        );
 
         // the joiner asks to retire: it is excluded at the next election
         vm.prank(vm.addr(j.ownerPk));
@@ -266,7 +289,11 @@ contract PosLifecycleTest is PosBase {
         vm.prank(vm.addr(j.ownerPk));
         custody.requestRetirement(j.id);
         bytes32 rid = _electFromStake();
-        assertEq(election.frozenMembers(rid).length, N_GENESIS, "a requested key takes no new primary obligation");
+        assertEq(
+            election.frozenMembers(rid).length,
+            N_GENESIS,
+            "a requested key takes no new primary obligation"
+        );
     }
 
     /// @dev VR's CAP_ELECT (4,000,000) carries the PoS election to a six-member result (3.7 M); a seventh makes the contained step fail,
