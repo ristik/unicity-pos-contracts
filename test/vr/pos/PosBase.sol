@@ -190,7 +190,15 @@ abstract contract PosBase is P85Flow {
     /// @dev The cadence passes, the hook elects: the P85 election reserves a result and VR holds it Reserved (not yet Ready).
     function _electFromStake() internal returns (bytes32 rid) {
         _advance(300, 200);
+        uint256 g0 = gasleft();
         uint8 o = _vrElect(ORIGIN);
+        emit log_named_uint(string.concat("elect gas, committee ", vm.toString(vr.committee().length)), g0 - gasleft());
+        if (o != VRC.ELECT_RESERVED) {
+            emit log_named_uint("elect outcome", o);
+            emit log_named_uint("vr health", vr.health());
+            emit log_named_uint("p85 reason", uint8(election.result(election.lastAttemptResult()).reason));
+            emit log_named_uint("committee", vr.committee().length);
+        }
         assertEq(o, VRC.ELECT_RESERVED, "an election from stake");
         rid = vr.openOutput();
         assertEq(rid, election.openResult(), "VR holds P85's own result id");
@@ -344,4 +352,38 @@ abstract contract PosBase is P85Flow {
     function _state(bytes32 rid) internal view returns (uint8) {
         return vr.output(rid).state;
     }
+
+    // ---- election helpers over any committee ----
+
+    uint64 internal lastH;
+
+    function _ackNext(bytes32 rid) internal {
+        _advance(10, 10);
+        lastH = 150 + progress;
+        pushRecord(RecordKind.Ack, ackData(rid, lastH, 160 + progress, 161 + progress));
+        _boundaryRecord(rid, false);
+        _vrApplyAll();
+        assertEq(_state(rid), VRC.OUT_ACKNOWLEDGED);
+    }
+
+    function _elect2() internal returns (bytes32 rid) {
+        rid = _electFromStake();
+        assertEq(_publishResult2(rid), VRC.PUB_PUBLISHED);
+    }
+
+    function _publishResult2(bytes32 rid) internal returns (uint8) {
+        ElectionPolicy.Frozen[] memory f = election.frozenMembers(rid);
+        ElectionPolicy.PoPInput[] memory pops = new ElectionPolicy.PoPInput[](f.length);
+        for (uint256 k; k < f.length; ++k) {
+            uint256 pk = f[k].id <= N_GENESIS ? evmPk(f[k].id - 1) : evmPkOf[f[k].id];
+            bytes memory key = compressed(pk);
+            pops[k] = ElectionPolicy.PoPInput(
+                f[k].id, key, sign(pk, election.popDigest(rid, f[k].id, keccak256(key)))
+            );
+        }
+        election.submitAssignmentPoPs(rid, pops);
+        election.finalizeCandidate(rid);
+        return vr.publish(rid);
+    }
+
 }

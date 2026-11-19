@@ -194,37 +194,6 @@ contract PosLifecycleTest is PosBase {
 
     // ---- a PoS joiner and a PoS exit ----
 
-    uint64 internal lastH;
-
-    function _ackNext(bytes32 rid) internal {
-        _advance(10, 10);
-        lastH = 150 + progress;
-        pushRecord(RecordKind.Ack, ackData(rid, lastH, 160 + progress, 161 + progress));
-        _boundaryRecord(rid, false);
-        _vrApplyAll();
-        assertEq(_state(rid), VRC.OUT_ACKNOWLEDGED);
-    }
-
-    function _elect2() internal returns (bytes32 rid) {
-        rid = _electFromStake();
-        assertEq(_publishResult2(rid), VRC.PUB_PUBLISHED);
-    }
-
-    function _publishResult2(bytes32 rid) internal returns (uint8) {
-        ElectionPolicy.Frozen[] memory f = election.frozenMembers(rid);
-        ElectionPolicy.PoPInput[] memory pops = new ElectionPolicy.PoPInput[](f.length);
-        for (uint256 k; k < f.length; ++k) {
-            uint256 pk = f[k].id <= N_GENESIS ? evmPk(f[k].id - 1) : evmPkOf[f[k].id];
-            bytes memory key = compressed(pk);
-            pops[k] = ElectionPolicy.PoPInput(
-                f[k].id, key, sign(pk, election.popDigest(rid, f[k].id, keccak256(key)))
-            );
-        }
-        election.submitAssignmentPoPs(rid, pops);
-        election.finalizeCandidate(rid);
-        return vr.publish(rid);
-    }
-
     function test_aPoSJoinerIsElectedAndTheCommitteeIncludesIt() public {
         Joiner memory j = _joinPos(1_000 * UCT);
         evmPkOf[j.id] = j.evmPk;
@@ -298,5 +267,28 @@ contract PosLifecycleTest is PosBase {
         custody.requestRetirement(j.id);
         bytes32 rid = _electFromStake();
         assertEq(election.frozenMembers(rid).length, N_GENESIS, "a requested key takes no new primary obligation");
+    }
+
+    /// @dev VR's CAP_ELECT (4,000,000) carries the PoS election to a six-member result (3.7 M); a seventh makes the contained step fail,
+    /// which VR records as a module fault (outcome 3, health Faulted). The 16-member election needs 7.9 M (PosSixteen): owner-questions.md.
+    function test_throughVRTheElectionFitsSixMembersAndExceedsTheCapAtSeven() public {
+        for (uint256 k; k < 2; ++k) {
+            Joiner memory a = _joinPos(1_000 * UCT);
+            evmPkOf[a.id] = a.evmPk;
+            bytes32 r = _elect2();
+            bytes32 previous = custody.lastAckedAssignment();
+            _ackNext(r);
+            pushRecord(RecordKind.Closure, closureData(previous, lastH, "prev"));
+            _vrApplyAll();
+        }
+        assertEq(vr.committee().length, 6);
+        Joiner memory b = _joinPos(1_000 * UCT);
+        evmPkOf[b.id] = b.evmPk;
+        _advance(300, 200);
+        uint256 g = gasleft();
+        uint8 o = _vrElect(ORIGIN);
+        emit log_named_uint("seven-member VR.elect gas", g - gasleft());
+        assertEq(o, VRC.ELECT_NO_CANDIDATE, "a failed elect step returns outcome 3");
+        assertEq(vr.health(), VRC.FAULTED);
     }
 }
