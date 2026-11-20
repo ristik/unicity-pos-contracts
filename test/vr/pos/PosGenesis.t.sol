@@ -44,29 +44,41 @@ contract PosGenesisTest is Test {
         return string.concat(string(head), pos);
     }
 
-    function test_theGenesisRefusesALimitAboveTheMeasuredOne() public {
-        string memory ok = _input();
-        string[3] memory bad = [
-            vm.replace(ok, "\"nMax\": 6", "\"nMax\": 7"),
-            vm.replace(ok, "\"vMax\": 8", "\"vMax\": 9"),
-            vm.replace(ok, "\"lMax\": 1", "\"lMax\": 2")
-        ];
-        for (uint256 i; i < bad.length; ++i) {
-            vm.setEnv("VR_GENESIS_JSON", bad[i]);
-            vm.setEnv("VR_OUT", OUT);
-            vm.createDir(OUT, true);
-            VRPosGenesis s = new VRPosGenesis();
-            vm.expectRevert();
-            s.run();
-        }
+    function _refuse(string memory input, string memory out, bytes memory why) internal {
+        vm.createDir(out, true);
+        VRPosGenesis s = new VRPosGenesis();
+        vm.expectRevert(why);
+        s.runWith(input, out);
+    }
+
+    function test_theGenesisRefusesANMaxAboveTheMeasuredLimit() public {
+        _refuse(
+            vm.replace(_input(), "\"nMax\": 6", "\"nMax\": 7"),
+            string.concat(OUT, "-nmax"),
+            bytes("VR PoS genesis: nMax and nTarget above the measured limit")
+        );
+    }
+
+    function test_theGenesisRefusesAVMaxAboveTheMeasuredLimit() public {
+        _refuse(
+            vm.replace(_input(), "\"vMax\": 8", "\"vMax\": 9"),
+            string.concat(OUT, "-vmax"),
+            bytes("VR PoS genesis: vMax and lMax above the measured limit")
+        );
+    }
+
+    function test_theGenesisRefusesAnLMaxAboveTheMeasuredLimit() public {
+        _refuse(
+            vm.replace(_input(), "\"lMax\": 1", "\"lMax\": 2"),
+            string.concat(OUT, "-lmax"),
+            bytes("VR PoS genesis: vMax and lMax above the measured limit")
+        );
     }
 
     function test_thePoSGenerationsGenesisIsConsistent() public {
-        vm.setEnv("VR_GENESIS_JSON", _input());
-        vm.setEnv("VR_OUT", OUT);
         vm.createDir(OUT, true);
         VRPosGenesis s = new VRPosGenesis();
-        s.run();
+        s.runWith(_input(), OUT);
         IVR vr = IVR(_at(3));
         assertEq(vr.activeModule().module, _at(7));
         assertEq(vr.holderCount(), 1);

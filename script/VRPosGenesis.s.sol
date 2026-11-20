@@ -40,8 +40,11 @@ contract VRPosGenesis is VRGenesis {
     address internal constant ADAPTER = address(uint160((uint256(0xff) << 152) | 0x07));
 
     function run() external override {
-        string memory json = vm.envString("VR_GENESIS_JSON");
-        string memory out = vm.envString("VR_OUT");
+        runWith(vm.envString("VR_GENESIS_JSON"), vm.envString("VR_OUT"));
+    }
+
+    /// @dev The genesis of one plan into one output directory, without the process environment (the tests run in parallel).
+    function runWith(string memory json, string memory out) public {
         require(
             keccak256(bytes(vm.parseJsonString(json, ".format"))) == keccak256(bytes(FORMAT)),
             "VR genesis: unknown input format"

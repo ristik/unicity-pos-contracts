@@ -136,13 +136,33 @@ abstract contract VRBase is Test {
 
     /// @dev The genesis plan's alloc: the constructor runs at the pinned address, so every digest it writes uses the VR domain.
     function _deploy(ValidatorRegistry.Genesis memory g) internal {
-        if (govFacet == address(0)) govFacet = address(new VRGovernanceFacet());
-        if (repairFacet == address(0)) repairFacet = address(new VRRepairFacet());
+        // VR_BUILD=pos runs the whole VR suite against the PoS-capable build (caps 5.0/1.5/2.5 M; VT-04, astra's ruling on option 1)
+        bool pos = keccak256(bytes(vm.envOr("VR_BUILD", string("")))) == keccak256("pos");
+        if (govFacet == address(0)) {
+            govFacet = pos
+                ? deployCode("VRGovernanceFacetPos.sol:VRGovernanceFacetPos")
+                : address(new VRGovernanceFacet());
+        }
+        if (repairFacet == address(0)) {
+            repairFacet = pos
+                ? deployCode("VRRepairFacetPos.sol:VRRepairFacetPos")
+                : address(new VRRepairFacet());
+        }
         g.governanceFacet = govFacet;
         g.repairFacet = repairFacet;
-        if (recordsFacet == address(0)) recordsFacet = address(new VRRecordsFacet());
+        if (recordsFacet == address(0)) {
+            recordsFacet = pos
+                ? deployCode("VRRecordsFacetPos.sol:VRRecordsFacetPos")
+                : address(new VRRecordsFacet());
+        }
         g.recordsFacet = recordsFacet;
-        deployCodeTo("ValidatorRegistry.sol:ValidatorRegistry", abi.encode(g), VR_ADDR);
+        deployCodeTo(
+            pos
+                ? "ValidatorRegistryPos.sol:ValidatorRegistryPos"
+                : "ValidatorRegistry.sol:ValidatorRegistry",
+            abi.encode(g),
+            VR_ADDR
+        );
         vr = IVR(VR_ADDR);
         module.setVR(VR_ADDR);
     }

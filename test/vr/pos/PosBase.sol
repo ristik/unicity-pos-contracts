@@ -35,6 +35,7 @@ abstract contract PosBase is P85Flow {
     address internal constant SYS = 0xff00000000000000000000000000000000000001;
 
     IVR internal vr;
+    address[3] internal facets; // the facets VR delegates to (deployed with `new`: not at the 0xff.. addresses)
     PosElectionAdapter internal adapter;
     bytes32 internal constant ORIGIN = keccak256("pos/origin");
     uint64 internal progress = 0;
@@ -84,6 +85,7 @@ abstract contract PosBase is P85Flow {
         g.governanceFacet = address(new VRGovernanceFacetPos());
         g.repairFacet = address(new VRRepairFacetPos());
         g.recordsFacet = address(new VRRecordsFacetPos());
+        facets = [g.governanceFacet, g.repairFacet, g.recordsFacet];
         deployCodeTo("ValidatorRegistryPos.sol:ValidatorRegistryPos", abi.encode(g), VR_ADDR);
         vr = IVR(VR_ADDR);
     }
@@ -151,9 +153,9 @@ abstract contract PosBase is P85Flow {
         for (uint256 i; i < a.length; ++i) {
             vm.cool(a[i]);
         }
-        vm.cool(address(uint160((uint256(0xff) << 152) | 4)));
-        vm.cool(address(uint160((uint256(0xff) << 152) | 5)));
-        vm.cool(address(uint160((uint256(0xff) << 152) | 6)));
+        for (uint256 i = 0; i < facets.length; ++i) {
+            vm.cool(facets[i]);
+        }
     }
 
     // ---- clock and hooks ----

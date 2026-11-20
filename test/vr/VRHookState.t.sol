@@ -334,6 +334,8 @@ contract VRHookStateTest is PoaBase {
     /// @dev The runtimes in `test/vr/fixtures/vr-hook.json` are the ones this tree builds at the genesis addresses: a change to VR, a
     /// facet, PoA or the composer fails here until the fixture is regenerated (and ureth's copy with it).
     function test_fixtureMatchesTheBuiltRuntimes() public {
+        // the committed fixture is the PoA build's (the PoS-capable build has its own runtime hashes and its own fixture)
+        if (keccak256(bytes(vm.envOr("VR_BUILD", string("")))) == keccak256("pos")) return;
         _begin("fixture-check");
         _poaGenesis(5, 1, 6, 16);
         string memory f = vm.readFile("test/vr/fixtures/vr-hook.json");
@@ -490,6 +492,7 @@ contract VRHookStateTest is PoaBase {
     /// @dev The worst Boundary (VRGas.t.sol): 16 members installed, 15 changes activated, the pointer switched with adoption, detach
     /// and attach, a holder entry allocated, and every callback burning to its cap.
     function test_boundaryWorst() public {
+        if (keccak256(bytes(vm.envOr("VR_BUILD", string("")))) == keccak256("pos")) return; // the PoA fixture; the PoS build has its own
         _begin("boundary-worst");
         _mockGenesis(16, 1, 16, 16);
         MockModule next = _mockAt(MOCK_NEXT_ADDR, keccak256("unicity.vr.gas-next"));
@@ -744,6 +747,7 @@ contract VRHookStateTest is PoaBase {
     /// @dev A switch whose new module's attach reverts: the pointer moves, the attach fails, the module is Faulted and no holder entry
     /// is consumed; the block stays valid.
     function test_attachRevert() public {
+        if (keccak256(bytes(vm.envOr("VR_BUILD", string("")))) == keccak256("pos")) return; // the PoA fixture; the PoS build has its own
         _begin("attach-revert");
         _mockGenesis(5, 1, 5, 16);
         MockModule next = _mockAt(MOCK_NEXT_ADDR, keccak256("unicity.vr.next"));

@@ -46,17 +46,20 @@ interface IPosCustody is IStakeCustody {
 /// first (both orders are tested: PosLifecycle).
 ///
 /// **Eligibility (astra, #92).** `ElectionPolicy` skips an identity whose delegation is not its VR binding (words and generation), so a
-/// misaligned identity is never selected; at publication the adapter re-checks each frozen member against VR (key hashes, payee and
-/// generation) and takes the node words from VR's binding, so a later `admitDelegation` cannot make an aligned frozen snapshot unservable.
+/// misaligned identity is never selected; at publication the adapter compares VR's complete candidate binding (generation, node words,
+/// keys, payee) with the frozen binding hash and takes the words from VR, so a later `admitDelegation` cannot make an aligned frozen
+/// snapshot unservable and a staged VR binding replaced at the same generation is not served.
 ///
-/// **Measured limit (sol, #92).** VR's callback caps carry the P85 election and publication for a committee of at most 6 drawn from an
-/// index of at most 8 identities of one lot each (the genesis script refuses more; test/vr/pos/PosLimit.t.sol). A RecoveryAck derives K
-/// exposures in one record and exceeds CAP_RECORD already at K = 4 (1.63 M cold): recovery of a failed handoff is not supported through VR
-/// by this prototype (it faults VR) until custody's per-exposure storage is cut or the cap raised.
+/// **Measured limit (sol and astra, #92).** The PoS-capable VR build (callback caps 5.0 / 1.5 / 2.5 M) carries the P85 election, publication
+/// and a one-record RecoveryAck for a committee of at most 6 drawn from an index of at most 8 identities of one lot each (the genesis script
+/// refuses more; test/vr/pos/PosLimit.t.sol holds the cold callback figures). Against the PoA build's caps a RecoveryAck already faults at
+/// K = 4, so this adapter is the PoS-capable build's module only.
 ///
 /// Immutable, no proxy. `ELECTION` and `CUSTODY` are the generation's fixed modules.
 contract PosElectionAdapter is IElectionModule, IPosAdapter {
     bytes32 public constant TAG = keccak256("unicity.vr.pos-p85.v1");
+    /// @dev ElectionPolicy's BINDING_DOMAIN: the frozen binding hash is keccak(domain, id, generation, node word, key hash, node word, key hash, payee).
+    bytes32 internal constant BINDING_DOMAIN = keccak256("unicity.p85.delegation-binding");
 
     // ---- gas bounds: the measured worst case x 5/4, below VR's caps (test/vr/pos/PosGas.t.sol) ----
     uint64 internal constant GAS_ELECT = 5_000_000;
@@ -210,9 +213,9 @@ contract PosElectionAdapter is IElectionModule, IPosAdapter {
         (,,,,, bytes32 rootKeyHash, bytes32 evmKeyHash, address payee,,) =
             CUSTODY.exposures(exposureId);
         Member memory b = IVR(VR).bindingOf(f.id, false);
-        if (!_matches(b, f.generation, rootKeyHash, evmKeyHash, payee)) {
+        if (!_matches(b, f)) {
             b = IVR(VR).bindingOf(f.id, true);
-            if (!_matches(b, f.generation, rootKeyHash, evmKeyHash, payee)) return m;
+            if (!_matches(b, f)) return m;
         }
         m.id = f.id;
         m.generation = f.generation;
@@ -228,13 +231,23 @@ contract PosElectionAdapter is IElectionModule, IPosAdapter {
             md != bytes32(0) ? md : keccak256(abi.encode(CUSTODY.exposureLots(exposureId)));
     }
 
-    function _matches(Member memory b, uint64 generation, bytes32 rk, bytes32 ek, address payee)
-        private
-        pure
-        returns (bool)
-    {
-        return b.generation != 0 && b.generation == generation && b.rootKeyHash == rk
-            && b.evmKeyHash == ek && b.payee == payee;
+    /// @dev The candidate VR binding is the one P85 froze: the same generation, and the complete binding (node words, keys, payee) hashes to
+    /// the frozen `bindingHash` (ElectionPolicy's formula). So a staged VR binding replaced at the same prospective generation, with other
+    /// node words and the same keys and payee, is not served.
+    function _matches(Member memory b, ElectionPolicy.Frozen memory f) private pure returns (bool) {
+        if (b.generation == 0 || b.generation != f.generation) return false;
+        return keccak256(
+            abi.encode(
+            BINDING_DOMAIN,
+            f.id,
+            f.generation,
+            b.rootNodeWord,
+            b.rootKeyHash,
+            b.evmNodeWord,
+            b.evmKeyHash,
+            b.payee
+        )
+        ) == f.bindingHash;
     }
 
     /// @notice Root records (design 3.8): custody pulls them from the SealRegistry itself, from its own cursor, up to the end of this

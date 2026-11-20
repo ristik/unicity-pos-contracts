@@ -390,4 +390,39 @@ contract PosLifecycleTest is PosBase {
         _vrApplyAll();
         assertEq(_state(rid), VRC.OUT_ACKNOWLEDGED);
     }
+
+    /// @dev astra r2: the adapter compares VR's complete candidate binding with the frozen binding hash. A staged VR binding replaced at the
+    /// same prospective generation (same keys and payee, other node words) is not served; the same binding is. VR's `bindingOf` is mocked
+    /// so that the identity's current binding does not match and the staged one is the candidate.
+    function test_aStagedVRBindingWithOtherNodeWordsIsNotServed() public {
+        bytes32 rid = _electFromStake();
+        election.submitAssignmentPoPs(rid, _pops(rid, _allIdx()));
+        election.finalizeCandidate(rid);
+        assertEq(
+            VRCodec.wordAt(adapter.outputOf(rid), 0),
+            VRC.STATUS_READY,
+            "Ready with the real bindings"
+        );
+        Member memory real = vr.bindingOf(1, false);
+        Member memory none;
+        vm.mockCall(VR_ADDR, abi.encodeCall(vr.bindingOf, (1, false)), abi.encode(none));
+        vm.mockCall(VR_ADDR, abi.encodeCall(vr.bindingOf, (1, true)), abi.encode(real));
+        assertEq(
+            VRCodec.wordAt(adapter.outputOf(rid), 0),
+            VRC.STATUS_READY,
+            "the identical staged binding is served"
+        );
+        Member memory other = real;
+        other.evmNodeWord = keccak256("another evm node");
+        vm.mockCall(VR_ADDR, abi.encodeCall(vr.bindingOf, (1, true)), abi.encode(other));
+        assertEq(
+            VRCodec.wordAt(adapter.outputOf(rid), 0),
+            VRC.STATUS_NOT_MINE,
+            "other node words: not the frozen binding"
+        );
+        Member memory payee = real;
+        payee.payee = address(0xBEEF);
+        vm.mockCall(VR_ADDR, abi.encodeCall(vr.bindingOf, (1, true)), abi.encode(payee));
+        assertEq(VRCodec.wordAt(adapter.outputOf(rid), 0), VRC.STATUS_NOT_MINE);
+    }
 }

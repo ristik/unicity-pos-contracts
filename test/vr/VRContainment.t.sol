@@ -115,8 +115,9 @@ contract VRContainmentTest is VRBase {
         assertEq(_elect(), VRC.ELECT_NO_CANDIDATE);
         uint256 used = g0 - gasleft();
         // the module had min(electGas 3,000,000, CAP_ELECT) gas; VR's outer frame finished within its reserve
-        assertLt(used, 3_000_000 + 200_000, "VR never forwards more than the cap");
-        assertGt(used, 3_000_000, "the module consumed its cap");
+        uint256 cap = module.bounds(0); // the module's declared electGas (3 M; the PoS-capable build's suite declares its 5 M cap)
+        assertLt(used, cap + 200_000, "VR never forwards more than the cap");
+        assertGt(used, cap, "the module consumed its cap");
     }
 
     function test_hugeReturnIsNeverCopied() public {
