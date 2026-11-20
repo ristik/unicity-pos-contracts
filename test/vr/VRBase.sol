@@ -29,6 +29,8 @@ abstract contract VRBase is Test {
 
     uint256 internal keySeed = 0x1000;
     uint64 internal progress = 1_000;
+    /// @dev The genesis maxBatch (the hook's H must not exceed it); the PoS hook fixture sets its H.
+    uint32 internal genesisMaxBatch = 32;
     uint64 internal ucTime = 1_700_000_000;
 
     struct Keys {
@@ -114,7 +116,7 @@ abstract contract VRBase is Test {
         g.vMax = 16;
         g.lMax = 8;
         g.rMax = 8;
-        g.maxBatch = 32;
+        g.maxBatch = genesisMaxBatch;
         g.knownRootEpoch = 4;
         g.epochStartProgress = 0;
         g.fees = FeeSet(1_000_000, 8, COLLECTOR);

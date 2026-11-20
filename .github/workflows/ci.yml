@@ -70,3 +70,11 @@ jobs:
           VR_WRITE_HOOK_STATE=test/vr/fixtures/vr-hook-raw forge test --match-contract VRHookStateTest
           python3 tools/vr_hook_state.py test/vr/fixtures/vr-hook-raw "$RUNNER_TEMP/vr-hook.json"
           cmp "$RUNNER_TEMP/vr-hook.json" test/vr/fixtures/vr-hook.json
+      - name: The PoS-capable VR hook fixture is the generator's output
+        # test/vr/fixtures/vr-hook-pos.json: the same generator under VR_BUILD=pos (the PoS-capable build's runtimes, caps and H = 16).
+        run: |
+          rm -rf test/vr/fixtures/vr-hook-pos-raw
+          mkdir -p test/vr/fixtures/vr-hook-pos-raw
+          VR_BUILD=pos VR_WRITE_HOOK_STATE=test/vr/fixtures/vr-hook-pos-raw forge test --match-contract VRHookStateTest
+          python3 tools/vr_hook_state.py test/vr/fixtures/vr-hook-pos-raw "$RUNNER_TEMP/vr-hook-pos.json"
+          cmp "$RUNNER_TEMP/vr-hook-pos.json" test/vr/fixtures/vr-hook-pos.json
