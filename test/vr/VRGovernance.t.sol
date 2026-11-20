@@ -47,6 +47,13 @@ contract VRGovernanceTest is VRBase {
         assertEq(vr.change(id).payloadHash, keccak256(p));
     }
 
+    /// @dev CAP_ELECT of the build under test (VR_BUILD=pos: the PoS-capable build).
+    function _electCap() internal view returns (uint64) {
+        return keccak256(bytes(vm.envOr("VR_BUILD", string("")))) == keccak256("pos")
+            ? 5_000_000
+            : 4_000_000;
+    }
+
     function test_setModuleChainChecks() public {
         MockModule m = new MockModule(keccak256("m2"));
         _refused(
@@ -66,7 +73,7 @@ contract VRGovernanceTest is VRBase {
             VRChanges.BAD_METADATA
         );
         m.setCaps(0);
-        m.setBounds([uint64(4_000_001), 1, 1, 1, 1, 1, 1, 1]); // electGas above VR's cap
+        m.setBounds([_electCap() + 1, 1, 1, 1, 1, 1, 1, 1]); // electGas above VR's cap
         _refused(
             VRC.K_SET_MODULE,
             abi.encode(address(m), address(m).codehash, bytes("")),

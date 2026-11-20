@@ -36,7 +36,7 @@ contract VRGenesis is Script {
 
     string internal constant FORMAT = "unicity.vr.genesis-input.v1";
 
-    function run() external {
+    function run() external virtual {
         string memory json = vm.envString("VR_GENESIS_JSON");
         string memory out = vm.envString("VR_OUT");
         require(

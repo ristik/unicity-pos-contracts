@@ -14,12 +14,37 @@ import {
     ReserveInput,
     ReserveMember
 } from "./P85Types.sol";
-import {IRootRecords, IStakeCustody, IPolicySource, IEvidence, IGovernance} from "./IP85.sol";
+import {
+    IRootRecords,
+    IStakeCustody,
+    IPolicySource,
+    IEvidence,
+    IGovernance,
+    IPosAdapter
+} from "./IP85.sol";
 import {KeyLib} from "./KeyLib.sol";
 import {Continuity} from "./Continuity.sol";
 import {Selection} from "./Selection.sol";
 import {SelectionEngine} from "./SelectionEngine.sol";
 import {EligibilityReader} from "./EligibilityReader.sol";
+
+/// @dev The one VR view the eligibility check reads (`ValidatorRegistry.bindingOf`).
+interface IVRBinding {
+    struct Word {
+        uint64 id;
+        uint64 generation;
+        uint64 weight;
+        uint64 rawWeight;
+        bytes32 rootNodeWord;
+        bytes32 rootKeyHash;
+        bytes32 evmNodeWord;
+        bytes32 evmKeyHash;
+        address payee;
+        bytes32 exposureDigest;
+    }
+
+    function bindingOf(uint64 id, bool staged) external view returns (Word memory);
+}
 
 /// @title ElectionPolicy
 /// @notice The bounded live index, the owner-authenticated `admitDelegation` mutator with its staged (binding, operatorPayee) storage and
@@ -236,6 +261,14 @@ contract ElectionPolicy {
     /// @dev The result of the last election attempt, reserved or NoCandidate: the system hook's attempt emits no log a client can read, so the
     /// outcome of the last attempt (and for a NoCandidate its Reason) is read as `result(lastAttemptResult)`. Appended last: no slot moves.
     bytes32 public lastAttemptResult;
+    /// @dev VT-04 (design 3.8 changes 1 and 2): the PosElectionAdapter of a validator-registry generation, set from the manifest. It alone calls
+    /// `elect` (the system hook calls VR, which calls the adapter) and it receives `outputLost` when a result is first marked lost. Zero on the
+    /// plain P85 generation: SYSTEM_CALLER calls `elect` and there is no callback. Appended last: no slot moves.
+    address public hookCaller;
+    /// @dev VT-04 (astra, #92): the validator registry a VR generation's identities must be aligned with (zero on the plain P85
+    /// generation). `_eligible` skips an identity whose delegation is not its VR binding, so a misaligned identity is never selected and
+    /// cannot hold up rotations. Appended last: no slot moves.
+    address internal registry;
 
     /// @param factory_ the deployment factory that will initialize this module, fixed at construction. The module is deployed first so
     /// the factory's own creation code stays small; only that factory can initialize it, and it can do so once.
@@ -273,6 +306,10 @@ contract ElectionPolicy {
         }
         reader = r;
         policySource = IPolicySource(m.policySource);
+        // forge-lint: disable-next-line(missing-events-access-control)
+        hookCaller = m.hookCaller;
+        // forge-lint: disable-next-line(missing-events-access-control)
+        registry = m.deployment;
         ElectionParams calldata p = m.electionParams;
         if (
             p.nMin == 0 || p.nTarget < p.nMin || p.nMax < p.nTarget || p.nMax > 16 || p.distDen == 0
@@ -456,7 +493,9 @@ contract ElectionPolicy {
     /// @notice The system hook's election step (design v5 section 5, step 4). `origin` is the authenticated root origin of the block.
     /// Never reverts for a chain-state reason: an election or reservation failure is stored as an ordered `NoCandidate`.
     function elect(bytes32 origin) external returns (Outcome) {
-        if (msg.sender != SYSTEM_CALLER) revert NotSystem();
+        if (msg.sender != (hookCaller == address(0) ? SYSTEM_CALLER : hookCaller)) {
+            revert NotSystem();
+        }
         if (!initialized || openResult != bytes32(0)) return Outcome.Disabled;
         (bool ok, uint64 p, uint64 t) = _clock();
         if (!ok) return Outcome.Disabled;
@@ -663,6 +702,44 @@ contract ElectionPolicy {
         );
     }
 
+    /// @dev The delegation is the identity's VR binding at the custody generation: the current binding at generation g, or the staged one at
+    /// g + 1 (the words VR accepts in an output).
+    function _vrAligned(uint64 id, uint64 generation, Delegation storage d)
+        private
+        view
+        returns (bool)
+    {
+        bytes32 rootKeyHash = keccak256(d.rootKey);
+        bytes32 evmKeyHash = keccak256(d.evmKey);
+        for (uint8 k = 0; k < 2; ++k) {
+            // `ValidatorRegistry.bindingOf` returns a ten-word static struct; only words 1 (generation), 4 to 7 and 8 (payee) are read, straight
+            // from the return data (VR is this generation's fixed registry; a short return reverts). Decoding the whole struct costs the size
+            // this module does not have (EIP-170).
+            (bool ok, bytes memory r) =
+                registry.staticcall(abi.encodeCall(IVRBinding.bindingOf, (id, k == 1)));
+            require(ok && r.length == 320);
+            uint256 gen;
+            bytes32 rootNode;
+            bytes32 rootHash;
+            bytes32 evmNode;
+            bytes32 evmHash;
+            address payee;
+            assembly ("memory-safe") {
+                gen := mload(add(r, 64))
+                rootNode := mload(add(r, 160))
+                rootHash := mload(add(r, 192))
+                evmNode := mload(add(r, 224))
+                evmHash := mload(add(r, 256))
+                payee := mload(add(r, 288))
+            }
+            if (
+                gen == generation && rootNode == d.rootNodeID && rootHash == rootKeyHash
+                    && evmNode == d.evmNodeID && evmHash == evmKeyHash && payee == d.operatorPayee
+            ) return true;
+        }
+        return false;
+    }
+
     /// @dev The snapshot's eligible identities, ascending by StakingID. Primary eligibility (design v5 section 5): no earlier
     /// retirement request or exclusion (the reader's position checks), a delegated binding of the open generation whose root key is the
     /// identity's current or staged root key (checked here, against this contract's staged bindings), whose EVM key custody registered,
@@ -680,6 +757,9 @@ contract ElectionPolicy {
                 rk != ps[i].rootKeyHash
                     && (ps[i].stagedRootKeyHash == bytes32(0) || rk != ps[i].stagedRootKeyHash)
             ) {
+                continue;
+            }
+            if (registry != address(0) && !_vrAligned(ps[i].id, ps[i].generation, s.binding)) {
                 continue;
             }
             tmp[n].id = ps[i].id;
@@ -924,6 +1004,10 @@ contract ElectionPolicy {
         if (!reader.stillCovered(m.id, m.generation, m.raw, eid)) {
             pub.lost = true;
             emit CoverageLostFor(resultID, m.id);
+            // The atomic loss (design 3.8 change 2): at the one place `lost` is first set, the adapter invalidates the result in VR. No
+            // try/catch: `VR.invalidate` is total for its source, so with enough gas the loss transaction always succeeds, and with too
+            // little the whole transaction reverts and can be retried.
+            if (hookCaller != address(0)) IPosAdapter(hookCaller).outputLost(resultID);
         }
     }
 

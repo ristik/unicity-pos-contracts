@@ -5,6 +5,7 @@ Usage (from the repository root; CI runs the same and compares the result with t
     rm -rf test/vr/fixtures/vr-hook-raw && mkdir -p test/vr/fixtures/vr-hook-raw
     VR_WRITE_HOOK_STATE=test/vr/fixtures/vr-hook-raw forge test --match-contract VRHookStateTest
     python3 tools/vr_hook_state.py test/vr/fixtures/vr-hook-raw test/vr/fixtures/vr-hook.json
+The PoS-capable build (VR_BUILD=pos) adds `--pos` and writes test/vr/fixtures/vr-hook-pos.json (it also declares the PoS-only scenarios).
 
 The raw directory must hold exactly the current scenarios: every dump must name a scenario the generator still declares
 (`_begin("<name>")` or a variant helper's first argument in test/vr/VRHookState.t.sol), and every declared scenario must be dumped.
@@ -61,11 +62,13 @@ GENERATOR = pathlib.Path(__file__).resolve().parent.parent / "test" / "vr" / "VR
 # the scenario names the generator declares: _begin("name") and the variant helpers' first argument
 DECLARED = re.compile(r'_(?:begin|electVariant|outputVariant|recordsVariant)\(\s*"([a-z0-9-]+)"')
 NOT_DUMPED = {"fixture-check"}
+# scenarios only the PoS-capable build's generation declares (`--pos`: VR_BUILD=pos); the PoA fixture does not carry them
+POS_ONLY = {"batch32-retire"}
 
 
-def main(raw, dest):
+def main(raw, dest, pos=False):
     raw, dest = pathlib.Path(raw), pathlib.Path(dest)
-    declared = set(DECLARED.findall(GENERATOR.read_text())) - NOT_DUMPED
+    declared = set(DECLARED.findall(GENERATOR.read_text())) - NOT_DUMPED - (set() if pos else POS_ONLY)
     dumped = {p.name[: -len(".meta.json")] for p in raw.glob("*.meta.json")}
     stale = sorted(dumped - declared)
     missing = sorted(declared - dumped)
@@ -144,4 +147,4 @@ def main(raw, dest):
 
 
 if __name__ == "__main__":
-    main(*sys.argv[1:3])
+    main(*sys.argv[1:3], pos="--pos" in sys.argv[3:])

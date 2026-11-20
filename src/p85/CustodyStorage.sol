@@ -26,6 +26,7 @@ import {
 import {IRootRecords, IPolicySource, IEvidence, IElectionPolicy, CaseView} from "./IP85.sol";
 import {KeyLib} from "./KeyLib.sol";
 import {Quantize} from "./Quantize.sol";
+import {VRLiability} from "../vr/VRLiability.sol";
 
 /// @title CustodyStorage
 /// @notice The storage, types, errors, events and the helpers shared by StakeCustody and its genesis implementation (CustodyGenesis). Both
@@ -148,7 +149,8 @@ abstract contract CustodyStorage is ReentrancyGuard {
     event Bonded(uint64 indexed id, uint64 generation, uint256 indexed lotID, uint256 amount);
     event RolesProposed(uint64 indexed id, address owner, address withdrawal, uint64 nonce);
     event RolesAccepted(uint64 indexed id, address owner, address withdrawal, uint64 nonce);
-    event RetirementRequested(uint64 indexed id, uint64 generation);
+    /// @dev The generic holder event (design 3.9.2): both words are topics, which is what the generic `posretire` scan reads.
+    event RetirementRequested(uint64 indexed id, uint64 indexed generation);
     event CandidateReserved(bytes32 indexed resultID, bytes32 sessionID, bytes32 exposureDigest);
     event RootRecordsApplied(uint64 firstIndex, uint64 lastIndex, bytes32 lastRecordID);
     event LiabilityClosed(
@@ -261,6 +263,13 @@ abstract contract CustodyStorage is ReentrancyGuard {
     /// wait in J's own Assignment (closureKey, hRound, pClose, tClose), unused until J activates; the RecoveryAck applies them. Appended last: no
     /// existing slot moves.
     bytes32 internal pendingAssignment;
+    /// @dev The deployment-domain address of the exposure ids (design 3.8 change 3): the VR address on a validator-registry generation,
+    /// zero (custody itself) otherwise. Appended last: no slot moves.
+    address internal deploymentDomain;
+    /// @dev The member-level digest an exposure carries into an output and into the assignment digest, where it is not the lot list's
+    /// (VT-04): a genesis exposure on a VR generation carries the VR genesis seat's digest, a recovery copy keeps its incumbent's. Zero: the
+    /// keccak of the exposure's lot list (the plain P85 formula). Appended last: no slot moves.
+    mapping(bytes32 => bytes32) public exposureMemberDigest;
 
     /// @param factory_ the deployment factory that will initialize this module, fixed at construction. The module is deployed first so
     /// the factory's own creation code stays small; only that factory can initialize it, and it can do so once.
@@ -314,7 +323,14 @@ abstract contract CustodyStorage is ReentrancyGuard {
         uint256[] memory lotIDs
     ) internal returns (bytes32 exposureID) {
         exposureID = keccak256(
-            abi.encode(EXPOSURE_DOMAIN, network, block.chainid, address(this), assignmentID, id)
+            abi.encode(
+                EXPOSURE_DOMAIN,
+                network,
+                block.chainid,
+                deploymentDomain == address(0) ? address(this) : deploymentDomain,
+                assignmentID,
+                id
+            )
         );
         Exposure storage e = exposures[exposureID];
         e.assignmentID = assignmentID;
@@ -338,6 +354,24 @@ abstract contract CustodyStorage is ReentrancyGuard {
         liveExposures[id][generation]++;
         exposureChain[id][generation] =
             keccak256(abi.encode(CHAIN_DOMAIN, exposureChain[id][generation], exposureID));
+        _writeFacts(id, generation);
+    }
+
+    /// @dev The holder-owned facts of (id, generation) in the frozen generic layout (design 3.9.2, ERC-7201 `unicity.vr.liability.v1`),
+    /// written in the same function as every liability mutation: the live exposure count, the sum of the generation's lot reference
+    /// counts, the exposure chain, the maximum liability anchor. `requested` is written by `_requestFact` (sticky). The lots are at
+    /// most lMax (8).
+    function _writeFacts(uint64 id, uint64 generation) internal {
+        VRLiability.Facts storage f = VRLiability.load().facts[id][generation];
+        f.liveExposures = liveExposures[id][generation];
+        uint256[] storage ids = _generationLots[id][generation];
+        uint32 refs = 0;
+        for (uint256 i = 0; i < ids.length; ++i) {
+            refs += lots[ids[i]].refCount;
+        }
+        f.lotReferences = refs;
+        f.maxLiabilityAnchor = maxLiabilityAnchor[id][generation];
+        f.refDigest = exposureChain[id][generation];
     }
 
     function _digestExposures(bytes32[] storage ids) internal view returns (bytes32 digest) {
@@ -352,7 +386,9 @@ abstract contract CustodyStorage is ReentrancyGuard {
                     e.weight,
                     e.rawWeight,
                     e.operatorPayee,
-                    keccak256(abi.encode(e.lotIDs))
+                    exposureMemberDigest[ids[i]] != bytes32(0)
+                        ? exposureMemberDigest[ids[i]]
+                        : keccak256(abi.encode(e.lotIDs))
                 )
             );
         }

@@ -244,7 +244,7 @@ contract ElectionGasTest is P85Flow {
     }
 
     function test_measureV32L4C10() public {
-        _measureElection(32, 4, 10, 8_900_000);
+        _measureElection(32, 4, 10, 9_100_000); // VT-04: the holder facts (design 3.9.2) add about 1% per reserved exposure
     }
 
     /// @dev The heavy scenario: the raw total is above B, so every trial is quantized and judged by a full measurement.
@@ -274,7 +274,7 @@ contract ElectionGasTest is P85Flow {
     }
 
     function test_measureV16L2C8() public {
-        _measureElection(16, 2, 8, 5_100_000);
+        _measureElection(16, 2, 8, 5_300_000); // VT-04: the holder facts (design 3.9.2) add about 1.5% per reserved exposure
     }
 
     /// @dev The measured worst case is the worst case only because the deployment cannot exceed it: at the devnet/testnet profile caps

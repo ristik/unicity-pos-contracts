@@ -9,3 +9,4 @@ __pycache__/
 script/genesis-out/*
 !script/genesis-out/.gitkeep
 test/vr/fixtures/vr-hook-raw/
+test/vr/fixtures/vr-hook-pos-raw/

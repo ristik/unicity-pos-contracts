@@ -11,6 +11,7 @@ import {
 } from "../../src/vr/VRTypes.sol";
 import {VRCodec} from "../../src/vr/VRCodec.sol";
 import {VRC} from "../../src/vr/VRConstants.sol";
+import {Vm} from "forge-std/Vm.sol";
 
 /// @notice The SealRegistry's record source and clock as VR reads them (etched at 0xff..02 by the tests): sequential records with
 /// predecessors and uint8 kinds (6 to 8 included), progress and UC time.
@@ -43,6 +44,7 @@ contract MockSeal is IVRRecordSource {
 /// @notice A configurable election module: every step can succeed, revert, burn its gas, return malformed or oversized data, or try to
 /// re-enter VR. It logs the steps it receives (for the pointer-switch order).
 contract MockModule is IElectionModule {
+    Vm internal constant vm = Vm(address(uint160(uint256(keccak256("hevm cheat code")))));
     // behaviours
     uint8 internal constant OK = 0;
     uint8 internal constant REVERT = 1;
@@ -113,6 +115,20 @@ contract MockModule is IElectionModule {
     constructor(bytes32 tag_) {
         tag = tag_;
         bounds = [uint64(3_000_000), 800_000, 200_000, 200_000, 500_000, 200_000, 300_000, 200_000];
+        // VR_BUILD=pos: the module declares VR's PoS-capable caps themselves (5.0 / 1.5 / 2.5 M), so the cap-consuming fixtures (BURN, GRIEF,
+        // HUGE) spend the full new caps and the insufficient-budget fixtures run at the new step budgets
+        if (keccak256(bytes(vm.envOr("VR_BUILD", string("")))) == keccak256("pos")) {
+            bounds = [
+                uint64(5_000_000),
+                1_500_000,
+                2_500_000,
+                500_000,
+                3_000_000,
+                500_000,
+                1_000_000,
+                1_000_000
+            ];
+        }
         interval = 1_000;
     }
 

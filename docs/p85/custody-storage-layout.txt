@@ -39,3 +39,5 @@ _sessions slot=35 offset=0 bytes=32
 caseDebited slot=36 offset=0 bytes=32
 penaltyApplied slot=37 offset=0 bytes=32
 pendingAssignment slot=38 offset=0 bytes=32
+deploymentDomain slot=39 offset=0 bytes=20
+exposureMemberDigest slot=40 offset=0 bytes=32

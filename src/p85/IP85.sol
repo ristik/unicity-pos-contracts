@@ -157,3 +157,9 @@ interface IElectionPolicy {
         view
         returns (Delegation memory binding, bytes32 bindingHash, uint64 nextNonce);
 }
+
+/// @notice The adapter's side of the atomic loss (VT-04, design 3.8 change 2): `ElectionPolicy` calls it at the one place its `lost` bit is
+/// first set, and it calls `VR.invalidate(resultID, LOST)`. Neither call is inside a `try/catch`.
+interface IPosAdapter {
+    function outputLost(bytes32 resultID) external;
+}
