@@ -40,10 +40,43 @@ contract PosCatchUpTest is PosBase {
     uint256 internal target; // root target: records projected
     uint256 internal retirementSeq;
 
+    // At the documented limit every projected record (background, handoff, exit) first waits in a deferred queue; per EVM block the producer
+    // releases at most 4, plus at most 32 more in the one block of every ten that opens the burst window (a rolling ten-block window then
+    // never carries more than 72, which `_release` asserts). In the overload run records are projected immediately.
+    bool internal atLimit;
+    RecordKind[] internal dKind;
+    bytes[] internal dData;
+    uint256 internal dHead;
+    uint256[] internal released;
+
     function _project(RecordKind kind, bytes memory data) internal {
+        if (atLimit) {
+            dKind.push(kind);
+            dData.push(data);
+            return;
+        }
         qKind.push(kind);
         qData.push(data);
         ++target;
+    }
+
+    function _release(uint256 b) internal {
+        if (!atLimit) return;
+        uint256 allowance = b % 10 == 0 ? 4 + 32 : 4;
+        uint256 n;
+        while (n < allowance && dHead < dKind.length) {
+            qKind.push(dKind[dHead]);
+            qData.push(dData[dHead]);
+            ++dHead;
+            ++target;
+            ++n;
+        }
+        released.push(n);
+        uint256 window;
+        for (uint256 i = released.length > 10 ? released.length - 10 : 0; i < released.length; ++i) {
+            window += released[i];
+        }
+        assertLe(window, 72, "the rolling ten-block budget: 4 per block plus one burst of 32 counts every projected record");
     }
 
     /// @dev Independent arrivals, ordered by the root regardless of any handoff: foreign Closures (a Closure per closed epoch or
@@ -172,9 +205,35 @@ contract PosCatchUpTest is PosBase {
         }
     }
 
-    function test_aBacklogAndContinuingIndependentArrivalsConverge() public {
+    /// @dev OVERLOAD run: the scheduled 32-record burst every tenth block and four background records per block come on top of the
+    /// handoff records and the exits' 33-record sequences, so it exceeds the documented limit (see the operator guide); it shows that the
+    /// lifecycle survives and converges under extra load.
+    function test_overloadBacklogAndContinuingArrivalsConverge() public {
+        _run(false);
+    }
+
+    /// @dev AT-THE-LIMIT run: the same stream with the background reduced to two records per block plus the scheduled 32-record burst, and
+    /// every record (background, handoff, retirement and its closures) released through the allowance of the documented limit: at most 4 per
+    /// eligible block plus one extra burst of 32 in a ten-block window, asserted on every block.
+    function test_atTheDocumentedLimitBacklogAndContinuingArrivalsConverge() public {
+        atLimit = true;
+        _run(true);
+        assertEq(dHead, dKind.length, "every projected record was released within the limit");
+        assertGt(released.length, 10);
+    }
+
+    function _run(bool limited) internal {
         vm.pauseGasMetering();
         _projectArrivals(55); // the initial backlog
+        if (limited) {
+            // the initial backlog is already in the registry's past: released at once, outside the rolling account
+            while (dHead < dKind.length) {
+                qKind.push(dKind[dHead]);
+                qData.push(dData[dHead]);
+                ++dHead;
+                ++target;
+            }
+        }
         _advance(300, 200); // the cadence has passed: an election is due at the start
         bytes32 incumbent = GENESIS_ASSIGNMENT;
         uint256[3] memory electionBlock;
@@ -185,14 +244,19 @@ contract PosCatchUpTest is PosBase {
         uint256 maxBacklog = target;
         bytes32 open;
         uint256 firstReservedBlock = type(uint256).max;
-        for (uint256 b = 0; b < 360; ++b) {
+        for (uint256 b = 0; b < 400; ++b) {
             _advance(uint64(ROOT_PER_EVM), 10);
             if (b < 330) {
                 // the producer, per root block of this EVM interval: steady independent retirements, and a burst root block
-                _projectArrivals(2); // root block 0
-                _projectArrivals(2); // root block 5
+                if (limited) {
+                    _projectArrivals(2);
+                } else {
+                    _projectArrivals(2); // root block 0
+                    _projectArrivals(2); // root block 5
+                }
                 if (b % 10 == 0) _projectArrivals(32); // a full projected block
             }
+            _release(b);
             if (target - roots.recordCount() > maxImportLag) maxImportLag = target - roots.recordCount();
             _import();
             uint64 imported = roots.recordCount();
@@ -234,7 +298,18 @@ contract PosCatchUpTest is PosBase {
             _cycleTick();
             assertEq(vr.health(), VRC.HEALTHY, "healthy");
         }
-        // the producer stopped at block 330: everything drained
+        // the producer stopped at block 330 and elections are no longer driven: drain what is still queued, imported or unapplied
+        for (uint256 b = 400; b < 500 && (dHead < dKind.length || vr.recordCursor() < target || custody.recordCursor() < target); ++b) {
+            _advance(uint64(ROOT_PER_EVM), 10);
+            _release(b);
+            _import();
+            uint64 imported = roots.recordCount();
+            uint64 cursor = vr.recordCursor();
+            uint32 n = uint32(imported - cursor > H ? H : imported - cursor);
+            if (n != 0) _vrApply(n);
+            if (_caughtUp()) _cycleTick();
+        }
+        // everything drained
         assertEq(roots.recordCount(), target, "imported = target");
         assertEq(vr.recordCursor(), target, "VR cursor = target");
         assertEq(custody.recordCursor(), target, "custody cursor = target");
