@@ -115,8 +115,7 @@ contract VRHookStateTest is PoaBase {
     /// @dev The fixed-address deployment every scenario shares: the facets, the composer and the test module. Their runtimes are
     /// identical across scenarios (the facets' and the module's immutables are their own and VR's addresses).
     function _configure() internal {
-        isPos = keccak256(bytes(vm.envOr("VR_BUILD", string(""))))
-            == keccak256("pos");
+        isPos = keccak256(bytes(vm.envOr("VR_BUILD", string("")))) == keccak256("pos");
         H = uint32(vm.envOr("VR_HOOK_H", isPos ? uint256(16) : uint256(32)));
         require(H >= 3 && H <= 32, "H is 3..32");
         if (isPos) {
@@ -973,7 +972,6 @@ contract VRHookStateTest is PoaBase {
         }
     }
 
-
     // =============================================================================================
     // legal occupancy (VT-04b, astra #1217 r1): the PoS-capable build's maximum scenarios run at the frozen ceilings
     // =============================================================================================
@@ -1032,7 +1030,9 @@ contract VRHookStateTest is PoaBase {
         }
         _fillRecords = seal.recordCount();
         assertEq(uint256(vr.activationCount()), n);
-        assertEq(vr.config().knownRootEpoch + 1, due, "the scenario's Boundary installs the due epoch");
+        assertEq(
+            vr.config().knownRootEpoch + 1, due, "the scenario's Boundary installs the due epoch"
+        );
     }
 
     /// @dev Fills the pending queue to 32 with changes that stay unbound: sixteen UpdatePartitions on distinct partitions queued and
