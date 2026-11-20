@@ -983,12 +983,14 @@ contract VRHookStateTest is PoaBase {
 
     /// @dev Fills the activation table to `n` entries through the real path (rounds of 15 ScheduleActivation changes, each round an
     /// output reserved, acknowledged and applied), every entry on a distinct rule (the insertion search scans the whole table) and
-    /// every entry of all but the last round due at the epoch the scenario's own Boundary installs (the Boundary latches them: 45 of 60). PoS build only.
+    /// every entry due at the epoch the scenario's own Boundary installs, after one more ordinary Boundary (the Boundary latches all 60). PoS build only.
     function _occupyActivations(uint256 n) internal {
         if (!isPos) return;
         uint256 rounds = (n + 14) / 15;
-        uint64 due = vr.config().knownRootEpoch + uint64(rounds) + 1;
-        uint64 dueLate = due + 1; // a schedule needs epoch >= known + 3 when queued: the last round cannot be due at the scenario's Boundary
+        // every schedule targets one common epoch: the last round queues at known + rounds - 1 and needs epoch >= known + 3 more, an
+        // ordinary Boundary (an output without changes) follows the fill, and the scenario's own Boundary installs the common epoch, so
+        // all `n` entries are due together and latched at once (astra #1217 r2: the worst reachable history)
+        uint64 due = vr.config().knownRootEpoch + uint64(rounds) + 2;
         uint256 done = 0;
         for (uint256 r = 0; r < rounds; ++r) {
             uint256 cnt = n - done < 15 ? n - done : 15;
@@ -999,7 +1001,7 @@ contract VRHookStateTest is PoaBase {
                     abi.encode(
                         keccak256(abi.encode("unicity.rule/occupy", done + i)),
                         keccak256("rel"),
-                        r + 1 == rounds ? dueLate : due,
+                        due,
                         uint64(ucTime + 3600),
                         "occ"
                     )
@@ -1017,6 +1019,16 @@ contract VRHookStateTest is PoaBase {
             _recBoundary(rid, _nextEpoch(), false, 0);
             _applyAll();
             done += cnt;
+        }
+        {
+            // the intervening ordinary Boundary: an output without changes, acknowledged and applied
+            module.setMembers(vr.committee());
+            bytes32 rid = keccak256("occupy ordinary round");
+            assertEq(_moduleReserve(rid, true), VRC.ELECT_RESERVED);
+            assertEq(vr.output(rid).changes.length, 0);
+            _recAck(rid);
+            _recBoundary(rid, _nextEpoch(), false, 0);
+            _applyAll();
         }
         _fillRecords = seal.recordCount();
         assertEq(uint256(vr.activationCount()), n);
@@ -1182,9 +1194,17 @@ contract VRHookStateTest is PoaBase {
         next.setMode(S_RECORDS, M_GRIEF);
         next.setGriefLeave(60_000);
         _openBlock();
-        _recAck(r);
-        for (uint256 i; i < beforeBoundary; ++i) {
-            _filler(i);
+        if (isPos) {
+            // the root appends a Boundary right after its Ack: the leading records go before the pair (astra #1217 r2)
+            for (uint256 i; i < beforeBoundary; ++i) {
+                _filler(i);
+            }
+            _recAck(r);
+        } else {
+            _recAck(r);
+            for (uint256 i; i < beforeBoundary; ++i) {
+                _filler(i);
+            }
         }
         _recBoundary(r, _nextEpoch(), false, 0);
         for (uint256 i = beforeBoundary; i < H - 2; ++i) {
