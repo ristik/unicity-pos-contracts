@@ -150,4 +150,45 @@ contract PosLimitTest is PosBase {
         }
         assertEq(_cursorFact(), custody.recordCursor());
     }
+
+    function _recoveryDirect(uint256 k) internal returns (uint256 used) {
+        _growTo(k);
+        _advance(300, 200);
+        assertEq(_vrElect(ORIGIN), VRC.ELECT_RESERVED);
+        bytes32 rid = vr.openOutput();
+        assertEq(_publishResult2(rid), VRC.PUB_PUBLISHED);
+        _advance(10, 10);
+        pushRecord(
+            RecordKind.RecoveryAck,
+            abi.encode(
+                RecoveryAckData(
+                    rid,
+                    keccak256("rec"),
+                    progress + 5,
+                    progress + 6,
+                    100 + progress,
+                    progress + 7,
+                    progress + 8,
+                    3,
+                    3
+                )
+            )
+        );
+        _coolAll();
+        uint256 g = gasleft();
+        custody.applyRootRecords(1);
+        used = g - gasleft();
+    }
+
+    function test_measureDirectK4() public {
+        emit log_named_uint("cold custody RecoveryAck K=4", _recoveryDirect(4));
+    }
+
+    function test_measureDirectK5() public {
+        emit log_named_uint("cold custody RecoveryAck K=5", _recoveryDirect(5));
+    }
+
+    function test_measureDirectK6() public {
+        emit log_named_uint("cold custody RecoveryAck K=6", _recoveryDirect(6));
+    }
 }
