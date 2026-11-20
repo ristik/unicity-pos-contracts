@@ -4,9 +4,9 @@ pragma solidity 0.8.37;
 import {P85Flow} from "../../p85/P85Flow.sol";
 import {MockRootRecords} from "../../p85/MockRootRecords.sol";
 import {ValidatorRegistry} from "../../../src/vr/ValidatorRegistry.sol";
-import {VRGovernanceFacet} from "../../../src/vr/VRGovernanceFacet.sol";
-import {VRRepairFacet} from "../../../src/vr/VRRepairFacet.sol";
-import {VRRecordsFacet} from "../../../src/vr/VRRecordsFacet.sol";
+import {VRGovernanceFacetPos} from "../../../src/vr/pos/build/VRGovernanceFacetPos.sol";
+import {VRRepairFacetPos} from "../../../src/vr/pos/build/VRRepairFacetPos.sol";
+import {VRRecordsFacetPos} from "../../../src/vr/pos/build/VRRecordsFacetPos.sol";
 import {PosElectionAdapter} from "../../../src/vr/pos/PosElectionAdapter.sol";
 import {VRC} from "../../../src/vr/VRConstants.sol";
 import {Registration, Member, FeeSet, IVR} from "../../../src/vr/VRTypes.sol";
@@ -81,10 +81,10 @@ abstract contract PosBase is P85Flow {
             [address(0xA1), address(0xA2), address(0xA3), address(0xA4), address(0xA5)];
         deployCodeTo("FoundationMultisig.sol:FoundationMultisig", abi.encode(signers), MULTISIG);
         ValidatorRegistry.Genesis memory g = _vrGenesis();
-        g.governanceFacet = address(new VRGovernanceFacet());
-        g.repairFacet = address(new VRRepairFacet());
-        g.recordsFacet = address(new VRRecordsFacet());
-        deployCodeTo("ValidatorRegistry.sol:ValidatorRegistry", abi.encode(g), VR_ADDR);
+        g.governanceFacet = address(new VRGovernanceFacetPos());
+        g.repairFacet = address(new VRRepairFacetPos());
+        g.recordsFacet = address(new VRRecordsFacetPos());
+        deployCodeTo("ValidatorRegistryPos.sol:ValidatorRegistryPos", abi.encode(g), VR_ADDR);
         vr = IVR(VR_ADDR);
     }
 

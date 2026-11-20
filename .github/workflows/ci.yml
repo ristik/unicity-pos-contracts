@@ -19,6 +19,8 @@ jobs:
           version: v1.8.1
       - name: forge fmt
         run: forge fmt --check
+      - name: PoS-capable VR build is generated
+        run: python3 script/gen-vr-pos-build.py --check
       - name: forge build
         run: forge build --sizes
       - name: SealRegistry artifact is current

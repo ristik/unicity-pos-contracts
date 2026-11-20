@@ -3,6 +3,7 @@ pragma solidity 0.8.37;
 
 import {PosBase} from "./PosBase.sol";
 import {VRC} from "../../../src/vr/VRConstants.sol";
+import {VRCodec} from "../../../src/vr/VRCodec.sol";
 import {ElectionPolicy} from "../../../src/p85/ElectionPolicy.sol";
 import {Limits, ElectionParams, RecordKind, RecoveryAckData} from "../../../src/p85/P85Types.sol";
 
@@ -57,27 +58,55 @@ contract PosLimitTest is PosBase {
         _joinPos(1_000 * UCT);
     }
 
-    /// @dev Cold, at the limit: the election with the committee at nMax and the index full (V = 8), outsiders outranking incumbents.
-    function test_electionAndPublicationAtTheLimitFitTheCapsCold() public {
+    function _ctx() internal view returns (bytes memory) {
+        return abi.encode(
+            ORIGIN,
+            uint256(progress),
+            uint256(ucTime),
+            uint256(1),
+            vr.lastAcked(),
+            VRCodec.limitsWord(4, 6, 6),
+            uint256(0),
+            uint256(0)
+        );
+    }
+
+    /// @dev astra's qualification (ruling on option 1): the complete module callbacks cold, with 20% headroom under the new caps.
+    /// elect <= 4.0 M of CAP_ELECT 5.0 M, outputOf <= 1.2 M of CAP_OUTPUT 1.5 M, one-record onRecords <= 2.0 M of CAP_RECORD 2.5 M.
+    function test_theCallbacksAtTheLimitAreColdWithin20PercentOfTheCaps() public {
         _atTheLimit();
         _advance(300, 200);
         _coolAll();
+        uint256 snap = vm.snapshotState();
+        bytes memory ctx = _ctx();
+        vm.prank(VR_ADDR);
         uint256 g = gasleft();
-        uint8 o = _vrElect(ORIGIN);
-        uint256 used = g - gasleft();
-        emit log_named_uint("cold VR.elect at the limit (committee 6, index 8)", used);
-        assertEq(o, VRC.ELECT_RESERVED);
+        adapter.elect(ctx);
+        uint256 electCallback = g - gasleft();
+        vm.revertToState(snap);
+        emit log_named_uint("cold elect callback (committee 6, index 8)", electCallback);
+        assertLe(electCallback, 4_000_000);
+        // through VR
+        _coolAll();
+        g = gasleft();
+        assertEq(_vrElect(ORIGIN), VRC.ELECT_RESERVED);
+        emit log_named_uint("cold VR.elect (enclosing call)", g - gasleft());
         assertEq(vr.health(), VRC.HEALTHY);
-        assertLt(used, 4_000_000, "inside CAP_ELECT");
         bytes32 rid = vr.openOutput();
         election.submitAssignmentPoPs(rid, _popsFor2(rid));
         election.finalizeCandidate(rid);
         _coolAll();
         g = gasleft();
+        bytes memory out = adapter.outputOf(rid);
+        uint256 outCallback = g - gasleft();
+        emit log_named_uint("cold outputOf callback (6 members)", outCallback);
+        assertGt(out.length, 64 + 32 + 192);
+        assertLe(outCallback, 1_200_000);
+        _coolAll();
+        g = gasleft();
         assertEq(vr.publish(rid), VRC.PUB_PUBLISHED);
-        emit log_named_uint("cold VR.publish (outputOf, 6 members)", g - gasleft());
+        emit log_named_uint("cold VR.publish (enclosing call)", g - gasleft());
         assertEq(vr.health(), VRC.HEALTHY);
-        assertEq(election.frozenMembers(rid).length, 6);
     }
 
     function _popsFor2(bytes32 rid) internal returns (ElectionPolicy.PoPInput[] memory pops) {
@@ -104,19 +133,23 @@ contract PosLimitTest is PosBase {
         }
     }
 
-    function _recoveryAt(uint256 k) internal returns (uint256 used) {
+    /// @dev A K-member recovery through the real adapter and VR, the RecoveryAck delivered ALONE (a longer segment can hide a one-record
+    /// shortfall): healthy VR, the recovery Boundary completes, the cursors and the holder facts match. Also the callback's cold gas and the
+    /// least gas the adapter must receive (forwarding slack included).
+    function _recovery(uint256 k) internal {
         _growTo(k);
         _advance(300, 200);
         assertEq(_vrElect(ORIGIN), VRC.ELECT_RESERVED);
         bytes32 rid = vr.openOutput();
         assertEq(_publishResult2(rid), VRC.PUB_PUBLISHED);
         _advance(10, 10);
+        bytes32 recovery = keccak256("rec");
         pushRecord(
             RecordKind.RecoveryAck,
             abi.encode(
                 RecoveryAckData(
                     rid,
-                    keccak256("rec"),
+                    recovery,
                     progress + 5,
                     progress + 6,
                     100 + progress,
@@ -128,67 +161,68 @@ contract PosLimitTest is PosBase {
             )
         );
         _boundaryRecord(rid, true);
+        uint64 from = vr.recordCursor();
+        // the callback alone, cold
+        uint256 snap = vm.snapshotState();
         _coolAll();
+        vm.prank(VR_ADDR);
         uint256 g = gasleft();
-        _vrApply(1); // the RecoveryAck record alone: one record of an onRecords segment, capped at CAP_RECORD
-        used = g - gasleft();
-    }
-
-    /// @dev FINDING (sol #92 finding 2): a RecoveryAck derives K exposures in one record, about 390 k each cold with the holder facts, and VR
-    /// gives a record 1,500,000. Even the smallest committee (K = 4, nMin) does not fit, so a PoS generation's recovery faults VR (outcome:
-    /// health Faulted, the cursors still advance together after custody's catch-up). The prototype therefore supports ordinary rotations
-    /// only; a supported recovery needs custody's per-exposure storage cut (astra's option 2) or a higher CAP_RECORD. This pins the boundary.
-    function test_aRecoveryAckThroughVRExceedsCapRecordEvenAtK4() public {
-        uint256 used = _recoveryAt(4);
-        emit log_named_uint("cold K=4 RecoveryAck record through VR", used);
-        assertEq(vr.health(), VRC.FAULTED, "CAP_RECORD 1,500,000 is below the K = 4 recovery");
-        // custody's catch-up is permissionless: the cursors match once it has applied the record itself
-        custody.applyRootRecords(1);
-        assertEq(custody.assignmentExposures(keccak256("rec")).length, 4);
-        for (uint64 id = 1; id <= 4; ++id) {
+        adapter.onRecords(from, 1);
+        uint256 callback = g - gasleft();
+        vm.revertToState(snap);
+        emit log_named_uint(
+            string.concat("cold RecoveryAck onRecords callback, K=", vm.toString(k)), callback
+        );
+        assertLe(callback, 2_000_000, "within 20% of CAP_RECORD");
+        // the least gas the adapter must receive: the smallest g for which the call succeeds (binary search over snapshots)
+        uint256 lo = callback / 2;
+        uint256 hi = 2_500_000;
+        while (hi - lo > 1_000) {
+            uint256 mid = (lo + hi) / 2;
+            uint256 s2 = vm.snapshotState();
+            _coolAll();
+            vm.prank(VR_ADDR);
+            (bool ok,) =
+                address(adapter).call{gas: mid}(abi.encodeCall(adapter.onRecords, (from, 1)));
+            vm.revertToState(s2);
+            if (ok) hi = mid;
+            else lo = mid;
+        }
+        emit log_named_uint(
+            string.concat("least gas the adapter must receive, K=", vm.toString(k)), hi
+        );
+        assertLe(hi, 2_400_000, "inside CAP_RECORD 2.5 M with the forwarding slack");
+        // through VR: the RecoveryAck alone, then its Boundary
+        _coolAll();
+        g = gasleft();
+        _vrApply(1);
+        emit log_named_uint(
+            string.concat("cold VR.applyRootRecords(1) of the RecoveryAck, K=", vm.toString(k)),
+            g - gasleft()
+        );
+        assertEq(vr.health(), VRC.HEALTHY, "within CAP_RECORD");
+        assertEq(custody.recordCursor(), vr.recordCursor(), "the cursors match");
+        assertEq(custody.lastAckedAssignment(), recovery);
+        assertEq(custody.assignmentExposures(recovery).length, k, "K re-derived");
+        _vrApply(1); // the Boundary
+        assertEq(vr.health(), VRC.HEALTHY);
+        assertEq(_state(rid), VRC.OUT_RECOVERED, "the recovery Boundary completed");
+        assertEq(custody.recordCursor(), vr.recordCursor());
+        for (uint64 id = 1; id <= custody.nextStakingID(); ++id) {
             _assertFacts(id, 1);
         }
         assertEq(_cursorFact(), custody.recordCursor());
     }
 
-    function _recoveryDirect(uint256 k) internal returns (uint256 used) {
-        _growTo(k);
-        _advance(300, 200);
-        assertEq(_vrElect(ORIGIN), VRC.ELECT_RESERVED);
-        bytes32 rid = vr.openOutput();
-        assertEq(_publishResult2(rid), VRC.PUB_PUBLISHED);
-        _advance(10, 10);
-        pushRecord(
-            RecordKind.RecoveryAck,
-            abi.encode(
-                RecoveryAckData(
-                    rid,
-                    keccak256("rec"),
-                    progress + 5,
-                    progress + 6,
-                    100 + progress,
-                    progress + 7,
-                    progress + 8,
-                    3,
-                    3
-                )
-            )
-        );
-        _coolAll();
-        uint256 g = gasleft();
-        custody.applyRootRecords(1);
-        used = g - gasleft();
+    function test_recoveryK4ThroughVR() public {
+        _recovery(4);
     }
 
-    function test_measureDirectK4() public {
-        emit log_named_uint("cold custody RecoveryAck K=4", _recoveryDirect(4));
+    function test_recoveryK5ThroughVR() public {
+        _recovery(5);
     }
 
-    function test_measureDirectK5() public {
-        emit log_named_uint("cold custody RecoveryAck K=5", _recoveryDirect(5));
-    }
-
-    function test_measureDirectK6() public {
-        emit log_named_uint("cold custody RecoveryAck K=6", _recoveryDirect(6));
+    function test_recoveryK6ThroughVR() public {
+        _recovery(6);
     }
 }

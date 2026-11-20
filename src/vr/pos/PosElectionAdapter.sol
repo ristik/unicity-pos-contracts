@@ -59,9 +59,9 @@ contract PosElectionAdapter is IElectionModule, IPosAdapter {
     bytes32 public constant TAG = keccak256("unicity.vr.pos-p85.v1");
 
     // ---- gas bounds: the measured worst case x 5/4, below VR's caps (test/vr/pos/PosGas.t.sol) ----
-    uint64 internal constant GAS_ELECT = 4_000_000;
-    uint64 internal constant GAS_OUTPUT = 1_000_000;
-    uint64 internal constant GAS_RECORD = 1_500_000;
+    uint64 internal constant GAS_ELECT = 5_000_000;
+    uint64 internal constant GAS_OUTPUT = 1_500_000;
+    uint64 internal constant GAS_RECORD = 2_500_000;
     uint64 internal constant GAS_RESOLVED = 10_000;
     uint64 internal constant GAS_ATTACH = 10_000;
     uint64 internal constant GAS_DETACH = 10_000;

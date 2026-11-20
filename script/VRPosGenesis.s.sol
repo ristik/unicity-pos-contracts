@@ -72,9 +72,9 @@ contract VRPosGenesis is VRGenesis {
         address multisig = MULTISIG;
 
         // 1. the facets
-        _deployTo("VRGovernanceFacet.sol:VRGovernanceFacet", GOV_FACET);
-        _deployTo("VRRepairFacet.sol:VRRepairFacet", REPAIR_FACET);
-        _deployTo("VRRecordsFacet.sol:VRRecordsFacet", RECORDS_FACET);
+        _deployTo("VRGovernanceFacetPos.sol:VRGovernanceFacetPos", GOV_FACET);
+        _deployTo("VRRepairFacetPos.sol:VRRepairFacetPos", REPAIR_FACET);
+        _deployTo("VRRecordsFacetPos.sol:VRRecordsFacetPos", RECORDS_FACET);
 
         // 2. the governor
         address[5] memory signers;
@@ -100,7 +100,7 @@ contract VRPosGenesis is VRGenesis {
         g.governanceFacet = GOV_FACET;
         g.repairFacet = REPAIR_FACET;
         g.recordsFacet = RECORDS_FACET;
-        _deployTo("ValidatorRegistry.sol:ValidatorRegistry", abi.encode(g), VR_ADDR);
+        _deployTo("ValidatorRegistryPos.sol:ValidatorRegistryPos", abi.encode(g), VR_ADDR);
         _checkPos(g, custody);
 
         string memory d = "deployment";
