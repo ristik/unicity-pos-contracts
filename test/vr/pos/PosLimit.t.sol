@@ -8,16 +8,23 @@ import {VRCodec} from "../../../src/vr/VRCodec.sol";
 import {ElectionPolicy} from "../../../src/p85/ElectionPolicy.sol";
 import {Limits, ElectionParams, RecordKind, RecoveryAckData} from "../../../src/p85/P85Types.sol";
 
-/// @notice The prototype's supported deployment limit, through VR (sol review of #92, findings 1 and 2): a committee of at most 6 (nMax)
-/// drawn from an index of at most 8 identities (vMax) of one lot each (lMax). The genesis script refuses more
-/// (PosGenesis.test_theGenesisRefusesALimitAboveTheMeasuredOne); ElectionPolicy refuses a ninth registration (IndexFull). At that limit
-/// the election, `outputOf` (publication) and a RecoveryAck of the maximum K, with its lot references, run inside VR's callback caps.
-contract PosLimitTest is PosBase {
+/// @notice The prototype's supported deployment limit, through VR (sol and astra, #92): a committee of at most 5 (nMax, so K <= 5) drawn
+/// from an index of at most 8 identities (vMax) of one lot each (lMax). The genesis script refuses more (PosGenesis);
+/// ElectionPolicy refuses a ninth registration (IndexFull). At that limit the election, `outputOf` (publication) and a RecoveryAck of the
+/// maximum K (plain, and with the incumbent's and the primary's closures staged first), with its lot references, run inside VR's callback
+/// caps with 20% headroom (elect 4.0 M, outputOf 1.2 M, one-record onRecords 2.0 M). K = 6 is OUTSIDE the supported profile:
+/// `PosOutsideProfileTest` pins its measurement.
+abstract contract PosLimitBase is PosBase {
+    /// @dev The generation's committee ceiling under test.
+    function _nMax() internal pure virtual returns (uint32) {
+        return 5;
+    }
+
     function _electionParams() internal pure override returns (ElectionParams memory) {
         return ElectionParams({
             nMin: 4,
-            nTarget: 6,
-            nMax: 6,
+            nTarget: _nMax(),
+            nMax: _nMax(),
             maxM: 4,
             distNum: 1,
             distDen: 1,
@@ -30,9 +37,9 @@ contract PosLimitTest is PosBase {
         return Limits({vMax: 8, lMax: 1, rMax: 4, maxBatch: 32});
     }
 
-    /// @dev Six members elected through VR, then two outsiders that outrank the incumbents fill the index (V = 8).
+    /// @dev nMax members elected through VR, then outsiders that outrank the incumbents fill the index (V = 8).
     function _atTheLimit() internal {
-        for (uint256 k; k < 2; ++k) {
+        for (uint256 k; k < _nMax() - 4; ++k) {
             Joiner memory a = _joinPos(1_000 * UCT);
             evmPkOf[a.id] = a.evmPk;
             bytes32 r = _elect2();
@@ -41,18 +48,12 @@ contract PosLimitTest is PosBase {
             pushRecord(RecordKind.Closure, closureData(previous, lastH, "prev"));
             _vrApplyAll();
         }
-        assertEq(vr.committee().length, 6);
-        for (uint256 k; k < 2; ++k) {
+        assertEq(vr.committee().length, _nMax());
+        for (uint256 k; k < 8 - _nMax(); ++k) {
             Joiner memory o = _joinPos(1_100 * UCT);
             evmPkOf[o.id] = o.evmPk;
         }
         assertEq(election.liveCount(), 8);
-    }
-
-    function test_theIndexRefusesANinthIdentity() public {
-        _atTheLimit();
-        vm.expectRevert(ElectionPolicy.IndexFull.selector);
-        this.joinExtra();
     }
 
     function joinExtra() external {
@@ -79,49 +80,6 @@ contract PosLimitTest is PosBase {
     /// @dev astra's qualification, enforced (ruling on option 1, round 2): each callback is CALLED with its actual qualification stipend,
     /// cold (state prepared first, every account cooled), and must succeed with the right answer: elect Reserved, outputOf a full Ready
     /// output of 6 members, a one-record onRecords applied. The enclosing VR calls are asserted end to end as well.
-    function test_theCallbacksAtTheLimitSucceedWithTheStipends() public {
-        _atTheLimit();
-        _advance(300, 200);
-        bytes memory ctx = _ctx(); // read VR before cooling and pranking
-        uint256 snap = vm.snapshotState();
-        _coolAll();
-        vm.prank(VR_ADDR);
-        (bool ok, bytes memory ret) =
-            address(adapter).call{gas: ELECT_STIPEND}(abi.encodeCall(adapter.elect, (ctx)));
-        assertTrue(ok, "elect succeeds with 4.0 M");
-        (uint8 err, uint8 outcome, bool ready, bytes32 erid) = VRCodec.decodeElect(ret);
-        assertEq(err, VRCodec.OK);
-        assertEq(outcome, VRC.ELECT_RESERVED);
-        assertFalse(ready);
-        assertEq(erid, election.openResult());
-        vm.revertToState(snap);
-        // through VR, end to end
-        _coolAll();
-        uint256 g = gasleft();
-        assertEq(_vrElect(ORIGIN), VRC.ELECT_RESERVED);
-        emit log_named_uint("cold VR.elect (enclosing call)", g - gasleft());
-        assertEq(vr.health(), VRC.HEALTHY);
-        bytes32 rid = vr.openOutput();
-        election.submitAssignmentPoPs(rid, _popsFor2(rid));
-        election.finalizeCandidate(rid);
-        _coolAll();
-        (bool ok2, bytes memory out) = address(adapter).staticcall{gas: OUTPUT_STIPEND}(
-            abi.encodeCall(adapter.outputOf, (rid))
-        );
-        assertTrue(ok2, "outputOf succeeds with 1.2 M");
-        (uint8 e2, uint8 status, VRCodec.OutputHeader memory h, Member[] memory ms) =
-            VRCodec.decodeOutput(out);
-        assertEq(e2, VRCodec.OK);
-        assertEq(status, VRC.STATUS_READY);
-        assertEq(ms.length, 6, "a full Ready output");
-        assertEq(h.resultId, rid);
-        _coolAll();
-        g = gasleft();
-        assertEq(vr.publish(rid), VRC.PUB_PUBLISHED);
-        emit log_named_uint("cold VR.publish (enclosing call)", g - gasleft());
-        assertEq(vr.health(), VRC.HEALTHY);
-    }
-
     function _popsFor2(bytes32 rid) internal returns (ElectionPolicy.PoPInput[] memory pops) {
         ElectionPolicy.Frozen[] memory f = election.frozenMembers(rid);
         pops = new ElectionPolicy.PoPInput[](f.length);
@@ -233,6 +191,57 @@ contract PosLimitTest is PosBase {
         }
         assertEq(_cursorFact(), custody.recordCursor());
     }
+}
+
+contract PosLimitTest is PosLimitBase {
+    function test_theIndexRefusesANinthIdentity() public {
+        _atTheLimit();
+        vm.expectRevert(ElectionPolicy.IndexFull.selector);
+        this.joinExtra();
+    }
+
+    function test_theCallbacksAtTheLimitSucceedWithTheStipends() public {
+        _atTheLimit();
+        _advance(300, 200);
+        bytes memory ctx = _ctx(); // read VR before cooling and pranking
+        uint256 snap = vm.snapshotState();
+        _coolAll();
+        vm.prank(VR_ADDR);
+        (bool ok, bytes memory ret) =
+            address(adapter).call{gas: ELECT_STIPEND}(abi.encodeCall(adapter.elect, (ctx)));
+        assertTrue(ok, "elect succeeds with 4.0 M");
+        (uint8 err, uint8 outcome, bool ready, bytes32 erid) = VRCodec.decodeElect(ret);
+        assertEq(err, VRCodec.OK);
+        assertEq(outcome, VRC.ELECT_RESERVED);
+        assertFalse(ready);
+        assertEq(erid, election.openResult());
+        vm.revertToState(snap);
+        // through VR, end to end
+        _coolAll();
+        uint256 g = gasleft();
+        assertEq(_vrElect(ORIGIN), VRC.ELECT_RESERVED);
+        emit log_named_uint("cold VR.elect (enclosing call)", g - gasleft());
+        assertEq(vr.health(), VRC.HEALTHY);
+        bytes32 rid = vr.openOutput();
+        election.submitAssignmentPoPs(rid, _popsFor2(rid));
+        election.finalizeCandidate(rid);
+        _coolAll();
+        (bool ok2, bytes memory out) = address(adapter).staticcall{gas: OUTPUT_STIPEND}(
+            abi.encodeCall(adapter.outputOf, (rid))
+        );
+        assertTrue(ok2, "outputOf succeeds with 1.2 M");
+        (uint8 e2, uint8 status, VRCodec.OutputHeader memory h, Member[] memory ms) =
+            VRCodec.decodeOutput(out);
+        assertEq(e2, VRCodec.OK);
+        assertEq(status, VRC.STATUS_READY);
+        assertEq(ms.length, _nMax(), "a full Ready output");
+        assertEq(h.resultId, rid);
+        _coolAll();
+        g = gasleft();
+        assertEq(vr.publish(rid), VRC.PUB_PUBLISHED);
+        emit log_named_uint("cold VR.publish (enclosing call)", g - gasleft());
+        assertEq(vr.health(), VRC.HEALTHY);
+    }
 
     function test_recoveryK4ThroughVR() public {
         _recovery(4, false);
@@ -242,10 +251,6 @@ contract PosLimitTest is PosBase {
         _recovery(5, false);
     }
 
-    function test_recoveryK6ThroughVR() public {
-        _recovery(6, false);
-    }
-
     function test_savedClosureRecoveryK4ThroughVR() public {
         _recovery(4, true);
     }
@@ -253,11 +258,21 @@ contract PosLimitTest is PosBase {
     function test_savedClosureRecoveryK5ThroughVR() public {
         _recovery(5, true);
     }
+}
 
-    /// @dev FINDING (astra r2): with the incumbent and the primary's closures staged before the RecoveryAck, the K = 6 callback exceeds
-    /// the 2.0 M qualification target (it stays inside the 2.5 M hard cap: the recovery completes healthy). Supported K for 20% headroom
-    /// is 5 unless CAP_RECORD is re-ruled.
-    function test_savedClosureRecoveryK6ThroughVR() public {
+/// @notice A committee of 6 is OUTSIDE the supported profile (the genesis script refuses nMax 6): the measurement is pinned. With the
+/// incumbent's and the primary's closures staged before the RecoveryAck the K = 6 callback is 2.15 M, above the 2.0 M qualification target
+/// and inside CAP_RECORD 2.5 M (the recovery completes healthy); the plain K = 6 recovery is 1.96 M.
+contract PosOutsideProfileTest is PosLimitBase {
+    function _nMax() internal pure override returns (uint32) {
+        return 6;
+    }
+
+    function test_recoveryK6PlainIsWithinTheStipendButOutsideTheProfile() public {
+        _recovery(6, false);
+    }
+
+    function test_savedClosureRecoveryK6ExceedsTheStipend() public {
         _recovery(6, true);
     }
 }

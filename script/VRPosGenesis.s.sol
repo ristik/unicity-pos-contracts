@@ -35,7 +35,7 @@ import {
 /// `rootGenesis` (the root consensus identity the Evidence module verifies votes under), `assignmentId` (the genesis assignment id of the
 /// FULL shard configuration, which the roots close), `rewardFunding`, `rewardRate` (decimal base units), `cadenceRounds`, `cadenceSeconds`.
 contract VRPosGenesis is VRGenesis {
-    uint32 internal constant MAX_COMMITTEE = 6;
+    uint32 internal constant MAX_COMMITTEE = 5;
     uint32 internal constant MAX_POOL = 8;
     address internal constant ADAPTER = address(uint160((uint256(0xff) << 152) | 0x07));
 
@@ -56,8 +56,9 @@ contract VRPosGenesis is VRGenesis {
         }
         ValidatorRegistry.Genesis memory g = _genesis(json);
         require(g.rMax <= 4, "VR PoS genesis: custody's reference ceiling");
-        // The measured deployment limit of the prototype (test/vr/pos/PosLimit.t.sol, sol review of #92): VR's callback caps (CAP_ELECT
-        // 4,000,000, CAP_OUTPUT, CAP_RECORD) carry the P85 election and the RecoveryAck only for a committee of at most MAX_COMMITTEE
+        // The measured deployment limit of the prototype (test/vr/pos/PosLimit.t.sol; astra's ruling and the coordinator's
+        // decision): the PoS-capable VR build's caps (CAP_ELECT 5.0 M, CAP_OUTPUT 1.5 M, CAP_RECORD 2.5 M) carry the P85 election, outputOf and
+        // the RecoveryAck with 20% headroom only for a committee of at most MAX_COMMITTEE (5)
         // members drawn from an index of at most MAX_POOL identities of one lot each. ElectionPolicy refuses a registration past vMax
         // (IndexFull), so the pool cannot outgrow the measurement, and nMax bounds every later election.
         require(

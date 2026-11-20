@@ -23,7 +23,7 @@ contract PosGenesisTest is Test {
     function _input() internal view returns (string memory) {
         string memory plan = vm.readFile("test/vr/fixtures/vr-genesis-input.json");
         plan = vm.replace(plan, "\"rMax\": 8", "\"rMax\": 4");
-        plan = vm.replace(plan, "\"nMax\": 16", "\"nMax\": 6");
+        plan = vm.replace(plan, "\"nMax\": 16", "\"nMax\": 5");
         plan = vm.replace(plan, "\"vMax\": 16", "\"vMax\": 8");
         plan = vm.replace(plan, "\"maxGas\": 200000000", "\"maxGas\": 200000000");
         string memory pos = string.concat(
@@ -51,9 +51,9 @@ contract PosGenesisTest is Test {
         s.runWith(input, out);
     }
 
-    function test_theGenesisRefusesANMaxAboveTheMeasuredLimit() public {
+    function test_theGenesisRefusesANMaxOf6AboveTheSupportedProfile() public {
         _refuse(
-            vm.replace(_input(), "\"nMax\": 6", "\"nMax\": 7"),
+            vm.replace(_input(), "\"nMax\": 5", "\"nMax\": 6"),
             string.concat(OUT, "-nmax"),
             bytes("VR PoS genesis: nMax and nTarget above the measured limit")
         );

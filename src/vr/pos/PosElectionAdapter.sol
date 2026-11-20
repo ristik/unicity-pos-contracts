@@ -51,8 +51,8 @@ interface IPosCustody is IStakeCustody {
 /// snapshot unservable and a staged VR binding replaced at the same generation is not served.
 ///
 /// **Measured limit (sol and astra, #92).** The PoS-capable VR build (callback caps 5.0 / 1.5 / 2.5 M) carries the P85 election, publication
-/// and a one-record RecoveryAck for a committee of at most 6 drawn from an index of at most 8 identities of one lot each (the genesis script
-/// refuses more; test/vr/pos/PosLimit.t.sol holds the cold callback figures). Against the PoA build's caps a RecoveryAck already faults at
+/// and a one-record RecoveryAck, each with 20% headroom (elect 4.0 M, outputOf 1.2 M, onRecords 2.0 M), for a committee of at most 5 (K <= 5) drawn from an index of at most 8 identities of one lot each (the genesis script
+/// refuses more; test/vr/pos/PosLimit.t.sol holds the cold callback figures; K = 6 is outside the supported profile: with the closures staged before the RecoveryAck its callback is 2.15 M, inside the 2.5 M cap but above 2.0 M). Against the PoA build's caps a RecoveryAck already faults at
 /// K = 4, so this adapter is the PoS-capable build's module only.
 ///
 /// Immutable, no proxy. `ELECTION` and `CUSTODY` are the generation's fixed modules.
