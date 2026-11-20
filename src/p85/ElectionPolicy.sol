@@ -268,7 +268,7 @@ contract ElectionPolicy {
     /// @dev VT-04 (astra, #92): the validator registry a VR generation's identities must be aligned with (zero on the plain P85
     /// generation). `_eligible` skips an identity whose delegation is not its VR binding, so a misaligned identity is never selected and
     /// cannot hold up rotations. Appended last: no slot moves.
-    address public registry;
+    address internal registry;
 
     /// @param factory_ the deployment factory that will initialize this module, fixed at construction. The module is deployed first so
     /// the factory's own creation code stays small; only that factory can initialize it, and it can do so once.
@@ -709,13 +709,32 @@ contract ElectionPolicy {
         view
         returns (bool)
     {
-        IVRBinding vr = IVRBinding(registry);
+        bytes32 rootKeyHash = keccak256(d.rootKey);
+        bytes32 evmKeyHash = keccak256(d.evmKey);
         for (uint8 k = 0; k < 2; ++k) {
-            IVRBinding.Word memory w = vr.bindingOf(id, k == 1);
+            // `ValidatorRegistry.bindingOf` returns a ten-word static struct; only words 1 (generation), 4 to 7 and 8 (payee) are read, straight
+            // from the return data (VR is this generation's fixed registry; a short return reverts). Decoding the whole struct costs the size
+            // this module does not have (EIP-170).
+            (bool ok, bytes memory r) =
+                registry.staticcall(abi.encodeCall(IVRBinding.bindingOf, (id, k == 1)));
+            require(ok && r.length == 320);
+            uint256 gen;
+            bytes32 rootNode;
+            bytes32 rootHash;
+            bytes32 evmNode;
+            bytes32 evmHash;
+            address payee;
+            assembly ("memory-safe") {
+                gen := mload(add(r, 64))
+                rootNode := mload(add(r, 160))
+                rootHash := mload(add(r, 192))
+                evmNode := mload(add(r, 224))
+                evmHash := mload(add(r, 256))
+                payee := mload(add(r, 288))
+            }
             if (
-                w.generation == generation && w.rootNodeWord == d.rootNodeID
-                    && w.rootKeyHash == keccak256(d.rootKey) && w.evmNodeWord == d.evmNodeID
-                    && w.evmKeyHash == keccak256(d.evmKey) && w.payee == d.operatorPayee
+                gen == generation && rootNode == d.rootNodeID && rootHash == rootKeyHash
+                    && evmNode == d.evmNodeID && evmHash == evmKeyHash && payee == d.operatorPayee
             ) return true;
         }
         return false;
