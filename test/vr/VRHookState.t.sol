@@ -25,7 +25,7 @@ import {PoaComposerEngine} from "../../src/vr/poa/PoaComposer.sol";
 ///
 ///     rm -rf test/vr/fixtures/vr-hook-pos-raw && mkdir -p test/vr/fixtures/vr-hook-pos-raw
 ///     VR_BUILD=pos VR_WRITE_HOOK_STATE=test/vr/fixtures/vr-hook-pos-raw forge test --match-contract VRHookStateTest
-///     python3 tools/vr_hook_state.py test/vr/fixtures/vr-hook-pos-raw test/vr/fixtures/vr-hook-pos.json
+///     python3 tools/vr_hook_state.py test/vr/fixtures/vr-hook-pos-raw test/vr/fixtures/vr-hook-pos.json --pos
 ///
 /// The SealRegistry here is the record-source stand-in (MockSeal); in ureth it is the real registry, whose `recordAt`, `recordCount`,
 /// `progress` and `ucTime` must hand VR the same records and clock. ureth's block imports the whole log; records a scenario pushed and
@@ -199,7 +199,7 @@ contract VRHookStateTest is PoaBase {
     /// @dev Opens the block: its clock (one progress unit and one second after the setup) and the ureth block number. Records pushed
     /// after this are the block's import.
     function _openBlock() internal {
-        assertLe(seal.recordCount(), H, "ureth imports the registry's whole log in one block");
+        assertLe(seal.recordCount(), 32, "ureth imports the registry's whole log in one block");
         assertEq(vr.recordCursor(), seal.recordCount(), "VR is caught up when the block opens");
         _advance(1, 1);
         vm.roll(BLOCK_NUMBER);
@@ -754,7 +754,7 @@ contract VRHookStateTest is PoaBase {
         _openBlock();
         _ackBoundary(rid);
         _runBlock(H);
-        assertEq(vr.recordCursor(), 2);
+        assertEq(vr.recordCursor(), 2 + _fillRecords);
         assertEq(_state(rid), VRC.OUT_ACKNOWLEDGED);
         assertEq(vr.health(), VRC.FAULTED);
     }
@@ -868,6 +868,35 @@ contract VRHookStateTest is PoaBase {
         assertEq(module.log(2), "elect");
     }
 
+    /// @dev PoS-capable build only: the full H batch with the H - 2 ordinary records HolderRetirements (each writes a fresh slot) on
+    /// holder 0, the old module being the liability holder; the same burning delivery as `batch32-max`.
+    function test_batchRetire() public {
+        _configure();
+        if (!isPos) return;
+        _begin("batch32-retire");
+        _maxBounds(module);
+        _holderOldModule();
+        _mockGenesis(5, 1, 5, 16);
+        bytes32 rid = _rid("R");
+        assertEq(_moduleReserve(rid, true), VRC.ELECT_RESERVED);
+        module.clearLog();
+        module.setGriefLeave(20_000);
+        module.setMode(S_RECORDS, M_GRIEF);
+        module.setMode(S_RESOLVED, M_GRIEF);
+        _openBlock();
+        _ackBoundary(rid);
+        for (uint256 i = 0; i < H - 2; ++i) {
+            _filler(i);
+        }
+        assertEq(seal.recordCount(), H);
+        _runBlock(H);
+        assertEq(vr.recordCursor(), H);
+        assertEq(_state(rid), VRC.OUT_ACKNOWLEDGED);
+        assertEq(vr.health(), VRC.HEALTHY);
+        assertTrue(vr.retired(0, 100 + (H - 3), 1));
+        assertEq(module.log(1), string.concat("onRecords:0:", vm.toString(uint256(H))));
+    }
+
     /// @dev The same batch with an onRecords that exhausts its H x CAP_RECORD cap: the H records still apply (cursor + 32, R
     /// Acknowledged), the module's onRecords frame rolls back (no log entry) and the module is Faulted.
     function test_batch32Exhausted() public {
@@ -944,6 +973,79 @@ contract VRHookStateTest is PoaBase {
         }
     }
 
+
+    // =============================================================================================
+    // legal occupancy (VT-04b, astra #1217 r1): the PoS-capable build's maximum scenarios run at the frozen ceilings
+    // =============================================================================================
+
+    /// @dev Records the occupancy fill left in the log (applied before the block; ureth imports them with the block's).
+    uint64 internal _fillRecords;
+
+    /// @dev Fills the activation table to `n` entries through the real path (rounds of 15 ScheduleActivation changes, each round an
+    /// output reserved, acknowledged and applied), every entry on a distinct rule (the insertion search scans the whole table) and
+    /// every entry of all but the last round due at the epoch the scenario's own Boundary installs (the Boundary latches them: 45 of 60). PoS build only.
+    function _occupyActivations(uint256 n) internal {
+        if (!isPos) return;
+        uint256 rounds = (n + 14) / 15;
+        uint64 due = vr.config().knownRootEpoch + uint64(rounds) + 1;
+        uint64 dueLate = due + 1; // a schedule needs epoch >= known + 3 when queued: the last round cannot be due at the scenario's Boundary
+        uint256 done = 0;
+        for (uint256 r = 0; r < rounds; ++r) {
+            uint256 cnt = n - done < 15 ? n - done : 15;
+            uint64[] memory ids = new uint64[](cnt);
+            for (uint256 i = 0; i < cnt; ++i) {
+                ids[i] = _queue(
+                    VRC.K_SCHEDULE_ACTIVATION,
+                    abi.encode(
+                        keccak256(abi.encode("unicity.rule/occupy", done + i)),
+                        keccak256("rel"),
+                        r + 1 == rounds ? dueLate : due,
+                        uint64(ucTime + 3600),
+                        "occ"
+                    )
+                );
+            }
+            _passDelays();
+            for (uint256 i = 0; i < cnt; ++i) {
+                vr.execute(ids[i]);
+            }
+            module.setMembers(vr.committee());
+            bytes32 rid = keccak256(abi.encode("occupy round", r));
+            assertEq(_moduleReserve(rid, true), VRC.ELECT_RESERVED);
+            assertEq(vr.output(rid).changes.length, cnt);
+            _recAck(rid);
+            _recBoundary(rid, _nextEpoch(), false, 0);
+            _applyAll();
+            done += cnt;
+        }
+        _fillRecords = seal.recordCount();
+        assertEq(uint256(vr.activationCount()), n);
+        assertEq(vr.config().knownRootEpoch + 1, due, "the scenario's Boundary installs the due epoch");
+    }
+
+    /// @dev Fills the pending queue to 32 with changes that stay unbound: sixteen UpdatePartitions on distinct partitions queued and
+    /// executed (due) after the scenario's own sixteen, which have already taken the bound set (root-side cap 8, total cap 16).
+    function _occupyPending() internal {
+        if (!isPos) return;
+        uint64[] memory ids = new uint64[](16);
+        for (uint256 i = 0; i < 16; ++i) {
+            ids[i] = _queue(
+                VRC.K_UPDATE_PARTITION,
+                abi.encode(
+                    uint32(100 + i),
+                    abi.encodePacked(uint8(0x80), uint8(100 + i)),
+                    keccak256(abi.encode("extra", i)),
+                    new bytes(32)
+                )
+            );
+        }
+        _passDelays();
+        for (uint256 i = 0; i < 16; ++i) {
+            vr.execute(ids[i]);
+        }
+        assertEq(vr.pendingChanges().length, 32, "the pending queue is full");
+    }
+
     /// @dev The next module of the switch at VR's maximum caps, with adoption and a liability holder.
     function _maxNext() internal returns (MockModule next) {
         next = _mockAt(MOCK_NEXT_ADDR, keccak256("unicity.vr.max-next"));
@@ -961,7 +1063,9 @@ contract VRHookStateTest is PoaBase {
         _maxBounds(module);
         _mockGenesis(16, 1, 16, 16);
         MockModule next = _maxNext();
+        _occupyActivations(60);
         _bindSixteenMax(address(next));
+        _occupyPending();
         module.setMembers(vr.committee());
         module.setMode(S_ELECT, M_GRIEF);
         module.setMode(S_OUTPUT, M_GRIEF);
@@ -985,7 +1089,9 @@ contract VRHookStateTest is PoaBase {
         _maxBounds(module);
         _mockGenesis(16, 1, 16, 16);
         MockModule next = _maxNext();
+        _occupyActivations(60);
         bytes memory initData = _bindSixteenMax(address(next));
+        _occupyPending();
         bytes32 r = _rid("R");
         assertEq(_moduleReserve(r, true), VRC.ELECT_RESERVED);
         assertEq(vr.output(r).changes.length, 16);
@@ -1003,14 +1109,16 @@ contract VRHookStateTest is PoaBase {
         _openBlock();
         _recBoundary(r, _nextEpoch(), false, 0);
         _runBlock(H);
-        assertEq(vr.recordCursor(), 2);
+        assertEq(vr.recordCursor(), 2 + _fillRecords);
         assertEq(vr.activeModule().module, MOCK_NEXT_ADDR, "switched");
         assertEq(vr.health(), VRC.HEALTHY, "every callback answered at its maximum cap");
         assertEq(vr.committee().length, 16);
         assertEq(vr.holderCount(), 1);
         assertEq(module.log(0), "onResolved:1");
         assertEq(
-            module.log(1), "onRecords:1:1", "the old module got the Boundary before the detach"
+            module.log(1),
+            string.concat("onRecords:", vm.toString(_fillRecords + 1), ":1"),
+            "the old module got the Boundary before the detach"
         );
         assertEq(module.log(2), "detach");
         assertEq(next.log(0), "attach");
@@ -1039,11 +1147,29 @@ contract VRHookStateTest is PoaBase {
         _mixed(H - 2);
     }
 
+    /// @dev The ordinary record that fills a batch: a foreign Closure (no state change), or, in the PoS-capable build's fixtures, a
+    /// HolderRetirement on holder 0 (a fresh retirement slot written per record: the more expensive legal ordinary record).
+    function _filler(uint256 i) internal {
+        if (isPos) _recHolderRetirement(0, 100 + uint64(i), 1);
+        else _recClosure(keccak256(abi.encode("mixed ordinary", i)));
+    }
+
+    /// @dev The old module is the liability holder in the PoS-capable fixtures (holder 0), so retirements are legal records.
+    function _holderOldModule() internal {
+        if (!isPos) return;
+        deployCodeTo("VRMocks.sol:MockHolder", HOLDER_ADDR);
+        module.setCaps(VRC.CAP_LIABILITY_HOLDER);
+        module.setHolder(HOLDER_ADDR);
+    }
+
     function _mixed(uint256 beforeBoundary) internal {
         _maxBounds(module);
+        _holderOldModule();
         _mockGenesis(16, 1, 16, 16);
         MockModule next = _maxNext();
+        _occupyActivations(60);
         _bindSixteenMax(address(next));
+        _occupyPending();
         bytes32 r = _rid("R");
         assertEq(_moduleReserve(r, true), VRC.ELECT_RESERVED);
         module.clearLog();
@@ -1058,20 +1184,22 @@ contract VRHookStateTest is PoaBase {
         _openBlock();
         _recAck(r);
         for (uint256 i; i < beforeBoundary; ++i) {
-            _recClosure(keccak256(abi.encode("mixed ordinary", i)));
+            _filler(i);
         }
         _recBoundary(r, _nextEpoch(), false, 0);
         for (uint256 i = beforeBoundary; i < H - 2; ++i) {
-            _recClosure(keccak256(abi.encode("mixed ordinary", i)));
+            _filler(i);
         }
         _runBlock(H);
-        assertEq(vr.recordCursor(), H);
+        assertEq(vr.recordCursor(), H + _fillRecords);
         assertEq(_state(r), VRC.OUT_ACKNOWLEDGED);
         assertEq(vr.activeModule().module, MOCK_NEXT_ADDR, "switched");
         assertEq(vr.health(), VRC.HEALTHY, "every callback answered at its maximum cap");
         assertEq(vr.committee().length, 16);
-        assertEq(vr.holderCount(), 1);
-        string memory through = string.concat("onRecords:0:", vm.toString(beforeBoundary + 2));
+        assertEq(vr.holderCount(), isPos ? 2 : 1);
+        string memory through = string.concat(
+            "onRecords:", vm.toString(_fillRecords), ":", vm.toString(beforeBoundary + 2)
+        );
         assertEq(module.log(0), "onResolved:1");
         assertEq(module.log(1), through, "the old module's segment runs through the Boundary");
         assertEq(module.log(2), "detach");
@@ -1081,7 +1209,7 @@ contract VRHookStateTest is PoaBase {
                 next.log(1),
                 string.concat(
                     "onRecords:",
-                    vm.toString(beforeBoundary + 2),
+                    vm.toString(_fillRecords + beforeBoundary + 2),
                     ":",
                     vm.toString(H - 2 - beforeBoundary)
                 ),

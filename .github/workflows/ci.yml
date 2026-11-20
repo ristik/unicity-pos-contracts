@@ -76,5 +76,5 @@ jobs:
           rm -rf test/vr/fixtures/vr-hook-pos-raw
           mkdir -p test/vr/fixtures/vr-hook-pos-raw
           VR_BUILD=pos VR_WRITE_HOOK_STATE=test/vr/fixtures/vr-hook-pos-raw forge test --match-contract VRHookStateTest
-          python3 tools/vr_hook_state.py test/vr/fixtures/vr-hook-pos-raw "$RUNNER_TEMP/vr-hook-pos.json"
+          python3 tools/vr_hook_state.py test/vr/fixtures/vr-hook-pos-raw "$RUNNER_TEMP/vr-hook-pos.json" --pos
           cmp "$RUNNER_TEMP/vr-hook-pos.json" test/vr/fixtures/vr-hook-pos.json
