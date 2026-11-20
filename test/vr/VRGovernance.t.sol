@@ -197,6 +197,65 @@ contract VRGovernanceTest is VRBase {
         );
     }
 
+    /// @dev VT-07a: the activation table is bounded at MAX_ACTIVATIONS by the queue-time check, which counts the schedules still pending
+    /// (not yet terminal) together with the entries recorded, so the roots' committed schedule (an append per accepted change) can never
+    /// see more than 64 entries. Fill the table to 64 through the real path (queue, execute, bind, acknowledge), then try to exceed it.
+    function test_activationTableNeverExceeds64() public {
+        uint256 done;
+        uint256 round;
+        while (done < 56) {
+            uint256 cnt = 8;
+            uint64[] memory ids = new uint64[](cnt);
+            uint64 e = vr.config().knownRootEpoch + 50;
+            for (uint256 i = 0; i < cnt; ++i) {
+                ids[i] = _queue(
+                    VRC.K_SCHEDULE_ACTIVATION,
+                    abi.encode(
+                        keccak256(abi.encode("unicity.rule/fill", done + i)),
+                        keccak256("rel"),
+                        e,
+                        uint64(ucTime + 3600),
+                        "f"
+                    )
+                );
+            }
+            _passDelays();
+            for (uint256 i = 0; i < cnt; ++i) {
+                vr.execute(ids[i]);
+            }
+            bytes32 r = _rid(string(abi.encode("fill", round)));
+            assertEq(_moduleReserve(r, true), VRC.ELECT_RESERVED);
+            _acknowledge(r, 0);
+            done += cnt;
+            ++round;
+        }
+        assertEq(uint256(vr.activationCount()), 56);
+        // the next eight are pending (queued): they count against the bound, so a ninth is refused although only 56 are recorded
+        for (uint256 i = 0; i < 8; ++i) {
+            _queue(
+                VRC.K_SCHEDULE_ACTIVATION,
+                abi.encode(
+                    keccak256(abi.encode("unicity.rule/pending", i)),
+                    keccak256("rel"),
+                    vr.config().knownRootEpoch + 50,
+                    uint64(ucTime + 3600),
+                    "p"
+                )
+            );
+        }
+        _refused(
+            VRC.K_SCHEDULE_ACTIVATION,
+            abi.encode(
+                keccak256("unicity.rule/over"),
+                keccak256("rel"),
+                vr.config().knownRootEpoch + 50,
+                uint64(ucTime + 3600),
+                "o"
+            ),
+            VRChanges.TOO_MANY_ACTIVATIONS
+        );
+    }
+
     function test_boundaryEffectsOfEveryEvmKind() public {
         // limits, fees, governor, schedule; the governor's code hash is checked at activation
         MockHolder newGov = new MockHolder();
