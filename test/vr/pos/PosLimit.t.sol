@@ -109,7 +109,13 @@ abstract contract PosLimitBase is PosBase {
     /// members' liability anchors and lot holds, and releases the incumbent's references on unlock. The RecoveryAck is delivered ALONE with a
     /// one-record allowance, then its Boundary; health, cursors and holder facts are checked.
     function _recovery(uint256 k, bool savedClosure) internal {
-        _growTo(k);
+        _recovery(k, savedClosure, false);
+    }
+
+    /// @dev `fullIndex`: the index is also full (V = 8: outsiders that outrank the incumbents) when the recovery runs.
+    function _recovery(uint256 k, bool savedClosure, bool fullIndex) internal {
+        if (fullIndex) _atTheLimit();
+        else _growTo(k);
         _advance(300, 200);
         assertEq(_vrElect(ORIGIN), VRC.ELECT_RESERVED);
         bytes32 rid = vr.openOutput();
@@ -173,6 +179,11 @@ abstract contract PosLimitBase is PosBase {
         }
         emit log_named_uint("  least gas the adapter must receive", hi);
         if (!(savedClosure && k == 6)) assertLe(hi, RECORD_STIPEND);
+        if (fullIndex) {
+            emit log_named_uint(
+                "  full index: forwarded gas headroom below 2.0 M", RECORD_STIPEND - hi
+            );
+        }
         // through VR: the RecoveryAck alone, then its Boundary
         _coolAll();
         g = gasleft();
@@ -257,6 +268,13 @@ contract PosLimitTest is PosLimitBase {
 
     function test_savedClosureRecoveryK5ThroughVR() public {
         _recovery(5, true);
+    }
+
+    /// @dev astra's regression (#92 round 3): the full-index setup (V = 8) with the K = 5 recovery and both closures staged. She measured
+    /// 1,924,873 consumed and at most 1,986,101 forwarded, only 13,899 below the 2.0 M ceiling: it must stay pinned (the asserts in
+    /// `_recovery` bound the callback and the forwarded gas by RECORD_STIPEND and require a healthy VR, matching cursors and holder facts).
+    function test_savedClosureRecoveryK5WithAFullIndexThroughVR() public {
+        _recovery(5, true, true);
     }
 }
 

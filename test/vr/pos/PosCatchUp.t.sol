@@ -3,7 +3,15 @@ pragma solidity 0.8.37;
 
 import {PosBase} from "./PosBase.sol";
 import {VRC} from "../../../src/vr/VRConstants.sol";
-import {Delegation, DelegationRequest, ElectionParams, RecordKind, BoundaryData, ClosureData, HolderRetirementData} from "../../../src/p85/P85Types.sol";
+import {
+    Delegation,
+    DelegationRequest,
+    ElectionParams,
+    RecordKind,
+    BoundaryData,
+    ClosureData,
+    HolderRetirementData
+} from "../../../src/p85/P85Types.sol";
 
 /// @notice Sustained catch-up at the pinned H = 16 of the PoS-capable build (VT-04b; astra #1217 r1 and r2): a root producer and an EVM
 /// consumer over the real PoS stack (VR, the adapter, P85 custody as holder 0), at an explicit testnet operating limit.
@@ -28,7 +36,14 @@ contract PosCatchUpTest is PosBase {
     /// @dev Churn is not the subject: continuity 1/1 (as the lifecycle test), the profile's committee of at most 5.
     function _electionParams() internal pure override returns (ElectionParams memory) {
         return ElectionParams({
-            nMin: 4, nTarget: 5, nMax: 5, maxM: 4, distNum: 1, distDen: 1, cadenceRounds: 200, cadenceSeconds: 100
+            nMin: 4,
+            nTarget: 5,
+            nMax: 5,
+            maxM: 4,
+            distNum: 1,
+            distDen: 1,
+            cadenceRounds: 200,
+            cadenceSeconds: 100
         });
     }
     uint256 internal constant IMPORT_CAP = 32;
@@ -76,7 +91,11 @@ contract PosCatchUpTest is PosBase {
         for (uint256 i = released.length > 10 ? released.length - 10 : 0; i < released.length; ++i) {
             window += released[i];
         }
-        assertLe(window, 72, "the rolling ten-block budget: 4 per block plus one burst of 32 counts every projected record");
+        assertLe(
+            window,
+            72,
+            "the rolling ten-block budget: 4 per block plus one burst of 32 counts every projected record"
+        );
     }
 
     /// @dev Independent arrivals, ordered by the root regardless of any handoff: foreign Closures (a Closure per closed epoch or
@@ -160,13 +179,17 @@ contract PosCatchUpTest is PosBase {
             }
         } else if (stage == 2) {
             // excluded by the next election and its last reference closed (the Closure of the assignment it was in has been applied)
-            if (!_inCommittee(jx.id) && custody.liveExposures(jx.id, jxGen) == 0
-                && progress >= custody.maxLiabilityAnchor(jx.id, jxGen)) {
+            if (
+                !_inCommittee(jx.id) && custody.liveExposures(jx.id, jxGen) == 0
+                    && progress >= custody.maxLiabilityAnchor(jx.id, jxGen)
+            ) {
                 // the retirement lands in the middle of a full burst
                 _projectArrivals(16);
                 _project(
                     RecordKind.HolderRetirement,
-                    abi.encode(HolderRetirementData(0, jx.id, jxGen, custody.exposureChain(jx.id, jxGen)))
+                    abi.encode(
+                        HolderRetirementData(0, jx.id, jxGen, custody.exposureChain(jx.id, jxGen))
+                    )
                 );
                 _projectArrivals(16);
                 retirementBlock = block.number;
@@ -257,7 +280,9 @@ contract PosCatchUpTest is PosBase {
                 if (b % 10 == 0) _projectArrivals(32); // a full projected block
             }
             _release(b);
-            if (target - roots.recordCount() > maxImportLag) maxImportLag = target - roots.recordCount();
+            if (target - roots.recordCount() > maxImportLag) {
+                maxImportLag = target - roots.recordCount();
+            }
             _import();
             uint64 imported = roots.recordCount();
             uint64 cursor = vr.recordCursor();
@@ -268,7 +293,11 @@ contract PosCatchUpTest is PosBase {
             uint8 o = _vrElect(ORIGIN);
             if (target - vr.recordCursor() > maxBacklog) maxBacklog = target - vr.recordCursor();
             if (o == VRC.ELECT_RESERVED) {
-                assertEq(vr.recordCursor(), roots.recordCount(), "an election reserves only when VR is caught up with the registry");
+                assertEq(
+                    vr.recordCursor(),
+                    roots.recordCount(),
+                    "an election reserves only when VR is caught up with the registry"
+                );
                 electionBlock[elections < 3 ? elections : 2] = b;
                 ++elections;
                 emit log_named_uint("election reserved at block", b);
@@ -277,14 +306,19 @@ contract PosCatchUpTest is PosBase {
                 open2 = open;
                 assertEq(_publishResult2(open), VRC.PUB_PUBLISHED, "publish");
                 uint64 e = vr.config().knownRootEpoch + 1;
-                _project(RecordKind.Ack, ackData(open, 150 + progress, 160 + progress, 161 + progress));
+                _project(
+                    RecordKind.Ack, ackData(open, 150 + progress, 160 + progress, 161 + progress)
+                );
                 _project(
                     RecordKind.Boundary, abi.encode(BoundaryData(open, e, e, e, 5_000, false, 0))
                 );
                 // the incumbent assignment closes (the roots project its Closure from the retained bundle)
                 _project(RecordKind.Closure, closureData(incumbent, 150 + progress, "closure"));
                 incumbent = election.result(open).assignmentID;
-            } else if (vr.openOutput() == bytes32(0) && vr.recordCursor() < imported + 0 && imported > cursor + n) {
+            } else if (
+                vr.openOutput() == bytes32(0) && vr.recordCursor() < imported + 0
+                    && imported > cursor + n
+            ) {
                 ++notReservedWhileDue;
             }
             if (b % 40 == 0 || b == 3) {
@@ -299,7 +333,14 @@ contract PosCatchUpTest is PosBase {
             assertEq(vr.health(), VRC.HEALTHY, "healthy");
         }
         // the producer stopped at block 330 and elections are no longer driven: drain what is still queued, imported or unapplied
-        for (uint256 b = 400; b < 500 && (dHead < dKind.length || vr.recordCursor() < target || custody.recordCursor() < target); ++b) {
+        for (
+            uint256 b = 400;
+            b < 500
+                && (dHead < dKind.length
+                    || vr.recordCursor() < target
+                    || custody.recordCursor() < target);
+            ++b
+        ) {
             _advance(uint64(ROOT_PER_EVM), 10);
             _release(b);
             _import();
@@ -313,15 +354,29 @@ contract PosCatchUpTest is PosBase {
         assertEq(roots.recordCount(), target, "imported = target");
         assertEq(vr.recordCursor(), target, "VR cursor = target");
         assertEq(custody.recordCursor(), target, "custody cursor = target");
-        assertGe(firstReservedBlock, 3, "the election due at the start waits for the catch-up of a 55-record backlog plus the arrivals");
+        assertGe(
+            firstReservedBlock,
+            3,
+            "the election due at the start waits for the catch-up of a 55-record backlog plus the arrivals"
+        );
         assertLe(firstReservedBlock, 8, "and resumes within eight blocks");
         assertEq(cycle, 3, "three exits of successive identities completed");
-        assertEq(retirementsImported, 3, "custody imported three holder-0 retirements during the run");
-        assertGe(elections, 5, "elections keep coming due and completing under the continuing arrivals");
-        assertEq(_state(open), VRC.OUT_ACKNOWLEDGED, "the last election's output was acknowledged through the stream");
+        assertEq(
+            retirementsImported, 3, "custody imported three holder-0 retirements during the run"
+        );
+        assertGe(
+            elections, 5, "elections keep coming due and completing under the continuing arrivals"
+        );
+        assertEq(
+            _state(open),
+            VRC.OUT_ACKNOWLEDGED,
+            "the last election's output was acknowledged through the stream"
+        );
         assertGt(maxImportLag, 0, "the import lag was observed (target ahead of the registry)");
         assertGt(maxApplyLag, 0, "the apply lag was observed (registry ahead of VR)");
-        assertLe(maxBacklog, 3 * IMPORT_CAP + 2 * ROOT_PER_EVM, "the accumulated backlog stays bounded");
+        assertLe(
+            maxBacklog, 3 * IMPORT_CAP + 2 * ROOT_PER_EVM, "the accumulated backlog stays bounded"
+        );
         emit log_named_uint("max import lag", maxImportLag);
         emit log_named_uint("max apply lag", maxApplyLag);
         emit log_named_uint("max backlog", maxBacklog);
