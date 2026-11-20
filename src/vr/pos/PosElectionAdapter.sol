@@ -10,7 +10,6 @@ import {VRCodec} from "../VRCodec.sol";
 import {Member, IVR, IElectionModule} from "../VRTypes.sol";
 import {ElectionPolicy} from "../../p85/ElectionPolicy.sol";
 import {IStakeCustody, IPosAdapter} from "../../p85/IP85.sol";
-import {Delegation} from "../../p85/P85Types.sol";
 
 /// @notice The two custody calls the adapter makes that `IStakeCustody` does not carry.
 interface IPosCustody is IStakeCustody {
@@ -38,6 +37,22 @@ interface IPosCustody is IStakeCustody {
 /// requires an identity's VR binding (words, generation) to equal its P85 delegation. A result whose member does not match VR's current or
 /// staged binding is never served (NotMine) and expires, so a misaligned identity cannot Fault the registry. Carry-over (native) boundaries
 /// break custody's liability continuity; the adapter is then Faulted by its own records, which is the prototype's stated limit.
+///
+/// **Ack import order (design 3.8, loss row "after the acknowledgement block, before the Ack import").** Custody's `applyRootRecords` is
+/// permissionless, so either consumer may import the committed Ack first. VR first: the result is still Reserved in P85, a loss marks it
+/// and invalidates it in VR (Invalidated), and the imported pair then acknowledges it. Custody first: P85's result is resolved, a later
+/// coverage change finds nothing reserved and invalidates nothing, VR still shows Published until it imports the pair, and then
+/// Acknowledged. The committed outcome is the same (a committed H always wins); only the intermediate VR state depends on who imported
+/// first (both orders are tested: PosLifecycle).
+///
+/// **Eligibility (astra, #92).** `ElectionPolicy` skips an identity whose delegation is not its VR binding (words and generation), so a
+/// misaligned identity is never selected; at publication the adapter re-checks each frozen member against VR (key hashes, payee and
+/// generation) and takes the node words from VR's binding, so a later `admitDelegation` cannot make an aligned frozen snapshot unservable.
+///
+/// **Measured limit (sol, #92).** VR's callback caps carry the P85 election and publication for a committee of at most 6 drawn from an
+/// index of at most 8 identities of one lot each (the genesis script refuses more; test/vr/pos/PosLimit.t.sol). A RecoveryAck derives K
+/// exposures in one record and exceeds CAP_RECORD already at K = 4 (1.63 M cold): recovery of a failed handoff is not supported through VR
+/// by this prototype (it faults VR) until custody's per-exposure storage is cut or the cap raised.
 ///
 /// Immutable, no proxy. `ELECTION` and `CUSTODY` are the generation's fixed modules.
 contract PosElectionAdapter is IElectionModule, IPosAdapter {
@@ -171,7 +186,7 @@ contract PosElectionAdapter is IElectionModule, IPosAdapter {
         Member[] memory ms = new Member[](f.length);
         for (uint256 i = 0; i < f.length; ++i) {
             Member memory m = _member(f[i], eids[i]);
-            if (m.id == 0 || !_aligned(m)) return VRCodec.packStatus(VRC.STATUS_NOT_MINE);
+            if (m.id == 0) return VRCodec.packStatus(VRC.STATUS_NOT_MINE);
             ms[i] = m;
         }
         VRCodec.OutputHeader memory h;
@@ -183,26 +198,29 @@ contract PosElectionAdapter is IElectionModule, IPosAdapter {
         return VRCodec.packOutput(h, ms);
     }
 
-    /// @dev One frozen member as VR's member words: the staged-and-still-frozen delegation's node words, the frozen generation, the quantized and raw weights, the exposure's
-    /// frozen key hashes and operator payee, and custody's member digest of the exposure (a recovery copy or genesis seat: VR's; a primary: the keccak of the lot list).
+    /// @dev One frozen member as VR's member words: the quantized and raw weights and the exposure's frozen key hashes and operator payee
+    /// (custody), the generation, and the node words of the VR binding those frozen keys, payee and generation identify (current, or
+    /// staged at g + 1). VR is the authority for the words, so a later `admitDelegation` cannot make an aligned frozen member
+    /// unservable. A member VR does not hold as frozen is returned with id 0 (the caller serves nothing).
     function _member(ElectionPolicy.Frozen memory f, bytes32 exposureId)
         internal
         view
         returns (Member memory m)
     {
-        // the node words are the staged delegation's, valid only while it is still the frozen record: a later `admitDelegation` replaced
-        // it, so the frozen binding's words are gone and the result is not served (it expires)
-        (Delegation memory d, bytes32 bindingHash,) = ELECTION.delegation(f.id, f.generation);
-        if (bindingHash != f.bindingHash) return m; // id 0: the caller refuses it
         (,,,,, bytes32 rootKeyHash, bytes32 evmKeyHash, address payee,,) =
             CUSTODY.exposures(exposureId);
+        Member memory b = IVR(VR).bindingOf(f.id, false);
+        if (!_matches(b, f.generation, rootKeyHash, evmKeyHash, payee)) {
+            b = IVR(VR).bindingOf(f.id, true);
+            if (!_matches(b, f.generation, rootKeyHash, evmKeyHash, payee)) return m;
+        }
         m.id = f.id;
         m.generation = f.generation;
         m.weight = f.weight;
         m.rawWeight = f.raw;
-        m.rootNodeWord = d.rootNodeID;
+        m.rootNodeWord = b.rootNodeWord;
         m.rootKeyHash = rootKeyHash;
-        m.evmNodeWord = d.evmNodeID;
+        m.evmNodeWord = b.evmNodeWord;
         m.evmKeyHash = evmKeyHash;
         m.payee = payee;
         bytes32 md = CUSTODY.exposureMemberDigest(exposureId);
@@ -210,18 +228,13 @@ contract PosElectionAdapter is IElectionModule, IPosAdapter {
             md != bytes32(0) ? md : keccak256(abi.encode(CUSTODY.exposureLots(exposureId)));
     }
 
-    /// @dev VR accepts only words equal to the identity's current binding (generation g) or its staged one (g + 1); a member that is not
-    /// served as such would Fault the module, so it is not served.
-    function _aligned(Member memory m) internal view returns (bool) {
-        Member memory cur = IVR(VR).bindingOf(m.id, false);
-        if (_sameBinding(cur, m)) return true;
-        return _sameBinding(IVR(VR).bindingOf(m.id, true), m);
-    }
-
-    function _sameBinding(Member memory a, Member memory b) private pure returns (bool) {
-        return a.generation != 0 && a.generation == b.generation && a.rootNodeWord == b.rootNodeWord
-            && a.rootKeyHash == b.rootKeyHash && a.evmNodeWord == b.evmNodeWord
-            && a.evmKeyHash == b.evmKeyHash && a.payee == b.payee;
+    function _matches(Member memory b, uint64 generation, bytes32 rk, bytes32 ek, address payee)
+        private
+        pure
+        returns (bool)
+    {
+        return b.generation != 0 && b.generation == generation && b.rootKeyHash == rk
+            && b.evmKeyHash == ek && b.payee == payee;
     }
 
     /// @notice Root records (design 3.8): custody pulls them from the SealRegistry itself, from its own cursor, up to the end of this

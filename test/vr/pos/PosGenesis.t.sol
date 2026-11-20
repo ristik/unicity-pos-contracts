@@ -23,6 +23,8 @@ contract PosGenesisTest is Test {
     function _input() internal view returns (string memory) {
         string memory plan = vm.readFile("test/vr/fixtures/vr-genesis-input.json");
         plan = vm.replace(plan, "\"rMax\": 8", "\"rMax\": 4");
+        plan = vm.replace(plan, "\"nMax\": 16", "\"nMax\": 6");
+        plan = vm.replace(plan, "\"vMax\": 16", "\"vMax\": 8");
         plan = vm.replace(plan, "\"maxGas\": 200000000", "\"maxGas\": 200000000");
         string memory pos = string.concat(
             ',"pos":{"bondUnit":"1000000000000000000","treasury":"0x00000000000000000000000000000000000000ee",',
@@ -40,6 +42,23 @@ contract PosGenesisTest is Test {
             head[i] = b[i];
         }
         return string.concat(string(head), pos);
+    }
+
+    function test_theGenesisRefusesALimitAboveTheMeasuredOne() public {
+        string memory ok = _input();
+        string[3] memory bad = [
+            vm.replace(ok, "\"nMax\": 6", "\"nMax\": 7"),
+            vm.replace(ok, "\"vMax\": 8", "\"vMax\": 9"),
+            vm.replace(ok, "\"lMax\": 1", "\"lMax\": 2")
+        ];
+        for (uint256 i; i < bad.length; ++i) {
+            vm.setEnv("VR_GENESIS_JSON", bad[i]);
+            vm.setEnv("VR_OUT", OUT);
+            vm.createDir(OUT, true);
+            VRPosGenesis s = new VRPosGenesis();
+            vm.expectRevert();
+            s.run();
+        }
     }
 
     function test_thePoSGenerationsGenesisIsConsistent() public {

@@ -28,6 +28,24 @@ import {Selection} from "./Selection.sol";
 import {SelectionEngine} from "./SelectionEngine.sol";
 import {EligibilityReader} from "./EligibilityReader.sol";
 
+/// @dev The one VR view the eligibility check reads (`ValidatorRegistry.bindingOf`).
+interface IVRBinding {
+    struct Word {
+        uint64 id;
+        uint64 generation;
+        uint64 weight;
+        uint64 rawWeight;
+        bytes32 rootNodeWord;
+        bytes32 rootKeyHash;
+        bytes32 evmNodeWord;
+        bytes32 evmKeyHash;
+        address payee;
+        bytes32 exposureDigest;
+    }
+
+    function bindingOf(uint64 id, bool staged) external view returns (Word memory);
+}
+
 /// @title ElectionPolicy
 /// @notice The bounded live index, the owner-authenticated `admitDelegation` mutator with its staged (binding, operatorPayee) storage and
 /// replay nonces keyed by (StakingID, generation) (PR2), and the threshold election (PR3 slice 3): `elect(origin)` is called by the
@@ -247,6 +265,10 @@ contract ElectionPolicy {
     /// `elect` (the system hook calls VR, which calls the adapter) and it receives `outputLost` when a result is first marked lost. Zero on the
     /// plain P85 generation: SYSTEM_CALLER calls `elect` and there is no callback. Appended last: no slot moves.
     address public hookCaller;
+    /// @dev VT-04 (astra, #92): the validator registry a VR generation's identities must be aligned with (zero on the plain P85
+    /// generation). `_eligible` skips an identity whose delegation is not its VR binding, so a misaligned identity is never selected and
+    /// cannot hold up rotations. Appended last: no slot moves.
+    address public registry;
 
     /// @param factory_ the deployment factory that will initialize this module, fixed at construction. The module is deployed first so
     /// the factory's own creation code stays small; only that factory can initialize it, and it can do so once.
@@ -286,6 +308,8 @@ contract ElectionPolicy {
         policySource = IPolicySource(m.policySource);
         // forge-lint: disable-next-line(missing-events-access-control)
         hookCaller = m.hookCaller;
+        // forge-lint: disable-next-line(missing-events-access-control)
+        registry = m.deployment;
         ElectionParams calldata p = m.electionParams;
         if (
             p.nMin == 0 || p.nTarget < p.nMin || p.nMax < p.nTarget || p.nMax > 16 || p.distDen == 0
@@ -678,6 +702,25 @@ contract ElectionPolicy {
         );
     }
 
+    /// @dev The delegation is the identity's VR binding at the custody generation: the current binding at generation g, or the staged one at
+    /// g + 1 (the words VR accepts in an output).
+    function _vrAligned(uint64 id, uint64 generation, Delegation storage d)
+        private
+        view
+        returns (bool)
+    {
+        IVRBinding vr = IVRBinding(registry);
+        for (uint8 k = 0; k < 2; ++k) {
+            IVRBinding.Word memory w = vr.bindingOf(id, k == 1);
+            if (
+                w.generation == generation && w.rootNodeWord == d.rootNodeID
+                    && w.rootKeyHash == keccak256(d.rootKey) && w.evmNodeWord == d.evmNodeID
+                    && w.evmKeyHash == keccak256(d.evmKey) && w.payee == d.operatorPayee
+            ) return true;
+        }
+        return false;
+    }
+
     /// @dev The snapshot's eligible identities, ascending by StakingID. Primary eligibility (design v5 section 5): no earlier
     /// retirement request or exclusion (the reader's position checks), a delegated binding of the open generation whose root key is the
     /// identity's current or staged root key (checked here, against this contract's staged bindings), whose EVM key custody registered,
@@ -695,6 +738,9 @@ contract ElectionPolicy {
                 rk != ps[i].rootKeyHash
                     && (ps[i].stagedRootKeyHash == bytes32(0) || rk != ps[i].stagedRootKeyHash)
             ) {
+                continue;
+            }
+            if (registry != address(0) && !_vrAligned(ps[i].id, ps[i].generation, s.binding)) {
                 continue;
             }
             tmp[n].id = ps[i].id;

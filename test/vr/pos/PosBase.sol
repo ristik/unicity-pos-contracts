@@ -97,10 +97,10 @@ abstract contract PosBase is P85Flow {
         g.nMin = p.nMin;
         g.nTarget = p.nTarget;
         g.nMax = p.nMax;
-        g.vMax = 128;
-        g.lMax = 8;
-        g.rMax = 4;
-        g.maxBatch = 32;
+        g.vMax = _manifestLimits().vMax;
+        g.lMax = _manifestLimits().lMax;
+        g.rMax = _manifestLimits().rMax;
+        g.maxBatch = _manifestLimits().maxBatch;
         g.knownRootEpoch = 1;
         g.epochStartProgress = 0;
         g.fees = FeeSet(1_000_000, 8, address(0xC011EC7));
@@ -131,6 +131,29 @@ abstract contract PosBase is P85Flow {
                 keccak256("unicity.p85.exposure"), NETWORK, block.chainid, VR_ADDR, assignmentID, id
             )
         );
+    }
+
+    /// @dev Every account of the generation cold again (the system call of a fresh transaction meets them so; a measurement inside the
+    /// transaction that built the state is warm and a lower bound).
+    function _coolAll() internal {
+        address[10] memory a = [
+            VR_ADDR,
+            ADAPTER,
+            address(custody),
+            address(election),
+            address(evidence),
+            address(election.selection()),
+            address(election.reader()),
+            address(election.policySource()),
+            address(factory.REWARDS()),
+            VRC.SEAL_REGISTRY
+        ];
+        for (uint256 i; i < a.length; ++i) {
+            vm.cool(a[i]);
+        }
+        vm.cool(address(uint160((uint256(0xff) << 152) | 4)));
+        vm.cool(address(uint160((uint256(0xff) << 152) | 5)));
+        vm.cool(address(uint160((uint256(0xff) << 152) | 6)));
     }
 
     // ---- clock and hooks ----
@@ -248,6 +271,11 @@ abstract contract PosBase is P85Flow {
     }
 
     function _joinPos(uint256 bond) internal returns (Joiner memory j) {
+        return _joinPosX(bond, false);
+    }
+
+    /// @dev `misalign`: the P85 delegation names another operator payee than the VR registration (the identity is not VR-aligned).
+    function _joinPosX(uint256 bond, bool misalign) internal returns (Joiner memory j) {
         uint256 n = ++joinerCount;
         j.ownerPk = 0x7000 + n;
         j.rootPk = 0x7100 + n;
@@ -292,7 +320,7 @@ abstract contract PosBase is P85Flow {
             rootKey: r.rootKey,
             evmNodeID: keccak256(bytes(r.evmNodeID)),
             evmKey: r.evmKey,
-            operatorPayee: j.payee
+            operatorPayee: misalign ? vm.addr(0x7f00 + n) : j.payee
         });
         dr.expiry = type(uint64).max;
         bytes32 dd = election.delegationDigest(dr);

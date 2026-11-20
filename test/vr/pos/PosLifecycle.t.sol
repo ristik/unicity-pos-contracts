@@ -7,6 +7,8 @@ import {VRCodec} from "../../../src/vr/VRCodec.sol";
 import {Member, OutputView} from "../../../src/vr/VRTypes.sol";
 import {ElectionPolicy} from "../../../src/p85/ElectionPolicy.sol";
 import {
+    Delegation,
+    DelegationRequest,
     ElectionParams,
     RecordKind,
     RetirementData,
@@ -328,5 +330,64 @@ contract PosLifecycleTest is PosBase {
         assertTrue(faulted, "the cap is reached before 16 members");
         assertGe(fitted, 6);
         assertLt(fitted, 16);
+    }
+
+    /// @dev The Ack can reach custody before VR (custody's `applyRootRecords` is permissionless). That resolves P85's result, so a later loss
+    /// has nothing to invalidate and VR still shows Published until it imports the pair: the outcome (Acknowledged) is the same as in the
+    /// VR-first order (test_lossAfterTheAckBlockBeforeTheAckImportIsInvalidatedThenAcknowledged); only the intermediate state differs.
+    function test_custodyFirstAckImportLeavesVRPublishedThenAcknowledged() public {
+        bytes32 rid = _electFromStake();
+        _publishResult(rid);
+        _ackRecord(rid);
+        _boundaryRecord(rid, false);
+        custody.applyRootRecords(2); // custody imports the Ack (and skips the Boundary) before VR
+        assertEq(election.openResult(), bytes32(0), "P85 resolved the result");
+        _lose(1); // nothing reserved to mark: no loss, no invalidation
+        assertEq(_state(rid), VRC.OUT_PUBLISHED, "VR has not imported yet");
+        _vrApplyAll(); // the adapter finds custody ahead and does nothing; VR acknowledges
+        assertEq(_state(rid), VRC.OUT_ACKNOWLEDGED);
+        assertEq(vr.lastAcked(), rid);
+        assertEq(custody.recordCursor(), vr.recordCursor());
+        _assertAllFacts();
+    }
+
+    /// @dev A misaligned identity (its delegation is not its VR binding) is not eligible, so it cannot be selected and hold up rotations: an
+    /// aligned alternative is elected and the rotation goes through.
+    function test_aMisalignedIdentityIsNotEligibleAndAnAlignedOneIsElected() public {
+        Joiner memory bad = _joinPosX(1_000 * UCT, true);
+        evmPkOf[bad.id] = bad.evmPk;
+        Joiner memory good = _joinPos(1_000 * UCT);
+        evmPkOf[good.id] = good.evmPk;
+        bytes32 rid = _elect2();
+        ElectionPolicy.Frozen[] memory f = election.frozenMembers(rid);
+        assertEq(f.length, N_GENESIS + 1);
+        assertEq(f[N_GENESIS].id, good.id);
+        _ackNext(rid);
+        assertEq(vr.committee().length, N_GENESIS + 1);
+        assertEq(vr.health(), VRC.HEALTHY);
+    }
+
+    /// @dev A delegation changed after the snapshot cannot make the aligned frozen member unservable: VR is the authority for the words.
+    function test_aLaterDelegationDoesNotMakeAFrozenAlignedSnapshotUnservable() public {
+        bytes32 rid = _electFromStake();
+        (Delegation memory d,, uint64 nonce) = election.delegation(1, 1);
+        DelegationRequest memory dr;
+        dr.id = 1;
+        dr.generation = 1;
+        dr.binding = d;
+        dr.binding.operatorPayee = address(0xBEEF);
+        dr.delegationNonce = nonce;
+        dr.expiry = type(uint64).max;
+        bytes32 dd = election.delegationDigest(dr);
+        election.admitDelegation(dr, sign(ownerPk(0), dd), sign(evmPk(0), dd));
+        assertEq(
+            _publishResult(rid),
+            VRC.PUB_PUBLISHED,
+            "served from the frozen exposure and VR's binding"
+        );
+        _ackRecord(rid);
+        _boundaryRecord(rid, false);
+        _vrApplyAll();
+        assertEq(_state(rid), VRC.OUT_ACKNOWLEDGED);
     }
 }
