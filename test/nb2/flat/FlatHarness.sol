@@ -76,7 +76,7 @@ abstract contract FlatHarness is Test {
         return FlatBindings.decode(g).cfg;
     }
 
-    function setUp() public {
+    function setUp() public virtual {
         vm.skip(!vm.exists(string.concat(DIR, "gamma.bin")));
         gamma = vm.readFileBinary(string.concat(DIR, "gamma.bin"));
         vm.chainId(31337);
