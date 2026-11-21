@@ -160,7 +160,7 @@ fn signed_nb2_flat_transcripts_on_native_b1() {
     let recovery_hash = keccak256([0x60, 0x03, 0x00]);
     let (_, recovery_code) = deploy(
         &mut db, fixture_pins, 3, artifact(&out, "FlatHarness.sol", "CorpusRecovery11"),
-        (cfg, lineage, receipts, dep_pins, generation, recovery_hash).abi_encode_params(),
+        (cfg, 31337u64, lineage, receipts, dep_pins, generation, recovery_hash).abi_encode_params(),
     );
     install(&mut db, RECOVERY, recovery_code);
     install(&mut db, REGISTRY, vec![0x60, 0x02, 0x00]);

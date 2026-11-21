@@ -195,10 +195,38 @@ contract FlatVectorsTest is FlatHarness {
         );
         assertEq(recovery.GENERATION(), FlatBindings.generation(salt, cfg.domain));
         assertEq(recovery.PINS(), pins);
+        _chainIdIsRechecked(actual, recovery, g);
         _creationMustFail(abi.encode(g, actual, salt, desc, bytes32(uint256(pins) ^ 1)));
         g[274] ^= 0x01;
         _creationMustFail(abi.encode(g, actual, salt, desc, pins));
         vm.expectRevert(BadBinding.selector);
         actual.readConfig(g);
+    }
+
+    // Both production routes refuse after a chain-ID change. With the right chain the same
+    // calldata proceeds past the session check (the evidence is for the reference domain: BadStep).
+    function _chainIdIsRechecked(
+        NativeBridgeVerifier11 actual,
+        NativeBridgeRecovery11 recovery,
+        bytes memory g
+    ) private {
+        (bytes memory start,) = _field(
+            vm.readFileBinary(string.concat(_path("root"), "trace.bin")), 0
+        );
+        bytes memory advance =
+            vm.readFileBinary(string.concat(_path("cold/advance-kind1-count1"), "calldata.bin"));
+        vm.chainId(1);
+        vm.expectRevert(BadBinding.selector);
+        actual.readConfig(g);
+        (bool ok, bytes memory why) = address(recovery).call(start);
+        assertFalse(ok);
+        assertEq(why, abi.encodeWithSelector(BadPredecessor.selector));
+        (ok, why) = address(recovery).call(advance);
+        assertFalse(ok);
+        assertEq(why, abi.encodeWithSelector(BadPredecessor.selector));
+        vm.chainId(31337);
+        (ok, why) = address(recovery).call(start);
+        assertFalse(ok);
+        assertEq(why, abi.encodeWithSelector(BadStep.selector));
     }
 }

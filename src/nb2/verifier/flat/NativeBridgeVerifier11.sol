@@ -117,7 +117,18 @@ abstract contract FlatOrdinary {
         else W.releaseMemory(scratch);
     }
 
-    function _config(bytes calldata gamma) internal view virtual returns (FlatConfig memory);
+    /// @dev Shared Γ validation: the decoded configuration, this chain and the lineage helper.
+    /// The deployment-specific identity (ordinary address and hash, profile, registry) is `_bind`.
+    function _config(bytes calldata gamma) internal view returns (FlatConfig memory) {
+        FlatBindings.ConfigBinding memory binding = FlatBindings.decode(gamma);
+        if (binding.chainId != block.chainid || address(LINEAGE).codehash != LINEAGE_HASH) {
+            revert BadBinding();
+        }
+        _bind(binding);
+        return binding.cfg;
+    }
+
+    function _bind(FlatBindings.ConfigBinding memory binding) internal view virtual;
 
     function _add(Map memory map, bytes32 key, bytes32 value) private pure returns (bool) {
         if (key == 0) {
@@ -188,14 +199,16 @@ contract NativeBridgeVerifier11 is FlatOrdinary {
         return _config(gamma);
     }
 
-    function _config(bytes calldata gamma) internal view override returns (FlatConfig memory) {
-        FlatBindings.ConfigBinding memory binding = FlatBindings.decode(gamma);
+    function readChainId(bytes calldata gamma) external view returns (uint64) {
+        _config(gamma);
+        return FlatBindings.decode(gamma).chainId;
+    }
+
+    function _bind(FlatBindings.ConfigBinding memory binding) internal view override {
         if (
             binding.ordinary != address(this) || binding.ordinaryHash != address(this).codehash
-                || binding.profileHash != PROFILE_HASH || binding.chainId != block.chainid
+                || binding.profileHash != PROFILE_HASH
                 || FlatNative.REGISTRY.codehash != REGISTRY_HASH
-                || address(LINEAGE).codehash != LINEAGE_HASH
         ) revert BadBinding();
-        return binding.cfg;
     }
 }

@@ -9,6 +9,8 @@ package nb2ref
 //   O <scenario> <op> <pos> <val> <result>             ordinary evidence mutation
 //   R <scenario> <record> <op> <pos> <val> <result>    run(bytes) packet mutation
 //   A <case> <op> <pos> <val> <result>                 advanceGaps(bytes) packet mutation
+//   M <scenario> <pages> <operation count> <operations hex> <op> <pos> <val> <result>
+//                                                      like S for every operation of the first Start packet
 //   S <scenario> <first operation hex> <op> <pos> <val> <result>
 //                                                      Start packet over mutated evidence with a freshly
 //                                                      built page tree, so the step logic is reached
@@ -67,6 +69,18 @@ func diffMutations(name string, size, count int) []diffMutation {
 	return out
 }
 
+// diffMutationsIn flips bytes only inside [lo, hi): the framed operations or the gap proofs.
+func diffMutationsIn(name string, lo, hi, count int) []diffMutation {
+	digest := HU([]byte(name))
+	seed := diffRng(binary.BigEndian.Uint64(digest[:8]))
+	vals := []byte{0x01, 0x80, 0xff}
+	var out []diffMutation
+	for len(out) < count {
+		out = append(out, diffMutation{'x', lo + int(seed.next()%uint64(hi-lo)), vals[seed.next()%3]})
+	}
+	return out
+}
+
 func (m diffMutation) apply(b []byte) []byte {
 	switch m.op {
 	case 't':
@@ -81,6 +95,10 @@ func (m diffMutation) apply(b []byte) []byte {
 
 func diffStage(t *testing.T, err error) string {
 	t.Helper()
+	var pos *PositionError
+	if errors.As(err, &pos) && pos.Rule == ErrBadGapProof {
+		return fmt.Sprintf("BadGapProof:%d", pos.Position)
+	}
 	for _, s := range []struct {
 		e error
 		n string
@@ -91,6 +109,17 @@ func diffStage(t *testing.T, err error) string {
 	}
 	t.Fatalf("unmapped oracle error: %v", err)
 	return ""
+}
+
+func diffOperation(t *testing.T, op FlatOperation) []byte {
+	t.Helper()
+	out := op.SID.appendTo([]byte{byte(op.Code)})
+	for _, c := range op.Claims {
+		var err error
+		out, err = c.appendTo(out)
+		require.NoError(t, err)
+	}
+	return out
 }
 
 func diffRead(t *testing.T, dir, name string) []byte {
@@ -171,6 +200,26 @@ func TestFlatDifferentialCorpus(t *testing.T) {
 				}
 				fmt.Fprintf(&r, "R %s %d %c %d %x %s\n", name, rec, m.op, m.pos, m.val, got)
 			}
+			// Targeted: only the framed operations (sparse openings and opcodes), so the step
+			// logic of later records is reached instead of page authentication.
+			pk, err := DecodeFlatRun(calldata)
+			require.NoError(t, err)
+			opsLen := 1
+			for _, op := range pk.Operations {
+				opsLen += len(diffOperation(t, op))
+			}
+			end := 68 + int(binary.BigEndian.Uint64(calldata[60:68]))
+			for _, m := range diffMutationsIn(fmt.Sprintf("RO/%s/%d", name, rec), end-opsLen, end, 40) {
+				got := ""
+				res, err := v.RunFlat(m.apply(calldata))
+				if err != nil {
+					got = diffStage(t, err)
+				} else {
+					log := res.Event.Log(v.deployment.Recovery)
+					got = "ok:" + hex.EncodeToString(bytes.Join([][]byte{log.Topics[0][:], log.Topics[1][:], log.Data}, nil))
+				}
+				fmt.Fprintf(&r, "R %s %d %c %d %x %s\n", name, rec, m.op, m.pos, m.val, got)
+			}
 		}
 	}
 	for _, name := range runs {
@@ -224,11 +273,55 @@ func TestFlatDifferentialCorpus(t *testing.T) {
 			}
 			fmt.Fprintf(&st, "S %s %x %c %d %x %s\n", name, opBytes, m.op, m.pos, m.val, got)
 		}
+		// Every operation of the first Start packet over mutated evidence.
+		var all []byte
+		for _, o := range packet.Operations {
+			all = append(all, diffOperation(t, o)...)
+		}
+		span := min(len(packet.Pages)*FlatPageBytes, len(evidence))
+		for _, m := range diffMutationsIn("M/"+name, 0, span, 120) {
+			mutated := m.apply(evidence)
+			e, err := NewFlatEvidence(mutated)
+			if err != nil {
+				continue
+			}
+			p := FlatRunPacket{Header: e.Header(), Operations: packet.Operations}
+			for i := uint64(0); i < uint64(len(packet.Pages)) && i < flatPageCount(uint64(len(mutated))); i++ {
+				page, err := e.Page(i)
+				require.NoError(t, err)
+				p.Pages = append(p.Pages, page)
+			}
+			data, err := p.Calldata()
+			if err != nil {
+				continue
+			}
+			got := ""
+			res, err := v.RunFlat(data)
+			if err != nil {
+				got = diffStage(t, err)
+			} else {
+				log := res.Event.Log(v.deployment.Recovery)
+				got = "ok:" + hex.EncodeToString(bytes.Join([][]byte{log.Topics[0][:], log.Topics[1][:], log.Data}, nil))
+			}
+			fmt.Fprintf(&st, "M %s %d %d %x %c %d %x %s\n", name, len(packet.Pages), len(packet.Operations), all, m.op, m.pos, m.val, got)
+		}
 	}
 	_, v, _ := flatFixtureVerifier(t)
 	for _, name := range []string{"advance-kind1-count1", "advance-kind2-count1"} {
 		wire := diffRead(t, filepath.Join(root, "cold", name), "calldata.bin")
 		for _, m := range diffMutations("A/"+name, len(wire), 160) {
+			got := ""
+			ev, err := v.AdvanceFlatGaps(m.apply(wire))
+			if err != nil {
+				got = diffStage(t, err)
+			} else {
+				log := ev.Log(v.deployment.Recovery)
+				got = "ok:" + hex.EncodeToString(bytes.Join([][]byte{log.Topics[0][:], log.Topics[1][:], log.Data}, nil))
+			}
+			fmt.Fprintf(&a, "A %s %c %d %x %s\n", name, m.op, m.pos, m.val, got)
+		}
+		gapEnd := 68 + int(binary.BigEndian.Uint64(wire[60:68]))
+		for _, m := range diffMutationsIn("AG/"+name, gapEnd-257, gapEnd, 60) {
 			got := ""
 			ev, err := v.AdvanceFlatGaps(m.apply(wire))
 			if err != nil {

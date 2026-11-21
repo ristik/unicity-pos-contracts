@@ -73,7 +73,7 @@ contract FlatDifferentialTest is FlatHarness {
             this.runLine(line);
             ++count;
         }
-        assertEq(count, 576);
+        assertEq(count, 1056);
         vm.closeFile(file);
     }
 
@@ -97,7 +97,7 @@ contract FlatDifferentialTest is FlatHarness {
             this.advanceLine(line);
             ++count;
         }
-        assertEq(count, 320);
+        assertEq(count, 440);
         vm.closeFile(file);
     }
 
@@ -123,7 +123,7 @@ contract FlatDifferentialTest is FlatHarness {
             this.startLine(line);
             ++count;
         }
-        assertEq(count, 2093);
+        assertEq(count, 2933);
         vm.closeFile(file);
     }
 
@@ -131,24 +131,37 @@ contract FlatDifferentialTest is FlatHarness {
         string[] memory f = vm.split(line, " ");
         _trust(f[1]);
         bytes memory evidence = vm.readFileBinary(string.concat(_path(f[1]), "evidence.bin"));
-        uint256 end = 14;
-        for (uint256 i; i < 3; ++i) {
-            end += 4 + uint32(bytes4(_word(evidence, end)));
+        if (bytes(f[0])[0] == "S") {
+            uint256 end = 14;
+            for (uint256 i; i < 3; ++i) {
+                end += 4 + uint32(bytes4(_word(evidence, end)));
+            }
+            end += 8;
+            bytes memory input = _startPacket(
+                _mutate(evidence, f[3], f[4], f[5]),
+                (end - 1) / 4096 + 1,
+                1,
+                vm.parseBytes(string.concat("0x", f[2]))
+            );
+            _compare(RECOVERY, input, f[6], line);
+        } else {
+            // M <scenario> <pages> <operation count> <operations> <op> <pos> <val> <result>
+            bytes memory input = _startPacket(
+                _mutate(evidence, f[5], f[6], f[7]),
+                vm.parseUint(f[2]),
+                vm.parseUint(f[3]),
+                vm.parseBytes(string.concat("0x", f[4]))
+            );
+            _compare(RECOVERY, input, f[8], line);
         }
-        end += 8;
-        bytes memory input = _startPacket(
-            _mutate(evidence, f[3], f[4], f[5]),
-            (end - 1) / 4096 + 1,
-            vm.parseBytes(string.concat("0x", f[2]))
-        );
-        _compare(RECOVERY, input, f[6], line);
     }
 
-    function _startPacket(bytes memory evidence, uint256 templatePages, bytes memory operation)
-        private
-        pure
-        returns (bytes memory)
-    {
+    function _startPacket(
+        bytes memory evidence,
+        uint256 templatePages,
+        uint256 opCount,
+        bytes memory operation
+    ) private pure returns (bytes memory) {
         uint256 n = evidence.length;
         uint256 pages = (n - 1) / 4096 + 1;
         uint256 depth;
@@ -193,7 +206,7 @@ contract FlatDifferentialTest is FlatHarness {
                 index >>= 1;
             }
         }
-        body = bytes.concat(body, abi.encodePacked(uint8(1)), operation);
+        body = bytes.concat(body, abi.encodePacked(uint8(opCount)), operation);
         return abi.encodePacked(
             bytes4(keccak256("run(bytes)")),
             uint256(32),
@@ -232,6 +245,16 @@ contract FlatDifferentialTest is FlatHarness {
                 string.concat("0x", _tail(want, 3)),
                 line
             );
+        } else if (_startsWith(want, "BadGapProof:")) {
+            assertFalse(ok, line);
+            assertEq(
+                why,
+                abi.encodeWithSelector(
+                    bytes4(keccak256("BadGapProof(uint256)")), vm.parseUint(_tail(want, 12))
+                ),
+                line
+            );
+            assertEq(logs.length, 0, line);
         } else {
             assertFalse(ok, line);
             assertEq(

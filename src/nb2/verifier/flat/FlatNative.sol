@@ -14,6 +14,9 @@ library FlatNative {
         bytes buffer;
         uint256 size;
         uint256 count;
+        // A batch that fails on rollover is not an immediate refusal: T1 diagnoses operations and
+        // unused pages first. The failure is kept and raised by the final flush.
+        bool failed;
     }
 
     function batch() internal pure returns (Batch memory b) {
@@ -24,7 +27,13 @@ library FlatNative {
     function append(Batch memory b, FlatClaim memory claim) internal view {
         // With 16 claims the per-certificate bounds also imply <=256 signatures,
         // <=4608 path elements and <32768 CBOR tokens.
-        if (b.count == MAX_CLAIMS || b.size + claim.packed.length > MAX_BATCH_BYTES) flush(b);
+        if (b.failed) return;
+        if (b.count == MAX_CLAIMS || b.size + claim.packed.length > MAX_BATCH_BYTES) {
+            if (!verify(b)) {
+                b.failed = true;
+                return;
+            }
+        }
         bytes memory raw = claim.packed;
         uint256 offset = b.size;
         assembly ("memory-safe") {
@@ -34,9 +43,14 @@ library FlatNative {
         ++b.count;
     }
 
+    /// @dev Raise any deferred rollover failure, then verify the pending claims.
     function flush(Batch memory b) internal view {
+        if (b.failed || !verify(b)) revert BadStep();
+    }
+
+    function verify(Batch memory b) private view returns (bool) {
         uint256 count = b.count;
-        if (count == 0) return;
+        if (count == 0) return true;
         bytes memory input = b.buffer;
         uint256 size = b.size;
         assembly ("memory-safe") {
@@ -44,9 +58,10 @@ library FlatNative {
             // This write must preserve the first claim, which starts at byte four.
             mstore(p, or(and(mload(p), sub(shl(224, 1), 1)), shl(224, or(0x02000000, count))))
         }
-        if (!check(CERT, 2, input, size)) revert BadStep();
+        if (!check(CERT, 2, input, size)) return false;
         b.size = 4;
         b.count = 0;
+        return true;
     }
 
     function singleton(FlatClaim memory claim) internal view returns (bool) {

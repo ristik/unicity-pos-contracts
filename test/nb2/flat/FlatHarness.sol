@@ -32,9 +32,9 @@ import {CertBatchDouble, MembershipDouble} from "../verifier/Nb2Doubles.sol";
 contract CorpusOrdinary11 is FlatOrdinary {
     constructor(FlatLineage lineage) FlatOrdinary(lineage, address(lineage).codehash) {}
 
-    function _config(bytes calldata gamma) internal pure override returns (FlatConfig memory) {
-        return FlatBindings.decode(gamma).cfg;
-    }
+    /// Only the deployment identity (ordinary address and hash, profile) is replaced: the reference
+    /// Γ carries placeholder digests. Decoding, the chain ID and the lineage helper stay production.
+    function _bind(FlatBindings.ConfigBinding memory) internal pure override {}
 }
 
 contract CorpusRecovery11 is FlatRecovery {
@@ -44,21 +44,20 @@ contract CorpusRecovery11 is FlatRecovery {
 
     constructor(
         FlatConfig memory cfg,
+        uint64 chainId,
         FlatLineage lineage,
         FlatReceipts receipts,
         bytes32 pins,
         bytes32 generation,
         bytes32 runtime
-    ) FlatRecovery(cfg, lineage, receipts) {
+    ) FlatRecovery(cfg, chainId, lineage, receipts) {
         PINS = pins;
         GENERATION = generation;
         FIXTURE_RUNTIME = runtime;
     }
 
-    function _session(FlatPacket.Header memory h) internal view override returns (bytes32) {
-        return FlatBindings.session(
-            GENERATION, DOMAIN, VAULT, address(this), FIXTURE_RUNTIME, PINS, h.size, h.root
-        );
+    function _identity() internal view override returns (bytes32, bytes32, bytes32) {
+        return (GENERATION, FIXTURE_RUNTIME, PINS);
     }
 }
 
@@ -95,6 +94,7 @@ abstract contract FlatHarness is Test {
             "FlatHarness.sol:CorpusRecovery11",
             abi.encode(
                 this.config(gamma),
+                uint64(31337),
                 lineage,
                 receipts,
                 _gold("pins.bin"),

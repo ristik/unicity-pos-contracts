@@ -269,6 +269,7 @@ contract FlatLineage {
     {
         bytes calldata reason = W.slice(m.reasonPos, m.reasonLen);
         if (reason.length > W.MAX_RECEIPT) revert BadStep();
+        W.boundDeposit(reason);
         _scan(reason, false);
         uint256 p = C.version(C.array(C.tagged(W.offset(reason), 39051), 5), 1);
         (bytes32 domain, uint256 q) = C.bytes32At(p);
@@ -321,6 +322,7 @@ contract FlatLineage {
         private
         pure
     {
+        W.boundAllocation(proof);
         _scan(proof, false);
         (uint256 n, uint256 p) = C.anyArray(W.offset(proof));
         if (n > 256) revert BadStep();

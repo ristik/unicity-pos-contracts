@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: MIT
 pragma solidity 0.8.37;
 
+import {Nb2Cbor as C} from "../Nb2Cbor.sol";
+
 // Fixed byte casts select the wire prefix before conversion to the corresponding integer width.
 // forge-lint: disable-start(unsafe-typecast)
 
@@ -156,6 +158,55 @@ library FlatWire {
         out.amount = value.amount;
         out.parentLink = value.parentLink;
         out.parentManifest = value.parentManifest;
+    }
+
+    function _inside(uint256 p, uint256 end) private pure {
+        if (p >= end) revert BadStep();
+    }
+
+    /// @dev Bound the step count of an allocation proof before the scan that walks its children.
+    function boundAllocation(bytes calldata proof) internal pure {
+        uint256 p = offset(proof);
+        _inside(p, p + proof.length);
+        (uint256 n,) = C.anyArray(p);
+        if (n > 256) revert BadStep();
+    }
+
+    /// @dev Read only the heads that lead to a receipt proof's node array and bound it (1..65) and
+    /// every outer byte string before any scan, certificate fold or header check. The scan that
+    /// follows still validates the whole item.
+    function boundReceipt(uint256 p, uint256 end) internal pure {
+        uint256 q;
+        _inside(p, end);
+        p = C.version(C.array(p, 6), 1);
+        for (uint256 i; i < 2; ++i) {
+            _inside(p, end);
+            (,, q) = C.bstr(p);
+            if (q > end) revert BadStep();
+            p = q;
+        }
+        for (uint256 i; i < 2; ++i) {
+            _inside(p, end);
+            (, p) = C.uintIn(p, 0, type(uint32).max);
+        }
+        _inside(p, end);
+        (uint256 n,) = C.anyArray(p);
+        if (n == 0 || n > 65) revert BadStep();
+    }
+
+    /// @dev The same bound for a deposit proof embedded in a root reason.
+    function boundDeposit(bytes calldata reason) internal pure {
+        uint256 p = offset(reason);
+        uint256 end = p + reason.length;
+        _inside(p, end);
+        p = C.version(C.array(C.tagged(p, 39051), 5), 1);
+        _inside(p, end);
+        (, p) = C.bytes32At(p);
+        _inside(p, end);
+        (, p) = C.uintIn(p, 1, (1 << 56) - 1);
+        _inside(p, end);
+        (, p) = C.bytes32At(p);
+        boundReceipt(p, end);
     }
 
     function prelude(bytes calldata b) internal pure returns (uint64 levels) {

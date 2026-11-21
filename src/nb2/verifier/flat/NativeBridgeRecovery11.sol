@@ -98,6 +98,7 @@ abstract contract FlatRecovery {
     uint256 private immutable _SHARD_LEN;
     bytes32 private immutable _TYPE;
     bytes32 private immutable _COIN;
+    uint64 private immutable _CHAIN_ID;
 
     struct Cursor {
         uint8 phase;
@@ -124,7 +125,8 @@ abstract contract FlatRecovery {
         bytes32 head;
     }
 
-    constructor(FlatConfig memory cfg, FlatLineage lineage, FlatReceipts receipts) {
+    constructor(FlatConfig memory cfg, uint64 chainId, FlatLineage lineage, FlatReceipts receipts) {
+        _CHAIN_ID = chainId;
         LINEAGE = lineage;
         RECEIPTS = receipts;
         DOMAIN = cfg.domain;
@@ -149,7 +151,22 @@ abstract contract FlatRecovery {
         }
     }
 
-    function _session(Packet.Header memory h) internal view virtual returns (bytes32);
+    /// @dev Deployment identity: the generation, this contract's runtime hash and the dependency
+    /// pins. The implementation refuses when a pinned dependency no longer matches.
+    function _identity()
+        internal
+        view
+        virtual
+        returns (bytes32 generation, bytes32 runtimeHash, bytes32 pins);
+
+    /// @dev Common to run and advanceGaps: the validated chain ID, then the session binding.
+    function _session(Packet.Header memory h) private view returns (bytes32) {
+        if (block.chainid != _CHAIN_ID) revert BadPredecessor();
+        (bytes32 generation, bytes32 runtimeHash, bytes32 pins) = _identity();
+        return FlatBindings.session(
+            generation, DOMAIN, VAULT, address(this), runtimeHash, pins, h.size, h.root
+        );
+    }
 
     function _run(bytes calldata b) private {
         Packet.Run memory r = Packet.frameRun(b);
@@ -187,8 +204,9 @@ abstract contract FlatRecovery {
             }
         }
         if (r.used != (uint256(1) << r.pageCount) - 1) revert BadPage();
-        if (s.seq == type(uint64).max) revert BadStep();
+        // T1 order: operations, unused pages, pending batches, then the counter.
         FlatNative.flush(maps.pending);
+        if (s.seq == type(uint64).max) revert BadStep();
         ++s.seq;
         if (s.phase == 0) {
             emit NB2Complete11(
@@ -499,7 +517,14 @@ contract NativeBridgeRecovery11 is FlatRecovery {
         bytes32 salt,
         FlatBindings.ReleaseInputs memory release,
         bytes32 expectedPins
-    ) FlatRecovery(ordinary.readConfig(gamma), ordinary.LINEAGE(), ordinary.RECEIPTS()) {
+    )
+        FlatRecovery(
+            ordinary.readConfig(gamma),
+            ordinary.readChainId(gamma),
+            ordinary.LINEAGE(),
+            ordinary.RECEIPTS()
+        )
+    {
         ORDINARY = ordinary;
         ORDINARY_HASH = address(ordinary).codehash;
         REGISTRY_HASH = ordinary.REGISTRY_HASH();
@@ -527,7 +552,7 @@ contract NativeBridgeRecovery11 is FlatRecovery {
         GENERATION = FlatBindings.generation(salt, DOMAIN);
     }
 
-    function _session(Packet.Header memory h) internal view override returns (bytes32) {
+    function _identity() internal view override returns (bytes32, bytes32, bytes32) {
         if (
             address(ORDINARY).codehash != ORDINARY_HASH || address(LINEAGE).codehash != LINEAGE_HASH
                 || address(RECEIPTS).codehash != RECEIPTS_HASH
@@ -535,8 +560,6 @@ contract NativeBridgeRecovery11 is FlatRecovery {
         ) {
             revert BadPredecessor();
         }
-        return FlatBindings.session(
-            GENERATION, DOMAIN, VAULT, address(this), address(this).codehash, PINS, h.size, h.root
-        );
+        return (GENERATION, address(this).codehash, PINS);
     }
 }
