@@ -23,7 +23,12 @@ library NB2Config {
 
     /// @notice The decoded fields of Γ that the vault uses or checks.
     struct Config {
+        /// @dev Γ version: 1 for the v2 bridge generation, 2 for NB2 v1.1 (fresh generation).
+        uint256 version;
         uint256 network;
+        uint256 evmPartition;
+        bytes evmShard;
+        bytes32 profile;
         bytes32 rootGenesis;
         bytes32 executionGenesis;
         uint256 chainId;
@@ -45,6 +50,16 @@ library NB2Config {
         pure
         returns (Config memory c)
     {
+        return decode(g, kSet, bSet, 1);
+    }
+
+    /// @notice As `decode`, for Γ version 1 (native bridge v2) or 2 (NB2 v1.1; same 19 fields, version 2).
+    function decode(bytes memory g, uint256 kSet, uint256 bSet, uint256 version)
+        internal
+        pure
+        returns (Config memory c)
+    {
+        c.version = version;
         if (g.length > MAX_BYTES) revert BadConfig(ARRAY_FIELD);
         (uint256 end, bool ok) = _skip(g, 0, 0);
         if (!ok || end != g.length) revert BadConfig(ARRAY_FIELD);
@@ -62,7 +77,7 @@ library NB2Config {
         if (!isB || len != 15 || _word(g, off) >> 136 != 0x554e49434954595f4e42325f434647) {
             revert BadConfig(0);
         }
-        if (_uintIn(g, fieldAt[1], 1, 1) != 1) revert BadConfig(1);
+        if (_uintIn(g, fieldAt[1], version, version) != version) revert BadConfig(1);
         c.network = _uintIn(g, fieldAt[2], 1, 65535);
         if (c.network == 0) revert BadConfig(2);
         c.rootGenesis = _fixed32(g, fieldAt[3], 3);
@@ -71,8 +86,13 @@ library NB2Config {
         if (c.chainId == 0) revert BadConfig(5);
         uint256 evmPartition = _uintIn(g, fieldAt[6], 1, type(uint32).max);
         if (evmPartition == 0) revert BadConfig(6);
+        c.evmPartition = evmPartition;
         (isB, off, len) = _bstr(g, fieldAt[7]);
         if (!isB || !_canonicalShard(g, off, len)) revert BadConfig(7);
+        c.evmShard = new bytes(len);
+        for (uint256 i = 0; i < len; i++) {
+            c.evmShard[i] = g[off + i];
+        }
         uint256 aggPartition = _uintIn(g, fieldAt[8], 1, type(uint32).max);
         if (aggPartition == 0 || aggPartition == evmPartition) revert BadConfig(8);
         // the 20 high bytes of the fixed 20-byte field
@@ -81,7 +101,7 @@ library NB2Config {
         c.asset = _fixed32(g, fieldAt[10], 10);
         c.ty = _fixed32(g, fieldAt[11], 11);
         c.aid = _fixed32(g, fieldAt[12], 12);
-        _fixed32(g, fieldAt[13], 13);
+        c.profile = _fixed32(g, fieldAt[13], 13);
         // the 20 high bytes of the fixed 20-byte field
         // forge-lint: disable-next-line(unsafe-typecast)
         c.verifier = address(bytes20(_fixedN(g, fieldAt[14], 20, 14)));
@@ -104,10 +124,12 @@ library NB2Config {
     function checkEnvironment(Config memory c, address self) internal view {
         if (c.asset != ASSET_UCT) revert BadConfig(10);
         bytes memory dstr = identityString(c.network, c.rootGenesis, c.executionGenesis, c.chainId);
-        if (c.ty != sha256(bytes.concat("unicity-bridge:unicity-native-nb2:", dstr))) {
+        bytes memory tag =
+            c.version == 1 ? bytes("unicity-native-nb2:") : bytes("unicity-native-nb2-11:");
+        if (c.ty != sha256(bytes.concat("unicity-bridge:", tag, dstr))) {
             revert BadConfig(11);
         }
-        if (c.aid != sha256(bytes.concat("unicity-bridge-coin:unicity-native-nb2:", dstr))) {
+        if (c.aid != sha256(bytes.concat("unicity-bridge-coin:", tag, dstr))) {
             revert BadConfig(12);
         }
         if (c.vault != self) revert BadConfig(9);
