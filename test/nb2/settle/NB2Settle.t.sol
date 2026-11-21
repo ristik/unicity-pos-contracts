@@ -36,6 +36,51 @@ contract CorpusVault11 is NativeBridgeVault11 {
     function _recoveryIntact() internal pure override returns (bool) {
         return true;
     }
+
+    /// @dev Test hook: when set, the authenticated event data is this value (a stand-in for a certified event that the
+    ///      pinned producer cannot emit, such as a zero amount), so the order of the shared verdict errors can be tested.
+    // The vault owns raw slots from 0: the hook lives in a hashed region.
+    uint256 private constant CRAFT =
+        0x7e57c0de00000000000000000000000000000000000000000000000000000000;
+
+    function craft(bytes calldata data) external {
+        uint256 n = data.length;
+        assembly ("memory-safe") {
+            sstore(CRAFT, n)
+        }
+        for (uint256 i; i * 32 < n; ++i) {
+            bytes32 w = bytes32(data[i * 32:i * 32 + 32]);
+            assembly ("memory-safe") {
+                sstore(add(add(CRAFT, 1), i), w)
+            }
+        }
+    }
+
+    function _receipt(bytes calldata proof, bytes32 topic, bytes32 session, uint256 width)
+        internal
+        view
+        override
+        returns (bytes memory out)
+    {
+        uint256 n;
+        assembly ("memory-safe") {
+            n := sload(CRAFT)
+        }
+        if (n != 0) {
+            out = new bytes(n);
+            for (uint256 i; i * 32 < n; ++i) {
+                bytes32 w;
+                assembly ("memory-safe") {
+                    w := sload(add(add(CRAFT, 1), i))
+                }
+                assembly ("memory-safe") {
+                    mstore(add(add(out, 32), mul(i, 32)), w)
+                }
+            }
+            return out;
+        }
+        return super._receipt(proof, topic, session, width);
+    }
 }
 
 contract Refuser {
@@ -49,16 +94,21 @@ contract Reenter {
     Vm private constant VM = Vm(address(uint160(uint256(keccak256("hevm cheat code")))));
     address internal immutable VAULT;
     bool internal immutable PROPAGATE;
+    bool internal immutable MALFORMED;
 
-    constructor(address vault, bool propagate) {
+    constructor(address vault, bool propagate, bool malformed) {
         VAULT = vault;
         PROPAGATE = propagate;
+        MALFORMED = malformed;
     }
 
     receive() external payable {
-        bytes memory data = VM.readFileBinary(
-            "test/nb2/flat/generated/transcripts/cold/settle-kind1-suffixfalse-prevfalse/calldata.bin"
-        );
+        // MALFORMED: the recognised selector with broken outer framing. The shared guard comes first.
+        bytes memory data = MALFORMED
+            ? abi.encodePacked(bytes4(keccak256("redeemRecovered(bytes)")), hex"01")
+            : VM.readFileBinary(
+                "test/nb2/flat/generated/transcripts/cold/settle-kind1-suffixfalse-prevfalse/calldata.bin"
+            );
         (bool ok, bytes memory why) = VAULT.call(data);
         require(
             !ok && bytes4(why) == NB2VaultBase.Reentrancy.selector, "inner call must hit the guard"
@@ -305,13 +355,13 @@ contract NB2SettleTest is FlatHarness {
         _apply(raw, "Before");
         bytes32 before_ = _snapshotFull();
         // Propagated: the outer call reverts with PayoutFailed and nothing changes.
-        vm.etch(RECIPIENT, address(new Reenter(VAULT, true)).code);
+        vm.etch(RECIPIENT, address(new Reenter(VAULT, true, false)).code);
         (bool ok, bytes memory out, Vm.Log[] memory logs) = _run(name);
         assertFalse(ok);
         assertEq(bytes4(out), NB2VaultBase.PayoutFailed.selector);
         assertEq(_snapshotFull(), before_);
         // Caught: the outer call pays exactly once.
-        vm.etch(RECIPIENT, address(new Reenter(VAULT, false)).code);
+        vm.etch(RECIPIENT, address(new Reenter(VAULT, false, false)).code);
         (ok, out, logs) = _run(name);
         assertTrue(ok, vm.toString(out));
         assertEq(logs.length, 1);
@@ -591,5 +641,92 @@ contract NB2SettleTest is FlatHarness {
         vm.writeFile("out/nb2-settle/vault.hex", vm.toString(VAULT.code));
         vm.writeFile("out/nb2-settle/receipts.hex", vm.toString(address(receipts).code));
         vm.writeFile("out/nb2-settle/recovery.hex", vm.toString(RECOVERY.code));
+    }
+
+    // ------------------------------------------------------------------------------------------------ round 2 (astra)
+
+    function testGuardPrecedesTheOuterAbiDecoder() external {
+        string memory name = "settle-kind1-suffixfalse-prevfalse";
+        string memory raw = vm.readFile(string.concat(_cold(name), "outcome.json"));
+        _apply(raw, "Before");
+        bytes32 before_ = _snapshotFull();
+        // Re-entry with the right selector and broken framing is Reentrancy(), not BadPacket(); the recipient asserts it.
+        vm.etch(RECIPIENT, address(new Reenter(VAULT, true, true)).code);
+        (bool ok, bytes memory out,) = _run(name);
+        assertFalse(ok);
+        assertEq(bytes4(out), NB2VaultBase.PayoutFailed.selector);
+        assertEq(_snapshotFull(), before_);
+        // Outside a payout the same framing is BadPacket().
+        _expect(
+            abi.encodePacked(bytes4(keccak256("redeemRecovered(bytes)")), hex"01"),
+            bytes4(keccak256("BadPacket()")),
+            "framing"
+        );
+    }
+
+    function testChainIdIsRecheckedBeforeAReceiptIsConsumed() external {
+        string memory name = "settle-kind1-suffixfalse-prevfalse";
+        string memory raw = vm.readFile(string.concat(_cold(name), "outcome.json"));
+        _apply(raw, "Before");
+        bytes32 before_ = _snapshotFull();
+        bytes memory data = _calldata(name);
+        vm.chainId(1);
+        _expect(data, bytes4(keccak256("BadPredecessor()")), "another chain");
+        assertEq(_snapshotFull(), before_, "custody unchanged on refusal");
+        vm.chainId(31337);
+        (bool ok, bytes memory out,) = _run(name);
+        assertTrue(ok, vm.toString(out));
+        _assertSide(raw, "After");
+    }
+
+    function _event(uint256 amount, bytes32 domain, bytes32 asset, address recipient)
+        private
+        pure
+        returns (bytes memory)
+    {
+        return abi.encode(
+            uint256(1),
+            domain,
+            bytes32(0xf705f24c68a7b77536b2406ea51c1cce7805cc872a47d5b899532348e0241eea),
+            uint256(7),
+            asset,
+            recipient,
+            amount
+        );
+    }
+
+    function testSharedVerdictErrorsComeFromTheSettlementStage() external {
+        string memory name = "settle-kind1-suffixfalse-prevfalse";
+        string memory raw = vm.readFile(string.concat(_cold(name), "outcome.json"));
+        _apply(raw, "Before");
+        bytes memory data = _calldata(name);
+        bytes32 d = vault.domain();
+        bytes32 asset = 0x87b0b8b600fcd942cc3383bac1dbb80fd69d54af700cf48faa4525451a7b1845;
+        CorpusVault11 v = CorpusVault11(payable(VAULT));
+        v.craft(_event(100, bytes32(uint256(d) ^ 1), asset, RECIPIENT));
+        _expect(data, NB2VaultBase.DomainMismatch.selector, "domain");
+        v.craft(_event(100, d, bytes32(uint256(asset) ^ 1), RECIPIENT));
+        _expect(data, NB2VaultBase.AssetMismatch.selector, "asset");
+        v.craft(_event(0, d, asset, RECIPIENT));
+        _expect(data, NB2VaultBase.ZeroAmount.selector, "amount");
+        v.craft(_event(100, d, asset, address(0)));
+        _expect(data, NB2VaultBase.BadRecipient.selector, "zero recipient");
+        v.craft(_event(100, d, asset, VAULT));
+        _expect(data, NB2VaultBase.BadRecipient.selector, "vault recipient");
+        // Earlier stages win: a stale endpoint, and an eta already in a live buffer, precede the verdict errors.
+        v.craft(_event(0, d, asset, RECIPIENT));
+        bytes32[] memory cur = new bytes32[](1);
+        cur[0] = 0xf705f24c68a7b77536b2406ea51c1cce7805cc872a47d5b899532348e0241eea;
+        _fillBuffer(7 & 1, cur);
+        vm.store(
+            VAULT, bytes32(0), bytes32(uint256(vm.load(VAULT, bytes32(0))) | (uint256(1) << 144))
+        );
+        _expect(data, NB2VaultBase.AlreadyPaid.selector, "scan before verdict");
+        _apply(raw, "Before");
+        vm.store(
+            VAULT, bytes32(0), bytes32(uint256(vm.load(VAULT, bytes32(0))) + (uint256(2) << 152))
+        );
+        _expect(data, NB2VaultBase.StaleEndpoint.selector, "endpoint before verdict");
+        v.craft("");
     }
 }

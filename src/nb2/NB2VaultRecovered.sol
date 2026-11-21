@@ -46,6 +46,7 @@ abstract contract NB2VaultRecovered is NB2VaultBase {
     bytes32 public immutable RECOVERY_RUNTIME;
     bytes32 public immutable RECOVERY_GENERATION;
     bytes32 public immutable RECOVERY_PINS;
+    uint64 private immutable _CHAIN_ID;
     uint16 private immutable _NETWORK;
     uint32 private immutable _EVM_PARTITION;
     bytes32 private immutable _SHARD_PREFIX;
@@ -74,6 +75,7 @@ abstract contract NB2VaultRecovered is NB2VaultBase {
         RECOVERY_RUNTIME = recoveryRuntime;
         RECOVERY_GENERATION = generation;
         RECOVERY_PINS = pins;
+        _CHAIN_ID = uint64(c.chainId);
         _NETWORK = uint16(c.network);
         _EVM_PARTITION = uint32(c.evmPartition);
         bytes memory shard = c.evmShard;
@@ -115,6 +117,8 @@ abstract contract NB2VaultRecovered is NB2VaultBase {
 
     fallback() external {
         if (msg.sig != REDEEM_RECOVERED) revert BadPacket();
+        // The shared guard precedes the outer ABI decoder: a reentrant call is Reentrancy() whatever its framing.
+        _enter();
         _redeemRecovered(FlatPacket.argument(msg.data));
     }
 
@@ -122,8 +126,6 @@ abstract contract NB2VaultRecovered is NB2VaultBase {
     ///      receipt authentication, future index, endpoint range and staleness, gap fold and the stored-head comparison,
     ///      the buffer scans and the shared settlement.
     function _redeemRecovered(bytes calldata b) private {
-        // Entry. The guard is taken before any argument is read.
-        _enter();
         (
             uint8 kind,
             uint256 receiptPos,
@@ -132,6 +134,8 @@ abstract contract NB2VaultRecovered is NB2VaultBase {
             bytes32 startHead,
             uint256 gapsPos
         ) = _frame(b);
+        // The chain this Γ was validated against: a receipt certified for it is not consumed on another chain.
+        if (block.chainid != _CHAIN_ID) revert BadPredecessor();
         bytes32 session = _session(b);
         Verdict memory v = _authenticate(b[receiptPos:receiptEnd], kind, session, startHead);
 
@@ -259,17 +263,12 @@ abstract contract NB2VaultRecovered is NB2VaultBase {
         v.amount = uint256(_word(data, 192));
         v.start = start;
         v.head = kind == 1 ? startHead : _word(data, 256);
-        if (
-            v.domain != D || v.asset != ASSET_UCT || v.amount == 0 || v.recipient == address(0)
-                || v.recipient == address(this)
-        ) {
-            revert BadPredecessor();
-        }
     }
 
     function _receipt(bytes calldata proof, bytes32 topic, bytes32 session, uint256 width)
-        private
+        internal
         view
+        virtual
         returns (bytes memory)
     {
         try RECEIPTS.receipt(
