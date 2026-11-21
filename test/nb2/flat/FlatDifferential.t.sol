@@ -97,7 +97,7 @@ contract FlatDifferentialTest is FlatHarness {
             this.advanceLine(line);
             ++count;
         }
-        assertEq(count, 440);
+        assertEq(count, 448);
         vm.closeFile(file);
     }
 

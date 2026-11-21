@@ -333,6 +333,17 @@ func TestFlatDifferentialCorpus(t *testing.T) {
 			fmt.Fprintf(&a, "A %s %c %d %x %s\n", name, m.op, m.pos, m.val, got)
 		}
 	}
+	// A refusal at a nonzero position: a valid earlier gap, then one whose index byte is >= K.
+	for _, name := range []string{"advance-kind1-count1024", "advance-kind2-count1024"} {
+		wire := diffRead(t, filepath.Join(root, "cold", name), "calldata.bin")
+		gapEnd := 68 + int(binary.BigEndian.Uint64(wire[60:68]))
+		for _, k := range []int{1, 17, 512, 1023} {
+			m := diffMutation{'x', gapEnd - 1024*257 + 257*k, 0xff}
+			_, err := v.AdvanceFlatGaps(m.apply(wire))
+			require.Error(t, err)
+			fmt.Fprintf(&a, "A %s %c %d %x %s\n", name, m.op, m.pos, m.val, diffStage(t, err))
+		}
+	}
 	require.NoError(t, os.MkdirAll(outDir, 0o755))
 	for name, b := range map[string]*strings.Builder{"ordinary.txt": &o, "run.txt": &r, "advance.txt": &a, "start.txt": &st} {
 		require.NoError(t, os.WriteFile(filepath.Join(outDir, name), []byte(b.String()), 0o644))

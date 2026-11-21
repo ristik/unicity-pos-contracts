@@ -36,9 +36,10 @@ contract FlatReceipts {
         returns (FlatClaim memory claim, bytes32[] memory topics, bytes memory data)
     {
         uint256 p = W.offset(proof);
-        if (proof.length > W.MAX_RECEIPT || C.scan(p, p + proof.length, false) != 0) {
-            revert BadStep();
-        }
+        if (proof.length > W.MAX_RECEIPT) revert BadStep();
+        // Heads, node count and outer caps first; only then the scan, the UC and the header.
+        W.boundReceipt(p, p + proof.length);
+        if (C.scan(p, p + proof.length, false) != 0) revert BadStep();
         p = C.version(C.array(p, 6), 1);
         (uint256 ucPos, uint256 ucLen, uint256 next) = C.bstr(p);
         if (ucLen > 16384 || env.shard.length == 0) revert BadStep();

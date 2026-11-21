@@ -181,8 +181,10 @@ library FlatWire {
         p = C.version(C.array(p, 6), 1);
         for (uint256 i = 0; i < 2; ++i) {
             _inside(p, end);
-            (,, q) = C.bstr(p);
-            if (q > end) revert BadStep();
+            uint256 len;
+            (, len, q) = C.bstr(p);
+            // The UC (16,384) and header (2,048) caps, then containment.
+            if (len > (i == 0 ? 16384 : 2048) || q > end) revert BadStep();
             p = q;
         }
         for (uint256 i = 0; i < 2; ++i) {
