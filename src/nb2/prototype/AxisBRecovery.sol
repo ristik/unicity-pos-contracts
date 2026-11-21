@@ -8,7 +8,11 @@ import {Nb2Crypto as X} from "../verifier/Nb2Crypto.sol";
 // All offsets and counts are read from bounded uint64 evidence.
 // forge-lint: disable-start(unsafe-typecast,uninitialized-local,encode-packed-collision)
 import {Nb2Rules as R} from "../verifier/Nb2Rules.sol";
-import {AxisBCommitment as W, AXIS_B_PAGE_BYTES, AXIS_B_MAX_WINDOW_BYTES} from "./AxisBCommitment.sol";
+import {
+    AxisBCommitment as W,
+    AXIS_B_PAGE_BYTES,
+    AXIS_B_MAX_WINDOW_BYTES
+} from "./AxisBCommitment.sol";
 import {AxisBDeposit} from "./AxisBDeposit.sol";
 import {AxisBSha256} from "./AxisBSha256.sol";
 
@@ -89,7 +93,8 @@ contract AxisBRecovery is AxisBVerifierCore {
     ) AxisBVerifierCore(testSet, receipts) {
         if (
             address(hasher).code.length == 0 || address(commitments).code.length == 0
-                || address(deposit).code.length == 0
+                || address(deposit).code.length == 0 || deposit.admitsTestSet() != testSet
+                || deposit.RECEIPTS() != receipts
         ) revert HelperCodeMismatch();
         HASHER = hasher;
         DEPOSIT = deposit;

@@ -119,6 +119,20 @@ contract AxisBRecoveryTest is Test {
         assertEq(hash.advance(h, 4096, tail, true), sha256(bytes.concat(prefix, tail)));
     }
 
+    function testAxisBRejectsInconsistentHelperProfile() external {
+        Nb2ReceiptVerifier receipts = verifier.RECEIPTS();
+        AxisBDeposit deposit = new AxisBDeposit(false, receipts);
+        bytes memory init = bytes.concat(
+            vm.getCode("AxisBRecovery.sol:AxisBRecovery"),
+            abi.encode(true, receipts, verifier.HASHER(), verifier.COMMITMENTS(), deposit)
+        );
+        address deployed;
+        assembly ("memory-safe") {
+            deployed := create(0, add(init, 32), mload(init))
+        }
+        assertEq(deployed, address(0));
+    }
+
     function testAxisBWitnessLimits() external {
         AxisBCommitment commitments = verifier.COMMITMENTS();
         AxisBCommitment.Window memory window;

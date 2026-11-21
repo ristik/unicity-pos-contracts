@@ -61,7 +61,7 @@ abstract contract AxisBVerifierCore {
     bytes32 internal constant TOKENID_SUFFIX = sha256("TOKENID");
 
     bool public immutable admitsTestSet;
-    /// @notice The receipt verifier this verifier created.
+    /// @notice The receipt verifier pinned at deployment.
     Nb2ReceiptVerifier public immutable RECEIPTS;
     /// @notice The runtime code hash `RECEIPTS` must have. Both immutables are bytes of this contract's runtime, so its code
     ///         hash pins the helper's code, not only its address: every call checks EXTCODEHASH(RECEIPTS) against it first, and
