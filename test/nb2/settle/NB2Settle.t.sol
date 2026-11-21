@@ -95,6 +95,8 @@ contract Reenter {
     address internal immutable VAULT;
     bool internal immutable PROPAGATE;
     bool internal immutable MALFORMED;
+    /// The selector of the inner call's failure, recorded so a test can tell Reentrancy() from any other error.
+    bytes4 public inner;
 
     constructor(address vault, bool propagate, bool malformed) {
         VAULT = vault;
@@ -110,6 +112,8 @@ contract Reenter {
                 "test/nb2/flat/generated/transcripts/cold/settle-kind1-suffixfalse-prevfalse/calldata.bin"
             );
         (bool ok, bytes memory why) = VAULT.call(data);
+        inner = bytes4(why);
+        if (MALFORMED) return; // the test asserts the recorded selector
         require(
             !ok && bytes4(why) == NB2VaultBase.Reentrancy.selector, "inner call must hit the guard"
         );
@@ -650,12 +654,15 @@ contract NB2SettleTest is FlatHarness {
         string memory raw = vm.readFile(string.concat(_cold(name), "outcome.json"));
         _apply(raw, "Before");
         bytes32 before_ = _snapshotFull();
-        // Re-entry with the right selector and broken framing is Reentrancy(), not BadPacket(); the recipient asserts it.
-        vm.etch(RECIPIENT, address(new Reenter(VAULT, true, true)).code);
+        // Re-entry with the right selector and broken framing: the recipient records the inner failure and accepts the
+        // value, so the outer call pays and the recorded selector is exactly Reentrancy(), not BadPacket() or any other.
+        vm.etch(RECIPIENT, address(new Reenter(VAULT, false, true)).code);
         (bool ok, bytes memory out,) = _run(name);
-        assertFalse(ok);
-        assertEq(bytes4(out), NB2VaultBase.PayoutFailed.selector);
-        assertEq(_snapshotFull(), before_);
+        assertTrue(ok, vm.toString(out));
+        assertEq(
+            Reenter(payable(RECIPIENT)).inner(), NB2VaultBase.Reentrancy.selector, "inner error"
+        );
+        assertTrue(before_ != _snapshotFull(), "the outer call paid once");
         // Outside a payout the same framing is BadPacket().
         _expect(
             abi.encodePacked(bytes4(keccak256("redeemRecovered(bytes)")), hex"01"),

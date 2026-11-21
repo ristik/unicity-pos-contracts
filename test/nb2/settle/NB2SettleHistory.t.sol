@@ -109,9 +109,13 @@ contract NB2SettleHistoryTest is FlatHarness {
         for (uint256 j = from; j < to; ++j) {
             (bool hit, bytes memory one) = NB2Ref.proof(segs[j], eta);
             if (hit) {
-                // No exclusion proof exists for a paid identifier: present the closest bytes, an invalid proof.
+                // No exclusion proof exists for a paid identifier. Present the authentic proof, from the real sealed
+                // segment, of the gap that ends at it (the proof of eta - 1): a genuine archive leaf that does not exclude eta.
                 paid = true;
-                one = new bytes(65 + 6 * 32);
+                (bool neighbourPaid, bytes memory authentic) =
+                    NB2Ref.proof(segs[j], bytes32(uint256(eta) - 1));
+                assertFalse(neighbourPaid);
+                one = authentic;
             }
             p = bytes.concat(p, one);
         }
