@@ -3,7 +3,7 @@
 set -euo pipefail
 bft_repo=${1:?usage: stage-flat-vectors.sh /path/to/bft-core}
 contracts=$(git -C "$(dirname "$0")" rev-parse --show-toplevel)
-commit=d8800f36dcb0dfa69029a8c015b8c077ed64f1e9
+commit=8c1b6ca9ff18648f98f3df588e70d70285e6adc6
 prefix=testvectors/nb2-continuation-v1.1
 out="$contracts/test/nb2/flat/generated"
 tmp=$(mktemp -d)
