@@ -179,13 +179,13 @@ library FlatWire {
         uint256 q;
         _inside(p, end);
         p = C.version(C.array(p, 6), 1);
-        for (uint256 i; i < 2; ++i) {
+        for (uint256 i = 0; i < 2; ++i) {
             _inside(p, end);
             (,, q) = C.bstr(p);
             if (q > end) revert BadStep();
             p = q;
         }
-        for (uint256 i; i < 2; ++i) {
+        for (uint256 i = 0; i < 2; ++i) {
             _inside(p, end);
             (, p) = C.uintIn(p, 0, type(uint32).max);
         }
