@@ -392,13 +392,13 @@ contract StakeCustody is CustodyStorage {
         // Root-key rotation activates only with committed membership.
         if (_compact()) {
             uint256[] storage seats = _seats[s.assignmentID];
-            for (uint256 i; i < seats.length; ++i) {
+            for (uint256 i = 0; i < seats.length; ++i) {
                 // forge-lint: disable-next-line(unsafe-typecast)
                 SeatBinding storage binding = _bindings[uint64(seats[i] >> 64)];
                 _activateKey(binding.id, binding.rootKeyHash);
             }
         } else {
-            for (uint256 i; i < j.exposureIDs.length; ++i) {
+            for (uint256 i = 0; i < j.exposureIDs.length; ++i) {
                 Exposure storage e = exposures[j.exposureIDs[i]];
                 _activateKey(e.id, e.rootKeyHash);
             }
@@ -543,17 +543,17 @@ contract StakeCustody is CustodyStorage {
         if (_compact()) {
             bytes32 source = _source(assignmentID);
             uint256[] storage seats = _seats[source];
-            for (uint256 i; i < seats.length; ++i) {
+            for (uint256 i = 0; i < seats.length; ++i) {
                 (uint64 id, uint64 generation, uint256 lotID) = _seatLot(seats[i]);
                 _raiseAnchor(id, generation, anchor);
                 _raiseFloors(lots[lotID], holdUntil, evidenceUntil, timeUntil);
             }
             _releaseSlate(assignmentID, false);
         } else {
-            for (uint256 i; i < a.exposureIDs.length; ++i) {
+            for (uint256 i = 0; i < a.exposureIDs.length; ++i) {
                 Exposure storage e = exposures[a.exposureIDs[i]];
                 _raiseAnchor(e.id, e.generation, anchor);
-                for (uint256 j; j < e.lotIDs.length; ++j) {
+                for (uint256 j = 0; j < e.lotIDs.length; ++j) {
                     _raiseFloors(lots[e.lotIDs[j]], holdUntil, evidenceUntil, timeUntil);
                 }
                 _releaseIfClear(e);
@@ -751,7 +751,7 @@ contract StakeCustody is CustodyStorage {
         state.released = true;
         bytes32 source = _source(assignmentID);
         uint256[] storage seats = _seats[source];
-        for (uint256 i; i < seats.length; ++i) {
+        for (uint256 i = 0; i < seats.length; ++i) {
             (uint64 id, uint64 generation, uint256 lotID) = _seatLot(seats[i]);
             VRLiability.Facts storage f = VRLiability.load().facts[id][generation];
             f.liveExposures--;
@@ -839,7 +839,7 @@ contract StakeCustody is CustodyStorage {
         if (!_compact()) return assignments[assignmentID].exposureIDs;
         uint256[] storage seats = _seats[_source(assignmentID)];
         bytes32[] memory ids = new bytes32[](seats.length);
-        for (uint256 i; i < ids.length; ++i) {
+        for (uint256 i = 0; i < ids.length; ++i) {
             // forge-lint: disable-next-line(unsafe-typecast)
             ids[i] = _exposureID(assignmentID, uint64(seats[i]));
         }

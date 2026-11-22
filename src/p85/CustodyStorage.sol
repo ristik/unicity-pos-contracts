@@ -370,7 +370,7 @@ abstract contract CustodyStorage is ReentrancyGuard {
         uint256[] storage seats = _seats[source];
         bytes32 exposureDigest = EXPOSURE_DIGEST_DOMAIN;
         bytes32 keyDigest = KEY_DIGEST_DOMAIN;
-        for (uint256 i; i < seats.length; ++i) {
+        for (uint256 i = 0; i < seats.length; ++i) {
             AssignmentSeat memory m = _readSeat(assignmentID, source, seats[i]);
             SeatBinding memory b = m.binding;
             if (referenceSeats) _referenceSeat(b.id, b.generation, m.lotID, m.exposureID);

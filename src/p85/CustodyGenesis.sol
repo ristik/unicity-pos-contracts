@@ -233,7 +233,7 @@ contract CustodyGenesis is CustodyStorage {
             bytes32 source = _source(in_.incumbentAssignmentID);
             uint256[] storage seats = _seats[source];
             _slateState[in_.incumbentAssignmentID].locks++;
-            for (uint256 i; i < seats.length; ++i) {
+            for (uint256 i = 0; i < seats.length; ++i) {
                 (,, uint256 lotID) = _seatLot(seats[i]);
                 if (lots[lotID].refCount >= limits.rMax) revert ReferenceCapacity();
             }
@@ -251,9 +251,9 @@ contract CustodyGenesis is CustodyStorage {
     }
 
     function _reserveCompact(ReserveInput calldata in_) private {
-        uint64 previous;
+        uint64 previous = 0;
         uint256[] storage seats = _seats[in_.assignmentID];
-        for (uint256 i; i < in_.members.length; ++i) {
+        for (uint256 i = 0; i < in_.members.length; ++i) {
             ReserveMember calldata m = in_.members[i];
             if (m.id <= previous) revert MembersUnsorted();
             previous = m.id;

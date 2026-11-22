@@ -289,8 +289,11 @@ contract Evidence {
         bytes32 exposureID
     ) external whenInitialized returns (bytes32 caseID) {
         _verifyEvidence(h, a, b);
+        // This lookup needs only the assignment, staking ID and historical root key.
+        // forge-lint: disable-start(unused-return)
         (bytes32 assignmentID, uint64 id,,,, bytes32 rootKeyHash,,,,) =
             custody.exposures(exposureID);
+        // forge-lint: disable-end(unused-return)
         if (assignmentID == bytes32(0)) revert ExposureUnknown();
         return
             _admit(h, exposureID, assignmentID, id, rootKeyHash, custody.exposureLots(exposureID));

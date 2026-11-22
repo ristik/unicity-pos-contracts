@@ -127,7 +127,7 @@ contract EligibilityReader {
         uint256 count = CUSTODY.assignmentSeatCount(assignmentID);
         if (count != 0) {
             o = new Continuity.Member[](count);
-            for (uint256 i; i < count; ++i) {
+            for (uint256 i = 0; i < count; ++i) {
                 AssignmentSeat memory m = CUSTODY.assignmentSeat(assignmentID, i);
                 o[i] = Continuity.Member(
                     m.binding.id,

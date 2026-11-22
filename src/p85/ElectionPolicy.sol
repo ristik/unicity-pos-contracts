@@ -230,6 +230,8 @@ abstract contract ElectionStorage {
     }
 
     address public immutable FACTORY;
+    // ElectionPolicy initializes and updates these slots. ElectionPublication shares them by delegatecall.
+    // forge-lint: disable-start(uninitialized-state)
     bool public initialized;
     bytes32 public manifestHash;
     bytes32 public network;
@@ -267,6 +269,7 @@ abstract contract ElectionStorage {
     /// `elect` (the system hook calls VR, which calls the adapter) and it receives `outputLost` when a result is first marked lost. Zero on the
     /// plain P85 generation: SYSTEM_CALLER calls `elect` and there is no callback. Appended last: no slot moves.
     address public hookCaller;
+    // forge-lint: disable-end(uninitialized-state)
     /// @dev VT-04 (astra, #92): the validator registry a VR generation's identities must be aligned with (zero on the plain P85
     /// generation). `_eligible` skips an identity whose delegation is not its VR binding, so a misaligned identity is never selected and
     /// cannot hold up rotations. Appended last: no slot moves.
@@ -295,7 +298,7 @@ abstract contract ElectionStorage {
         uint256 count = custody.assignmentSeatCount(assignmentID);
         if (count == 0) return _frozen[resultID];
         out = new Frozen[](count);
-        for (uint256 i; i < count; ++i) {
+        for (uint256 i = 0; i < count; ++i) {
             AssignmentSeat memory m = custody.assignmentSeat(assignmentID, i);
             out[i] =
                 Frozen(m.binding.id, m.binding.generation, m.weight, m.rawWeight, m.bindingHash);
@@ -1038,9 +1041,12 @@ contract ElectionPublication is ElectionStorage {
             }
             if (pos == f.length) revert NotMember(pop.id);
             bytes32 evmKeyHash = keccak256(pop.evmKey);
+            // Each proof in the bounded batch checks its own frozen key.
+            // forge-lint: disable-start(calls-loop)
             bytes32 frozenKey = compact
                 ? custody.assignmentSeat(r.assignmentID, pos).binding.evmKeyHash
                 : reader.evmKeyHashOf(eids[pos]);
+            // forge-lint: disable-end(calls-loop)
             if (frozenKey != evmKeyHash) revert WrongEvmKey(pop.id);
             if (!KeyLib.verify(pop.evmKey, popDigest(resultID, pop.id, evmKeyHash), pop.signature))
             {
@@ -1076,6 +1082,8 @@ contract ElectionPublication is ElectionStorage {
         // the frozen delegation records (the root and EVM node ids, keys and payee of each member) are part of the commitment: the root
         // recomputes each member's binding hash from the identity record it is shown, so a renamed node is a different primary
         bytes32 bindings = BINDINGS_DOMAIN;
+        // Publication checks current lot coverage for every member of the bounded committee.
+        // forge-lint: disable-start(calls-loop)
         for (uint256 i = 0; i < f.length; ++i) {
             bool covered = compact
                 ? reader.coveredSeat(
@@ -1092,6 +1100,7 @@ contract ElectionPublication is ElectionStorage {
             popSet = keccak256(abi.encode(popSet, f[i].id, _popHashes[resultID][f[i].id]));
             bindings = keccak256(abi.encode(bindings, f[i].id, f[i].bindingHash));
         }
+        // forge-lint: disable-end(calls-loop)
         pub.popSetDigest = popSet;
         pub.primaryHash = keccak256(
             abi.encode(
@@ -1145,6 +1154,8 @@ contract ElectionPublication is ElectionStorage {
         Publication storage pub = _publications[resultID];
         if (pub.lost) return;
         bytes32 assignmentID = _results[resultID].assignmentID;
+        // Reconciliation checks each frozen member's historical lot in the bounded committee.
+        // forge-lint: disable-start(calls-loop)
         bool covered = custody.assignmentSeatCount(assignmentID) != 0
             ? reader.coveredSeat(
                 m.id, m.generation, m.raw, custody.assignmentSeat(assignmentID, index).lotID, false
@@ -1152,12 +1163,15 @@ contract ElectionPublication is ElectionStorage {
             : reader.stillCovered(
                 m.id, m.generation, m.raw, custody.assignmentExposures(assignmentID)[index]
             );
+        // forge-lint: disable-end(calls-loop)
         if (!covered) {
             pub.lost = true;
             emit CoverageLostFor(resultID, m.id);
             // The atomic loss (design 3.8 change 2): at the one place `lost` is first set, the adapter invalidates the result in VR. No
             // try/catch: `VR.invalidate` is total for its source, so with enough gas the loss transaction always succeeds, and with too
             // little the whole transaction reverts and can be retried.
+            // The sticky lost flag makes this callback occur at most once per result.
+            // forge-lint: disable-next-line(calls-loop)
             if (hookCaller != address(0)) IPosAdapter(hookCaller).outputLost(resultID);
         }
     }

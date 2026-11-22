@@ -186,7 +186,7 @@ contract PosElectionAdapter is IElectionModule, IPosAdapter {
         Member[] memory ms;
         if (count != 0) {
             ms = new Member[](count);
-            for (uint256 i; i < count; ++i) {
+            for (uint256 i = 0; i < count; ++i) {
                 AssignmentSeat memory seat = CUSTODY.assignmentSeat(r.assignmentID, i);
                 Member memory m = _compactMember(seat);
                 if (m.id == 0) return VRCodec.packStatus(VRC.STATUS_NOT_MINE);
