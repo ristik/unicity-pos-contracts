@@ -154,6 +154,7 @@ contract VRPosGenesis is VRGenesis {
             d, "rewardPoolCodeHash", address(PosFactoryRef(factory).REWARDS()).codehash
         );
         vm.serializeAddress(d, "genesisImpl", genesisImpl);
+        vm.serializeBytes32(d, "genesisImplCodeHash", genesisImpl.codehash);
         vm.serializeAddress(d, "factory", factory);
         vm.serializeBytes32(d, "manifestHash", PosFactoryRef(factory).MANIFEST_HASH());
         vm.serializeBytes32(d, "posAssignmentId", genesisAssignment);

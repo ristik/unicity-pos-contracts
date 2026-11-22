@@ -3,8 +3,16 @@ pragma solidity 0.8.37;
 
 import {PosLimitBase} from "./PosLimit.t.sol";
 import {VRC} from "../../../src/vr/VRConstants.sol";
+import {CustodyStorage} from "../../../src/p85/CustodyStorage.sol";
 import {Evidence} from "../../../src/p85/Evidence.sol";
-import {AssignmentSeat, Limits, RecordKind, RecoveryAckData} from "../../../src/p85/P85Types.sol";
+import {
+    AssignmentSeat,
+    Limits,
+    RecordKind,
+    RecoveryAckData,
+    ReserveInput,
+    SeatBinding
+} from "../../../src/p85/P85Types.sol";
 import {ElectionPolicy, ElectionStorage} from "../../../src/p85/ElectionPolicy.sol";
 
 contract PosCompactSixteenTest is PosLimitBase {
@@ -18,6 +26,19 @@ contract PosCompactSixteenTest is PosLimitBase {
 
     function _recordCap() internal pure override returns (uint256) {
         return 2_500_000;
+    }
+
+    function test_liveWritesRefuseAChangedCustodyImplementation() public {
+        vm.etch(custody.GENESIS_IMPL(), hex"60006000f3");
+        SeatBinding memory binding;
+        vm.expectRevert(CustodyStorage.InvalidGenesis.selector);
+        vm.prank(address(election));
+        custody.internSeatBinding(binding);
+
+        ReserveInput memory candidate;
+        vm.expectRevert(CustodyStorage.InvalidGenesis.selector);
+        vm.prank(address(election));
+        custody.reserveCandidate(candidate);
     }
 
     function test_coldElectionAndPublicationAtSixteenWithFullIndex() public {

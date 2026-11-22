@@ -33,8 +33,8 @@ import {VRC} from "../vr/VRConstants.sol";
 import {CustodyStorage} from "./CustodyStorage.sol";
 
 /// @title CustodyGenesis
-/// @notice The genesis-only functions of StakeCustody (`initialize`, `seedGenesis`, `sealGenesis`), run by DELEGATECALL from the custody's
-/// stubs, in the custody's storage and with the factory's msg.sender and msg.value. Never called directly: its own storage is never read.
+/// @notice Fixed implementation for custody genesis, binding interning and election reservations.
+/// StakeCustody authenticates this runtime before delegating the call in its own storage.
 // forge-lint: disable-next-line(locked-ether)
 contract CustodyGenesis is CustodyStorage {
     constructor(address factory_) CustodyStorage(factory_) {}

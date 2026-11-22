@@ -43,22 +43,23 @@ import {CustodyStorage} from "./CustodyStorage.sol";
 ///
 /// Conservation after every successful call (section 3):
 ///     balance = F + E + D + C + U,  F + E + D = sum(remaining),  C = sum(credits),  U >= 0.
-/// No proxy, arbitrary call, sweep, administrator withdrawal or module setter exists. The one delegatecall is the factory's genesis step:
-/// `initialize`, `seedGenesis` and `sealGenesis` run in CustodyGenesis (an immutable address fixed at construction) in this contract's storage,
-/// reachable only by the factory and only until genesis is sealed (afterwards each of them reverts); the code is not here to keep the runtime
-/// under EIP-170.
+/// The fixed implementation handles genesis and election reservation in custody's storage.
+/// Custody authenticates its runtime before every delegation.
 contract StakeCustody is CustodyStorage {
     /// @notice This custody's liability-holder index in its validator-registry generation (design section 3.9.1: P85 custody is holder 0
     /// of the PoS-prototype generation). A HolderRetirement record of any other holder is a no-op here.
     uint8 public constant HOLDER_INDEX = 0;
-    /// @notice The address of the genesis implementation the genesis stubs delegate to.
+    /// @notice The implementation for genesis and election reservation.
     address public immutable GENESIS_IMPL;
+    bytes32 private immutable GENESIS_IMPL_CODE_HASH;
 
     /// @param factory_ the deployment factory that will initialize this module, fixed at construction. The module is deployed first so
     /// the factory's own creation code stays small; only that factory can initialize it, and it can do so once.
     // forge-lint: disable-next-line(missing-zero-check)
     constructor(address factory_, address genesisImpl_) CustodyStorage(factory_) {
+        if (genesisImpl_.code.length == 0) revert InvalidGenesis();
         GENESIS_IMPL = genesisImpl_;
+        GENESIS_IMPL_CODE_HASH = genesisImpl_.codehash;
     }
 
     // --- genesis (delegated) ------------------------------------------------------------------
@@ -88,15 +89,21 @@ contract StakeCustody is CustodyStorage {
 
     function _genesis() private {
         if (msg.sender != FACTORY) revert NotFactory();
-        // the genesis functions return nothing; a revert of the implementation is passed on as it is
-        // the target is the immutable genesis implementation fixed at construction, and only the factory reaches this line
+        _delegate();
+    }
+
+    function _delegate() private {
+        address impl = GENESIS_IMPL;
+        if (impl.codehash != GENESIS_IMPL_CODE_HASH) revert InvalidGenesis();
+        // The fixed implementation validates each entry point's caller and state.
         // forge-lint: disable-next-line(controlled-delegatecall)
-        (bool ok, bytes memory ret) = GENESIS_IMPL.delegatecall(msg.data);
-        if (!ok) {
-            // forge-lint: disable-next-line(unsafe-typecast)
-            assembly ("memory-safe") {
-                revert(add(ret, 32), mload(ret))
-            }
+        assembly ("memory-safe") {
+            let ptr := mload(0x40)
+            calldatacopy(ptr, 0, calldatasize())
+            let ok := delegatecall(gas(), impl, ptr, calldatasize(), 0, 0)
+            returndatacopy(ptr, 0, returndatasize())
+            if iszero(ok) { revert(ptr, returndatasize()) }
+            return(ptr, returndatasize())
         }
     }
 
@@ -264,21 +271,11 @@ contract StakeCustody is CustodyStorage {
     }
 
     function internSeatBinding(SeatBinding calldata) external {
-        _reservation();
+        _delegate();
     }
 
     function reserveCandidate(ReserveInput calldata) external returns (bytes32) {
-        return abi.decode(_reservation(), (bytes32));
-    }
-
-    function _reservation() private returns (bytes memory) {
-        // The fixed implementation checks election authority and initialization.
-        // forge-lint: disable-next-line(controlled-delegatecall)
-        (bool ok, bytes memory ret) = GENESIS_IMPL.delegatecall(msg.data);
-        if (!ok) {
-            assembly ("memory-safe") { revert(add(ret, 32), mload(ret)) }
-        }
-        return ret;
+        _delegate();
     }
 
     // --- root records -------------------------------------------------------------------------
