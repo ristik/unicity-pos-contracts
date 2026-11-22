@@ -268,6 +268,27 @@ struct Exposure {
     uint256[] lotIDs;
 }
 
+/// @notice Immutable binding loaded by one packed slate row.
+struct SeatBinding {
+    uint64 id;
+    uint64 generation;
+    bytes32 rootNode;
+    bytes32 rootKeyHash;
+    bytes32 evmNode;
+    bytes32 evmKeyHash;
+    address payee;
+}
+
+struct AssignmentSeat {
+    SeatBinding binding;
+    uint64 weight;
+    uint64 rawWeight;
+    bytes32 bindingHash;
+    bytes32 exposureID;
+    bytes32 memberDigest;
+    uint256 lotID;
+}
+
 /// @notice Assignment-level liability record. state: 0 none, 1 Reserved, 2 Active, 3 Aborted.
 struct Assignment {
     uint8 state;

@@ -2,7 +2,7 @@
 pragma solidity 0.8.37;
 
 import {P85Flow} from "./P85Flow.sol";
-import {ElectionPolicy} from "../../src/p85/ElectionPolicy.sol";
+import {ElectionPolicy, ElectionStorage} from "../../src/p85/ElectionPolicy.sol";
 import {FixedPolicy} from "../../src/p85/FixedPolicy.sol";
 import {IStakeCustody} from "../../src/p85/IP85.sol";
 import {
@@ -37,7 +37,7 @@ contract ElectionTest is P85Flow {
         });
     }
 
-    function _elect() internal returns (ElectionPolicy.Outcome) {
+    function _elect() internal returns (ElectionStorage.Outcome) {
         vm.prank(SYS);
         return election.elect(ORIGIN);
     }
@@ -68,45 +68,45 @@ contract ElectionTest is P85Flow {
 
     function test_onlyTheSystemCallerMayElect() public {
         _due();
-        vm.expectRevert(ElectionPolicy.NotSystem.selector);
+        vm.expectRevert(ElectionStorage.NotSystem.selector);
         election.elect(ORIGIN);
         vm.prank(address(custody));
-        vm.expectRevert(ElectionPolicy.NotSystem.selector);
+        vm.expectRevert(ElectionStorage.NotSystem.selector);
         election.elect(ORIGIN);
     }
 
     function test_electNowIsNotCallableFromOutside() public {
-        vm.expectRevert(ElectionPolicy.NotSelf.selector);
+        vm.expectRevert(ElectionStorage.NotSelf.selector);
         election.electNow(ORIGIN, 1, 1, bytes32(0));
     }
 
     function test_nothingIsDueBeforeBothCadences() public {
         uint256 snap = vm.snapshotState();
         clock(CAD_P - 1, CAD_T + 1_000);
-        assertEq(uint8(_elect()), uint8(ElectionPolicy.Outcome.NotDue), "rounds short");
+        assertEq(uint8(_elect()), uint8(ElectionStorage.Outcome.NotDue), "rounds short");
         vm.revertToState(snap);
         clock(CAD_P + 1_000, CAD_T - 1);
-        assertEq(uint8(_elect()), uint8(ElectionPolicy.Outcome.NotDue), "seconds short");
+        assertEq(uint8(_elect()), uint8(ElectionStorage.Outcome.NotDue), "seconds short");
         assertEq(election.attemptCursor(), 0);
         vm.revertToState(snap);
         _due();
-        assertEq(uint8(_elect()), uint8(ElectionPolicy.Outcome.Reserved));
+        assertEq(uint8(_elect()), uint8(ElectionStorage.Outcome.Reserved));
     }
 
     function test_anIncompleteRecordPrefixDisablesTheElection() public {
         _due();
         pushRecord(RecordKind.SessionClosed, abi.encode(SessionClosedData(keccak256("unknown"))));
-        assertEq(uint8(_elect()), uint8(ElectionPolicy.Outcome.Disabled));
+        assertEq(uint8(_elect()), uint8(ElectionStorage.Outcome.Disabled));
         assertEq(election.attemptCursor(), 0, "nothing consumed");
     }
 
     function test_anUnreadableRegistryOrCustodyDisablesInsteadOfReverting() public {
         _due();
         vm.mockCallRevert(address(roots), abi.encodeWithSignature("progress()"), "x");
-        assertEq(uint8(_elect()), uint8(ElectionPolicy.Outcome.Disabled));
+        assertEq(uint8(_elect()), uint8(ElectionStorage.Outcome.Disabled));
         vm.clearMockedCalls();
         vm.mockCallRevert(address(custody), abi.encodeWithSignature("lastAckedAssignment()"), "x");
-        assertEq(uint8(_elect()), uint8(ElectionPolicy.Outcome.Disabled));
+        assertEq(uint8(_elect()), uint8(ElectionStorage.Outcome.Disabled));
         vm.clearMockedCalls();
         assertEq(election.attemptCursor(), 0);
     }
@@ -118,11 +118,11 @@ contract ElectionTest is P85Flow {
         bytes32 resultID = _resultID(1, ORIGIN);
         bytes32 assignmentID = _assignmentOf(resultID);
         vm.expectEmit(true, false, false, false, address(election));
-        emit ElectionPolicy.ElectionOpened(resultID, 1, assignmentID, bytes32(0), ORIGIN);
-        assertEq(uint8(_elect()), uint8(ElectionPolicy.Outcome.Reserved));
+        emit ElectionStorage.ElectionOpened(resultID, 1, assignmentID, bytes32(0), ORIGIN);
+        assertEq(uint8(_elect()), uint8(ElectionStorage.Outcome.Reserved));
 
-        ElectionPolicy.Result memory r = election.result(resultID);
-        assertEq(uint8(r.state), uint8(ElectionPolicy.ResultState.Reserved));
+        ElectionStorage.Result memory r = election.result(resultID);
+        assertEq(uint8(r.state), uint8(ElectionStorage.ResultState.Reserved));
         assertEq(r.attempt, 1);
         assertEq(r.progress, CAD_P);
         assertEq(r.ucTime, CAD_T);
@@ -146,7 +146,7 @@ contract ElectionTest is P85Flow {
         assertEq(custody.assignmentExposures(assignmentID).length, N_GENESIS);
 
         // the frozen identity records
-        ElectionPolicy.Frozen[] memory f = election.frozenMembers(resultID);
+        ElectionStorage.Frozen[] memory f = election.frozenMembers(resultID);
         assertEq(f.length, N_GENESIS);
         for (uint256 i; i < f.length; ++i) {
             assertEq(f[i].id, gid(i));
@@ -169,13 +169,13 @@ contract ElectionTest is P85Flow {
         }
         uint64 raw = uint64((GENESIS_BOND + extra) / (100 * UCT)); // 200,010 each: X = 800,040 > B
         _due();
-        assertEq(uint8(_elect()), uint8(ElectionPolicy.Outcome.Reserved));
+        assertEq(uint8(_elect()), uint8(ElectionStorage.Outcome.Reserved));
         bytes32 resultID = _resultID(1, ORIGIN);
         bytes32 assignmentID = _assignmentOf(resultID);
 
         uint256 s = (uint256(raw) * N_GENESIS + (65_536 - N_GENESIS) - 1) / (65_536 - N_GENESIS);
         uint64 q = uint64(raw / s);
-        ElectionPolicy.Frozen[] memory f = election.frozenMembers(resultID);
+        ElectionStorage.Frozen[] memory f = election.frozenMembers(resultID);
         bytes32[] memory eids = custody.assignmentExposures(assignmentID);
         uint256 total;
         for (uint256 i; i < f.length; ++i) {
@@ -193,9 +193,9 @@ contract ElectionTest is P85Flow {
 
     function test_oneUnresolvedResultAtATime() public {
         _due();
-        assertEq(uint8(_elect()), uint8(ElectionPolicy.Outcome.Reserved));
+        assertEq(uint8(_elect()), uint8(ElectionStorage.Outcome.Reserved));
         clock(10 * CAD_P, 10 * CAD_T);
-        assertEq(uint8(_elect()), uint8(ElectionPolicy.Outcome.Disabled));
+        assertEq(uint8(_elect()), uint8(ElectionStorage.Outcome.Disabled));
         assertEq(election.attemptCursor(), 1);
     }
 
@@ -204,11 +204,11 @@ contract ElectionTest is P85Flow {
         uint256 snap = vm.snapshotState();
         vm.prank(SYS);
         election.elect(keccak256("origin/A"));
-        ElectionPolicy.Result memory a = election.result(_resultID(1, keccak256("origin/A")));
+        ElectionStorage.Result memory a = election.result(_resultID(1, keccak256("origin/A")));
         vm.revertToState(snap);
         vm.prank(SYS);
         election.elect(keccak256("origin/B"));
-        ElectionPolicy.Result memory b = election.result(_resultID(1, keccak256("origin/B")));
+        ElectionStorage.Result memory b = election.result(_resultID(1, keccak256("origin/B")));
         assertTrue(a.snapshotDigest != bytes32(0) && a.snapshotDigest != b.snapshotDigest);
         assertTrue(a.assignmentID != b.assignmentID);
     }
@@ -225,7 +225,7 @@ contract ElectionTest is P85Flow {
         applyAll();
 
         assertEq(
-            uint8(election.result(resultID).state), uint8(ElectionPolicy.ResultState.Acknowledged)
+            uint8(election.result(resultID).state), uint8(ElectionStorage.ResultState.Acknowledged)
         );
         assertEq(election.openResult(), bytes32(0));
         assertEq(election.anchorProgress(), CAD_P + 50);
@@ -236,9 +236,9 @@ contract ElectionTest is P85Flow {
         assertEq(p, CAD_P + 50 + CAD_P);
         assertEq(t, CAD_T + 77 + CAD_T);
         clock(uint64(p) - 1, uint64(t));
-        assertEq(uint8(_elect()), uint8(ElectionPolicy.Outcome.NotDue));
+        assertEq(uint8(_elect()), uint8(ElectionStorage.Outcome.NotDue));
         clock(uint64(p), uint64(t));
-        assertEq(uint8(_elect()), uint8(ElectionPolicy.Outcome.Reserved));
+        assertEq(uint8(_elect()), uint8(ElectionStorage.Outcome.Reserved));
         assertEq(election.attemptCursor(), 2);
     }
 
@@ -253,7 +253,7 @@ contract ElectionTest is P85Flow {
         );
         applyAll();
         assertEq(
-            uint8(election.result(resultID).state), uint8(ElectionPolicy.ResultState.Recovered)
+            uint8(election.result(resultID).state), uint8(ElectionStorage.ResultState.Recovered)
         );
         assertEq(election.openResult(), bytes32(0));
         assertEq(election.anchorProgress(), 0);
@@ -271,10 +271,10 @@ contract ElectionTest is P85Flow {
         clock(CAD_P + 10, CAD_T + 10);
         pushRecord(RecordKind.SessionClosed, abi.encode(SessionClosedData(resultID)));
         applyAll();
-        assertEq(uint8(election.result(resultID).state), uint8(ElectionPolicy.ResultState.Closed));
+        assertEq(uint8(election.result(resultID).state), uint8(ElectionStorage.ResultState.Closed));
         assertEq(election.openResult(), bytes32(0));
         assertEq(election.anchorProgress(), 0);
-        assertEq(uint8(_elect()), uint8(ElectionPolicy.Outcome.NotDue));
+        assertEq(uint8(_elect()), uint8(ElectionStorage.Outcome.NotDue));
     }
 
     function test_resultsThisModuleDidNotCreateAreIgnoredByTheCallback() public {
@@ -287,16 +287,16 @@ contract ElectionTest is P85Flow {
     }
 
     function test_resultResolvedIsCustodyOnly() public {
-        vm.expectRevert(ElectionPolicy.NotCustody.selector);
+        vm.expectRevert(ElectionStorage.NotCustody.selector);
         election.resultResolved(bytes32(0), 2, 1, 1);
     }
 
     // --- ordered NoCandidate ---------------------------------------------------------------------
 
-    function _assertNoCandidate(ElectionPolicy.Reason why) internal view {
+    function _assertNoCandidate(ElectionStorage.Reason why) internal view {
         bytes32 resultID = _resultID(1, ORIGIN);
-        ElectionPolicy.Result memory r = election.result(resultID);
-        assertEq(uint8(r.state), uint8(ElectionPolicy.ResultState.NoCandidate));
+        ElectionStorage.Result memory r = election.result(resultID);
+        assertEq(uint8(r.state), uint8(ElectionStorage.ResultState.NoCandidate));
         assertEq(uint8(r.reason), uint8(why));
         assertEq(r.attempt, 1);
         assertEq(election.attemptCursor(), 1);
@@ -320,25 +320,25 @@ contract ElectionTest is P85Flow {
         requestRetirement(2); // one eligible identity left, below the floor of two
         _due();
         vm.expectEmit(true, false, false, true, address(election));
-        emit ElectionPolicy.NoCandidate(
-            _resultID(1, ORIGIN), 1, ElectionPolicy.Reason.Cardinality, ORIGIN
+        emit ElectionStorage.NoCandidate(
+            _resultID(1, ORIGIN), 1, ElectionStorage.Reason.Cardinality, ORIGIN
         );
-        assertEq(uint8(_elect()), uint8(ElectionPolicy.Outcome.NoCandidateRecorded));
-        _assertNoCandidate(ElectionPolicy.Reason.Cardinality);
+        assertEq(uint8(_elect()), uint8(ElectionStorage.Outcome.NoCandidateRecorded));
+        _assertNoCandidate(ElectionStorage.Reason.Cardinality);
     }
 
     function test_lossOfAMemberBeyondTheStrictBoundaryIsMembershipChurn() public {
         requestRetirement(0); // 3 of 4 remain: 3 * 1 < min(4, 3) fails
         _due();
-        assertEq(uint8(_elect()), uint8(ElectionPolicy.Outcome.NoCandidateRecorded));
-        _assertNoCandidate(ElectionPolicy.Reason.MembershipChurn);
+        assertEq(uint8(_elect()), uint8(ElectionStorage.Outcome.NoCandidateRecorded));
+        _assertNoCandidate(ElectionStorage.Reason.MembershipChurn);
     }
 
     function test_aWeightShiftBeyondTheDistanceBudgetIsWeightChurn() public {
         bondFor(gid(3), GENESIS_BOND); // weights 10,10,10,20: D = 0.3 > 1/4
         _due();
-        assertEq(uint8(_elect()), uint8(ElectionPolicy.Outcome.NoCandidateRecorded));
-        _assertNoCandidate(ElectionPolicy.Reason.WeightChurn);
+        assertEq(uint8(_elect()), uint8(ElectionStorage.Outcome.NoCandidateRecorded));
+        _assertNoCandidate(ElectionStorage.Reason.WeightChurn);
     }
 
     function test_aReservationRefusedByCustodyIsRecordedNotRaised() public {
@@ -346,9 +346,10 @@ contract ElectionTest is P85Flow {
         // the assignment the election will name is already taken
         bytes32 resultID = _resultID(1, ORIGIN);
         reserve(keccak256("other"), _assignmentOf(resultID), allMembers(), 7);
-        assertEq(uint8(_elect()), uint8(ElectionPolicy.Outcome.NoCandidateRecorded));
+        assertEq(uint8(_elect()), uint8(ElectionStorage.Outcome.NoCandidateRecorded));
         assertEq(
-            uint8(election.result(resultID).reason), uint8(ElectionPolicy.Reason.ReservationRefused)
+            uint8(election.result(resultID).reason),
+            uint8(ElectionStorage.Reason.ReservationRefused)
         );
         assertEq(election.openResult(), bytes32(0));
     }
@@ -356,11 +357,11 @@ contract ElectionTest is P85Flow {
     function test_aFailureInsideTheElectionIsRecordedAsInternalFailure() public {
         _due();
         vm.mockCallRevert(address(custody), abi.encodeCall(IStakeCustody.bondUnit, ()), "boom");
-        assertEq(uint8(_elect()), uint8(ElectionPolicy.Outcome.NoCandidateRecorded));
+        assertEq(uint8(_elect()), uint8(ElectionStorage.Outcome.NoCandidateRecorded));
         vm.clearMockedCalls();
         bytes32 resultID = _resultID(1, ORIGIN);
         assertEq(
-            uint8(election.result(resultID).reason), uint8(ElectionPolicy.Reason.InternalFailure)
+            uint8(election.result(resultID).reason), uint8(ElectionStorage.Reason.InternalFailure)
         );
         assertEq(election.attemptCursor(), 1);
         assertEq(election.openResult(), bytes32(0));
@@ -390,8 +391,8 @@ contract ElectionTest is P85Flow {
         _admit(id, 0x5001, 0x5002, 0x5004);
         assertTrue(election.isIndexed(id));
         _due();
-        assertEq(uint8(_elect()), uint8(ElectionPolicy.Outcome.Reserved));
-        ElectionPolicy.Frozen[] memory f = election.frozenMembers(_resultID(1, ORIGIN));
+        assertEq(uint8(_elect()), uint8(ElectionStorage.Outcome.Reserved));
+        ElectionStorage.Frozen[] memory f = election.frozenMembers(_resultID(1, ORIGIN));
         assertEq(f.length, N_GENESIS + 1);
         assertEq(f[N_GENESIS].id, id);
         assertEq(f[N_GENESIS].weight, 1);
@@ -401,7 +402,7 @@ contract ElectionTest is P85Flow {
         uint64 id = register(0x5001, 0x5002, vm.addr(0x5003));
         bondFor(id, 100 * UCT); // indexed, but never admitted
         _due();
-        assertEq(uint8(_elect()), uint8(ElectionPolicy.Outcome.Reserved));
+        assertEq(uint8(_elect()), uint8(ElectionStorage.Outcome.Reserved));
         assertEq(election.frozenMembers(_resultID(1, ORIGIN)).length, N_GENESIS);
     }
 
@@ -410,7 +411,7 @@ contract ElectionTest is P85Flow {
         bondFor(id, 99 * UCT); // below B_min = U_bond = 100
         _admit(id, 0x5001, 0x5002, 0x5004);
         _due();
-        assertEq(uint8(_elect()), uint8(ElectionPolicy.Outcome.Reserved));
+        assertEq(uint8(_elect()), uint8(ElectionStorage.Outcome.Reserved));
         assertEq(election.frozenMembers(_resultID(1, ORIGIN)).length, N_GENESIS);
     }
 
@@ -422,7 +423,7 @@ contract ElectionTest is P85Flow {
         vm.prank(vm.addr(0x5001));
         custody.requestRetirement(id);
         _due();
-        assertEq(uint8(_elect()), uint8(ElectionPolicy.Outcome.Reserved));
+        assertEq(uint8(_elect()), uint8(ElectionStorage.Outcome.Reserved));
         assertEq(election.frozenMembers(_resultID(1, ORIGIN)).length, N_GENESIS);
     }
 
@@ -434,7 +435,7 @@ contract ElectionTest is P85Flow {
             address(evidence), abi.encodeWithSignature("excluded(uint64)", id), abi.encode(true)
         );
         _due();
-        assertEq(uint8(_elect()), uint8(ElectionPolicy.Outcome.Reserved));
+        assertEq(uint8(_elect()), uint8(ElectionStorage.Outcome.Reserved));
         assertEq(election.frozenMembers(_resultID(1, ORIGIN)).length, N_GENESIS);
     }
 
@@ -454,7 +455,7 @@ contract ElectionTest is P85Flow {
         bytes32 slot = bytes32(uint256(keccak256(abi.encode(lotOf(id), uint256(27)))) + 1);
         vm.store(address(custody), slot, bytes32(uint256(250 * UCT))); // remaining: 250 UCT
         _due();
-        assertEq(uint8(_elect()), uint8(ElectionPolicy.Outcome.Reserved));
+        assertEq(uint8(_elect()), uint8(ElectionStorage.Outcome.Reserved));
         assertEq(
             election.frozenMembers(_resultID(1, ORIGIN)).length,
             N_GENESIS,
@@ -487,14 +488,14 @@ contract ElectionTest is P85Flow {
     function test_anEvmKeyRegisteredToAnotherIdentityDoesNotQualify() public {
         _joinerWithKeyOwner(gid(0), 2);
         _due();
-        assertEq(uint8(_elect()), uint8(ElectionPolicy.Outcome.Reserved));
+        assertEq(uint8(_elect()), uint8(ElectionStorage.Outcome.Reserved));
         assertEq(election.frozenMembers(_resultID(1, ORIGIN)).length, N_GENESIS);
     }
 
     function test_anEvmKeyRegisteredInAnotherRoleDoesNotQualify() public {
         _joinerWithKeyOwner(5, 1); // the joiner's own id, but registered as a root key
         _due();
-        assertEq(uint8(_elect()), uint8(ElectionPolicy.Outcome.Reserved));
+        assertEq(uint8(_elect()), uint8(ElectionStorage.Outcome.Reserved));
         assertEq(election.frozenMembers(_resultID(1, ORIGIN)).length, N_GENESIS);
     }
 
@@ -507,10 +508,10 @@ contract ElectionTest is P85Flow {
         );
         reserve(keccak256("hand"), keccak256("hand/asg"), allMembers(), 7); // refCount 2 of 3
         _due();
-        assertEq(uint8(_elect()), uint8(ElectionPolicy.Outcome.NoCandidateRecorded));
+        assertEq(uint8(_elect()), uint8(ElectionStorage.Outcome.NoCandidateRecorded));
         assertEq(
             uint8(election.result(_resultID(1, ORIGIN)).reason),
-            uint8(ElectionPolicy.Reason.ReferenceCapacity)
+            uint8(ElectionStorage.Reason.ReferenceCapacity)
         );
         assertEq(election.openResult(), bytes32(0));
     }

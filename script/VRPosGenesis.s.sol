@@ -35,8 +35,8 @@ import {
 /// `rootGenesis` (the root consensus identity the Evidence module verifies votes under), `assignmentId` (the genesis assignment id of the
 /// FULL shard configuration, which the roots close), `rewardFunding`, `rewardRate` (decimal base units), `cadenceRounds`, `cadenceSeconds`.
 contract VRPosGenesis is VRGenesis {
-    uint32 internal constant MAX_COMMITTEE = 5;
-    uint32 internal constant MAX_POOL = 8;
+    uint32 internal constant MAX_COMMITTEE = 16;
+    uint32 internal constant MAX_POOL = 20;
     address internal constant ADAPTER = address(uint160((uint256(0xff) << 152) | 0x07));
 
     function run() external override {
@@ -57,10 +57,11 @@ contract VRPosGenesis is VRGenesis {
         ValidatorRegistry.Genesis memory g = _genesis(json);
         require(g.rMax <= 4, "VR PoS genesis: custody's reference ceiling");
         // The measured deployment limit of the prototype (test/vr/pos/PosLimit.t.sol; astra's ruling and the coordinator's
-        // decision): the PoS-capable VR build's caps (CAP_ELECT 5.0 M, CAP_OUTPUT 1.5 M, CAP_RECORD 2.5 M) carry the P85 election, outputOf and
-        // the RecoveryAck with 20% headroom only for a committee of at most MAX_COMMITTEE (5)
-        // members drawn from an index of at most MAX_POOL identities of one lot each. ElectionPolicy refuses a registration past vMax
-        // (IndexFull), so the pool cannot outgrow the measurement, and nMax bounds every later election.
+        // decision): the PoS-capable VR build's caps (CAP_ELECT 7.0 M, CAP_OUTPUT 1.5 M, CAP_RECORD 2.5 M) carry the P85 election, outputOf and
+        // The bounded compact profile is selected with a live index above the legacy ceiling.
+        require(
+            g.nMax <= 5 || g.vMax > 8, "VR PoS genesis: large committee requires compact custody"
+        );
         require(
             g.nMax <= MAX_COMMITTEE && g.nTarget <= g.nMax,
             "VR PoS genesis: nMax and nTarget above the measured limit"
@@ -140,6 +141,9 @@ contract VRPosGenesis is VRGenesis {
         vm.serializeBytes32(d, "custodyCodeHash", custody.codehash);
         vm.serializeAddress(d, "election", election);
         vm.serializeBytes32(d, "electionCodeHash", election.codehash);
+        address publicationImpl = e.PUBLICATION_IMPL();
+        vm.serializeAddress(d, "electionPublication", publicationImpl);
+        vm.serializeBytes32(d, "electionPublicationCodeHash", publicationImpl.codehash);
         vm.serializeAddress(d, "evidence", address(PosFactoryRef(factory).EVIDENCE()));
         vm.serializeAddress(d, "selection", address(e.selection()));
         vm.serializeAddress(d, "reader", address(e.reader()));
@@ -150,6 +154,7 @@ contract VRPosGenesis is VRGenesis {
             d, "rewardPoolCodeHash", address(PosFactoryRef(factory).REWARDS()).codehash
         );
         vm.serializeAddress(d, "genesisImpl", genesisImpl);
+        vm.serializeBytes32(d, "genesisImplCodeHash", genesisImpl.codehash);
         vm.serializeAddress(d, "factory", factory);
         vm.serializeBytes32(d, "manifestHash", PosFactoryRef(factory).MANIFEST_HASH());
         vm.serializeBytes32(d, "posAssignmentId", genesisAssignment);

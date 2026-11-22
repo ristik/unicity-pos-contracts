@@ -2,7 +2,7 @@
 pragma solidity 0.8.37;
 
 import {P85Base} from "./P85Base.sol";
-import {ElectionPolicy} from "../../src/p85/ElectionPolicy.sol";
+import {ElectionPolicy, ElectionStorage} from "../../src/p85/ElectionPolicy.sol";
 import {StakeCustody} from "../../src/p85/StakeCustody.sol";
 import {CustodyStorage} from "../../src/p85/CustodyStorage.sol";
 import {Delegation, DelegationRequest} from "../../src/p85/P85Types.sol";
@@ -41,7 +41,7 @@ contract DelegationTest is P85Base {
     function test_payeeOnlyNominationStagesTheNewPayeeAndConsumesTheNonce() public {
         DelegationRequest memory r = _request(0, evmPk(0), payeeB, 0, 1_000);
         vm.expectEmit(true, false, false, false, address(election));
-        emit ElectionPolicy.DelegationAdmitted(gid(0), bytes32(0), payeeB, 0);
+        emit ElectionStorage.DelegationAdmitted(gid(0), bytes32(0), payeeB, 0);
         _admit(r, ownerPk(0), evmPk(0));
         (Delegation memory d, bytes32 bindingHash, uint64 nextNonce) =
             election.delegation(gid(0), 1);
@@ -65,7 +65,7 @@ contract DelegationTest is P85Base {
         bytes memory ownerSig = sign(ownerPk(0), digest);
         bytes memory evmSig = sign(evmPk(0), digest);
         election.admitDelegation(r, ownerSig, evmSig);
-        vm.expectRevert(ElectionPolicy.DelegationNonceMismatch.selector);
+        vm.expectRevert(ElectionStorage.DelegationNonceMismatch.selector);
         election.admitDelegation(r, ownerSig, evmSig);
     }
 
@@ -74,7 +74,7 @@ contract DelegationTest is P85Base {
         bytes32 digest = election.delegationDigest(r);
         bytes memory ownerSig = sign(ownerPk(0), digest);
         bytes memory evmSig = sign(evmPk(0), digest);
-        vm.expectRevert(ElectionPolicy.DelegationNonceMismatch.selector);
+        vm.expectRevert(ElectionStorage.DelegationNonceMismatch.selector);
         election.admitDelegation(r, ownerSig, evmSig);
     }
 
@@ -84,7 +84,7 @@ contract DelegationTest is P85Base {
         bytes memory ownerSig = sign(ownerPk(0), digest);
         bytes memory evmSig = sign(evmPk(0), digest);
         DelegationRequest memory forged = _request(0, evmPk(0), makeAddr("attackerPayee"), 0, 1_000);
-        vm.expectRevert(ElectionPolicy.BadOwnerAuthorization.selector);
+        vm.expectRevert(ElectionStorage.BadOwnerAuthorization.selector);
         election.admitDelegation(forged, ownerSig, evmSig);
     }
 
@@ -94,7 +94,7 @@ contract DelegationTest is P85Base {
         bytes memory ownerSig = sign(ownerPk(0), digest);
         // correct owner authorization, but the EVM proof is made by another key
         bytes memory wrongEvm = sign(evmPk(1), digest);
-        vm.expectRevert(ElectionPolicy.BadEvmPossession.selector);
+        vm.expectRevert(ElectionStorage.BadEvmPossession.selector);
         election.admitDelegation(r, ownerSig, wrongEvm);
     }
 
@@ -102,9 +102,9 @@ contract DelegationTest is P85Base {
         DelegationRequest memory r = _request(0, evmPk(0), payeeB, 0, 1_000);
         bytes32 digest = election.delegationDigest(r);
         bytes memory evmSig = sign(evmPk(0), digest);
-        vm.expectRevert(ElectionPolicy.BadOwnerAuthorization.selector);
+        vm.expectRevert(ElectionStorage.BadOwnerAuthorization.selector);
         election.admitDelegation(r, sign(ownerPk(1), digest), evmSig); // another identity's owner
-        vm.expectRevert(ElectionPolicy.BadOwnerAuthorization.selector);
+        vm.expectRevert(ElectionStorage.BadOwnerAuthorization.selector);
         election.admitDelegation(r, hex"00", evmSig); // malformed signature
     }
 
@@ -114,7 +114,7 @@ contract DelegationTest is P85Base {
         bytes32 digest = election.delegationDigest(r);
         bytes memory ownerSig = sign(ownerPk(0), digest);
         bytes memory evmSig = sign(evmPk(0), digest);
-        vm.expectRevert(ElectionPolicy.DelegationExpired.selector);
+        vm.expectRevert(ElectionStorage.DelegationExpired.selector);
         election.admitDelegation(r, ownerSig, evmSig);
         r = _request(0, evmPk(0), payeeB, 0, 500); // expiry == UC time still valid
         _admit(r, ownerPk(0), evmPk(0));
@@ -130,7 +130,7 @@ contract DelegationTest is P85Base {
         custody.proposeRoles(gid(0), newOwner, vm.addr(wdPk(0)), 0);
         vm.prank(newOwner);
         custody.acceptRoles(gid(0), 0, newOwner, vm.addr(wdPk(0)));
-        vm.expectRevert(ElectionPolicy.RoleNonceMismatch.selector);
+        vm.expectRevert(ElectionStorage.RoleNonceMismatch.selector);
         election.admitDelegation(r, ownerSig, evmSig);
     }
 
@@ -140,28 +140,28 @@ contract DelegationTest is P85Base {
         bytes memory ownerSig = sign(ownerPk(0), digest);
         bytes memory evmSig = sign(evmPk(0), digest);
         r.generation = 2;
-        vm.expectRevert(ElectionPolicy.StaleGeneration.selector);
+        vm.expectRevert(ElectionStorage.StaleGeneration.selector);
         election.admitDelegation(r, ownerSig, evmSig);
         r.generation = 1;
         r.id = 99;
-        vm.expectRevert(ElectionPolicy.UnknownIdentity.selector);
+        vm.expectRevert(ElectionStorage.UnknownIdentity.selector);
         election.admitDelegation(r, ownerSig, evmSig);
     }
 
     function test_zeroPayeeAndMalformedRootKeyAreRejected() public {
         DelegationRequest memory r = _request(0, evmPk(0), address(0), 0, 1_000);
-        vm.expectRevert(ElectionPolicy.ZeroPayee.selector);
+        vm.expectRevert(ElectionStorage.ZeroPayee.selector);
         election.admitDelegation(r, hex"", hex"");
         r = _request(0, evmPk(0), payeeB, 0, 1_000);
         r.binding.rootKey = hex"0102";
-        vm.expectRevert(ElectionPolicy.BadRootKey.selector);
+        vm.expectRevert(ElectionStorage.BadRootKey.selector);
         election.admitDelegation(r, hex"", hex"");
     }
 
     function test_bindingMustNameTheIdentitysCurrentOrStagedRootKey() public {
         DelegationRequest memory r = _request(0, evmPk(0), payeeB, 0, 1_000);
         r.binding.rootKey = compressed(rootPk(1)); // another identity's key
-        vm.expectRevert(ElectionPolicy.WrongRootKey.selector);
+        vm.expectRevert(ElectionStorage.WrongRootKey.selector);
         election.admitDelegation(r, hex"", hex"");
     }
 
@@ -240,7 +240,7 @@ contract DelegationTest is P85Base {
     }
 
     function test_syncLiveIndexOnlyByCustody() public {
-        vm.expectRevert(ElectionPolicy.NotCustody.selector);
+        vm.expectRevert(ElectionStorage.NotCustody.selector);
         election.syncLiveIndex(gid(0));
     }
 }

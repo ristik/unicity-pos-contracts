@@ -2,7 +2,7 @@
 pragma solidity 0.8.37;
 
 import {P85Flow} from "./P85Flow.sol";
-import {ElectionPolicy} from "../../src/p85/ElectionPolicy.sol";
+import {ElectionPolicy, ElectionStorage} from "../../src/p85/ElectionPolicy.sol";
 import {ElectionParams, Delegation, DelegationRequest} from "../../src/p85/P85Types.sol";
 
 /// @notice The proof slots of a reserved and of a published result, and every word the root recomputes from a candidate's identity
@@ -161,7 +161,7 @@ contract PublicationFixtureTest is P85Flow {
     }
 
     function _pops(bytes32 resultID) internal returns (string memory out) {
-        ElectionPolicy.Frozen[] memory f = election.frozenMembers(resultID);
+        ElectionStorage.Frozen[] memory f = election.frozenMembers(resultID);
         out = "[";
         for (uint256 i; i < f.length; ++i) {
             bytes memory key = compressed(evmPk(f[i].id - 1));
@@ -200,7 +200,7 @@ contract PublicationFixtureTest is P85Flow {
 
     /// @dev The read surface of bft-core's `posrelayer` builder (election and custody getters), recorded at the published state so a Go test
     /// can serve the builder from the real modules' answers. The builder may issue any subset; a call outside it fails the test.
-    function _relayerReads(bytes32 resultID, ElectionPolicy.Result memory r)
+    function _relayerReads(bytes32 resultID, ElectionStorage.Result memory r)
         internal
         view
         returns (string memory out)
@@ -215,7 +215,7 @@ contract PublicationFixtureTest is P85Flow {
             ",",
             _call(address(election), abi.encodeCall(election.frozenMembers, (resultID)))
         );
-        ElectionPolicy.Frozen[] memory f = election.frozenMembers(resultID);
+        ElectionStorage.Frozen[] memory f = election.frozenMembers(resultID);
         for (uint256 i; i < f.length; ++i) {
             out = string.concat(
                 out,
@@ -265,7 +265,7 @@ contract PublicationFixtureTest is P85Flow {
 
     /// @dev The transactions of bft-core's relayer, as calldata: the possession-proof submission and finalization of the published result, and
     /// a joiner's onboarding (register, bond, admitDelegation). Signatures are RFC 6979 (vm.sign), so the Go tool's calldata is byte-identical.
-    function _relayerWrites(bytes32 resultID, ElectionPolicy.PoPInput[] memory inputs)
+    function _relayerWrites(bytes32 resultID, ElectionStorage.PoPInput[] memory inputs)
         internal
         returns (string memory)
     {
@@ -336,7 +336,7 @@ contract PublicationFixtureTest is P85Flow {
         vm.prank(SYS);
         election.elect(ORIGIN);
         bytes32 resultID = election.openResult();
-        ElectionPolicy.Result memory r = election.result(resultID);
+        ElectionStorage.Result memory r = election.result(resultID);
 
         string memory reserved = _slots(resultID);
         // the same reservation marked lost before any publication (a RejectResult closes it at once, bft-core#857)
@@ -344,17 +344,17 @@ contract PublicationFixtureTest is P85Flow {
         string memory reservedLost = _lostSlots(resultID);
         vm.revertToState(beforeLoss);
         string memory pops = _pops(resultID);
-        ElectionPolicy.PoPInput[] memory inputs =
-            new ElectionPolicy.PoPInput[](election.frozenMembers(resultID).length);
+        ElectionStorage.PoPInput[] memory inputs =
+            new ElectionStorage.PoPInput[](election.frozenMembers(resultID).length);
         for (uint256 i; i < inputs.length; ++i) {
             bytes memory key = compressed(evmPk(i));
-            inputs[i] = ElectionPolicy.PoPInput(
+            inputs[i] = ElectionStorage.PoPInput(
                 gid(i), key, _sig(evmPk(i), election.popDigest(resultID, gid(i), keccak256(key)))
             );
         }
         election.submitAssignmentPoPs(resultID, inputs);
         election.finalizeCandidate(resultID);
-        ElectionPolicy.Publication memory p = election.publication(resultID);
+        ElectionStorage.Publication memory p = election.publication(resultID);
         Asg memory a = asg(r.assignmentID);
         string memory relayerReads = _relayerReads(resultID, r);
         string memory relayerWrites = _relayerWrites(resultID, inputs);

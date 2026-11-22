@@ -10,7 +10,7 @@ import {VRRecordsFacetPos} from "../../../src/vr/pos/build/VRRecordsFacetPos.sol
 import {PosElectionAdapter} from "../../../src/vr/pos/PosElectionAdapter.sol";
 import {VRC} from "../../../src/vr/VRConstants.sol";
 import {Registration, Member, FeeSet, IVR} from "../../../src/vr/VRTypes.sol";
-import {ElectionPolicy} from "../../../src/p85/ElectionPolicy.sol";
+import {ElectionPolicy, ElectionStorage} from "../../../src/p85/ElectionPolicy.sol";
 import {
     Delegation,
     DelegationRequest,
@@ -138,11 +138,13 @@ abstract contract PosBase is P85Flow {
     /// @dev Every account of the generation cold again (the system call of a fresh transaction meets them so; a measurement inside the
     /// transaction that built the state is warm and a lower bound).
     function _coolAll() internal {
-        address[10] memory a = [
+        address[12] memory a = [
             VR_ADDR,
             ADAPTER,
             address(custody),
             address(election),
+            election.PUBLICATION_IMPL(),
+            custody.GENESIS_IMPL(),
             address(evidence),
             address(election.selection()),
             address(election.reader()),
@@ -192,13 +194,13 @@ abstract contract PosBase is P85Flow {
 
     function _pops(bytes32 rid, uint256[] memory idx)
         internal
-        returns (ElectionPolicy.PoPInput[] memory pops)
+        returns (ElectionStorage.PoPInput[] memory pops)
     {
-        pops = new ElectionPolicy.PoPInput[](idx.length);
+        pops = new ElectionStorage.PoPInput[](idx.length);
         for (uint256 k; k < idx.length; ++k) {
             uint256 i = idx[k];
             bytes memory key = compressed(evmPk(i));
-            pops[k] = ElectionPolicy.PoPInput(
+            pops[k] = ElectionStorage.PoPInput(
                 gid(i), key, sign(evmPk(i), election.popDigest(rid, gid(i), keccak256(key)))
             );
         }
@@ -404,12 +406,12 @@ abstract contract PosBase is P85Flow {
     }
 
     function _publishResult2(bytes32 rid) internal returns (uint8) {
-        ElectionPolicy.Frozen[] memory f = election.frozenMembers(rid);
-        ElectionPolicy.PoPInput[] memory pops = new ElectionPolicy.PoPInput[](f.length);
+        ElectionStorage.Frozen[] memory f = election.frozenMembers(rid);
+        ElectionStorage.PoPInput[] memory pops = new ElectionStorage.PoPInput[](f.length);
         for (uint256 k; k < f.length; ++k) {
             uint256 pk = f[k].id <= N_GENESIS ? evmPk(f[k].id - 1) : evmPkOf[f[k].id];
             bytes memory key = compressed(pk);
-            pops[k] = ElectionPolicy.PoPInput(
+            pops[k] = ElectionStorage.PoPInput(
                 f[k].id, key, sign(pk, election.popDigest(rid, f[k].id, keccak256(key)))
             );
         }

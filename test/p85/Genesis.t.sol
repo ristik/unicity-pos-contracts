@@ -6,7 +6,7 @@ import {PosFactory} from "../../src/p85/PosFactory.sol";
 import {StakeCustody} from "../../src/p85/StakeCustody.sol";
 import {CustodyStorage} from "../../src/p85/CustodyStorage.sol";
 import {CustodyGenesis} from "../../src/p85/CustodyGenesis.sol";
-import {ElectionPolicy} from "../../src/p85/ElectionPolicy.sol";
+import {ElectionPolicy, ElectionStorage} from "../../src/p85/ElectionPolicy.sol";
 import {Evidence} from "../../src/p85/Evidence.sol";
 import {SelectionEngine} from "../../src/p85/SelectionEngine.sol";
 import {EligibilityReader} from "../../src/p85/EligibilityReader.sol";
@@ -123,13 +123,13 @@ contract GenesisTest is P85Base {
 
     function test_seedGenesisOnlyByFactory() public {
         vm.expectRevert(CustodyStorage.NotFactory.selector);
-        custody.seedGenesis(address(1), address(2), "", "", address(3));
+        custody.seedGenesis(address(1), address(2), "", "", address(3), bytes32(0), bytes32(0));
     }
 
     function test_seedGenesisAfterSealReverts() public {
         vm.prank(address(factory));
         vm.expectRevert(CustodyStorage.NotInitialized.selector);
-        custody.seedGenesis(address(1), address(2), "", "", address(3));
+        custody.seedGenesis(address(1), address(2), "", "", address(3), bytes32(0), bytes32(0));
     }
 
     function test_sealGenesisOnlyByFactoryAndOnce() public {
@@ -144,12 +144,12 @@ contract GenesisTest is P85Base {
         Manifest memory m;
         m.election = address(election);
         m.evidence = address(evidence);
-        vm.expectRevert(ElectionPolicy.NotFactory.selector);
+        vm.expectRevert(ElectionStorage.NotFactory.selector);
         election.initialize(bytes32(0), m);
         vm.expectRevert(Evidence.NotFactory.selector);
         evidence.initialize(bytes32(0), m);
         vm.startPrank(address(factory));
-        vm.expectRevert(ElectionPolicy.AlreadyInitialized.selector);
+        vm.expectRevert(ElectionStorage.AlreadyInitialized.selector);
         election.initialize(bytes32(0), m);
         vm.expectRevert(Evidence.AlreadyInitialized.selector);
         evidence.initialize(bytes32(0), m);
@@ -159,7 +159,7 @@ contract GenesisTest is P85Base {
     function test_electionInitializeRejectsForeignManifest() public {
         ElectionPolicy fresh = new ElectionPolicy(address(this));
         Manifest memory m; // m.election is not this contract
-        vm.expectRevert(ElectionPolicy.ManifestMismatch.selector);
+        vm.expectRevert(ElectionStorage.ManifestMismatch.selector);
         fresh.initialize(bytes32(0), m);
     }
 
@@ -174,16 +174,16 @@ contract GenesisTest is P85Base {
         m.electionParams = _electionParams();
         m.limits = Limits({vMax: 128, lMax: 8, rMax: 4, maxBatch: 32});
         m.reader = address(new EligibilityReader(address(evidence), address(custody))); // swapped
-        vm.expectRevert(ElectionPolicy.InvalidParams.selector);
+        vm.expectRevert(ElectionStorage.InvalidParams.selector);
         fresh.initialize(bytes32(0), m);
         m.reader = address(new EligibilityReader(address(custody), address(roots))); // swapped evidence
-        vm.expectRevert(ElectionPolicy.InvalidParams.selector);
+        vm.expectRevert(ElectionStorage.InvalidParams.selector);
         fresh.initialize(bytes32(0), m);
         m.reader = address(new EligibilityReader(address(roots), address(evidence))); // swapped custody only
-        vm.expectRevert(ElectionPolicy.InvalidParams.selector);
+        vm.expectRevert(ElectionStorage.InvalidParams.selector);
         fresh.initialize(bytes32(0), m);
         m.reader = address(0xdead); // no code
-        vm.expectRevert(ElectionPolicy.InvalidParams.selector);
+        vm.expectRevert(ElectionStorage.InvalidParams.selector);
         fresh.initialize(bytes32(0), m);
     }
 
@@ -202,7 +202,7 @@ contract GenesisTest is P85Base {
         m.electionParams = _electionParams();
         m.electionParams.nTarget = 16;
         m.electionParams.nMax = 17; // the only thing wrong with this manifest (16 is accepted below)
-        vm.expectRevert(ElectionPolicy.InvalidParams.selector);
+        vm.expectRevert(ElectionStorage.InvalidParams.selector);
         fresh.initialize(bytes32(0), m);
         m.electionParams.nMax = 16;
         fresh.initialize(bytes32(0), m);
@@ -245,7 +245,7 @@ contract GenesisTest is P85Base {
         vm.expectRevert(CustodyStorage.NotInitialized.selector);
         raw.register("", "", address(1));
         ElectionPolicy rawElection = new ElectionPolicy(address(this));
-        vm.expectRevert(ElectionPolicy.NotInitialized.selector);
+        vm.expectRevert(ElectionStorage.NotInitialized.selector);
         rawElection.syncLiveIndex(1);
         Evidence rawEvidence = new Evidence(address(this));
         uint256[] memory none = new uint256[](0);

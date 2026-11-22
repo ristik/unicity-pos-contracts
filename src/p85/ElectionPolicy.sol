@@ -6,6 +6,8 @@ pragma solidity 0.8.37;
 // forge-lint: disable-start(require-revert-in-loop, calls-loop, reentrancy-no-eth)
 
 import {
+    AssignmentSeat,
+    SeatBinding,
     Manifest,
     GenesisIdentity,
     Delegation,
@@ -59,7 +61,7 @@ interface IVRBinding {
 /// (network, chain, ElectionPolicyAddress, admitDelegation, StakingID, generation, rootNodeID,
 /// rootVerificationKey, evmNodeID, evmVerificationKey, operatorPayee, roleNonce, delegationNonce,
 /// expiry); both the owner and the EVM key sign that exact digest.
-contract ElectionPolicy {
+abstract contract ElectionStorage {
     bytes32 internal constant DELEGATION_DOMAIN = keccak256("unicity.p85.admitDelegation");
     bytes32 internal constant BINDING_DOMAIN = keccak256("unicity.p85.delegation-binding");
     bytes32 internal constant SIGNING_DOMAIN = keccak256("unicity.p85.signing-binding");
@@ -228,6 +230,8 @@ contract ElectionPolicy {
     }
 
     address public immutable FACTORY;
+    // ElectionPolicy initializes and updates these slots. ElectionPublication shares them by delegatecall.
+    // forge-lint: disable-start(uninitialized-state)
     bool public initialized;
     bytes32 public manifestHash;
     bytes32 public network;
@@ -265,6 +269,7 @@ contract ElectionPolicy {
     /// `elect` (the system hook calls VR, which calls the adapter) and it receives `outputLost` when a result is first marked lost. Zero on the
     /// plain P85 generation: SYSTEM_CALLER calls `elect` and there is no callback. Appended last: no slot moves.
     address public hookCaller;
+    // forge-lint: disable-end(uninitialized-state)
     /// @dev VT-04 (astra, #92): the validator registry a VR generation's identities must be aligned with (zero on the plain P85
     /// generation). `_eligible` skips an identity whose delegation is not its VR binding, so a misaligned identity is never selected and
     /// cannot hold up rotations. Appended last: no slot moves.
@@ -279,6 +284,70 @@ contract ElectionPolicy {
 
     /// @notice Seeds the genesis live index and staged bindings from the manifest. Custody has
     /// already assigned StakingIDs 1..n in manifest order.
+    modifier whenInitialized() {
+        _requireInitialized();
+        _;
+    }
+
+    function _requireInitialized() private view {
+        if (!initialized) revert NotInitialized();
+    }
+
+    function frozenMembers(bytes32 resultID) public view returns (Frozen[] memory out) {
+        bytes32 assignmentID = _results[resultID].assignmentID;
+        uint256 count = custody.assignmentSeatCount(assignmentID);
+        if (count == 0) return _frozen[resultID];
+        out = new Frozen[](count);
+        for (uint256 i = 0; i < count; ++i) {
+            AssignmentSeat memory m = custody.assignmentSeat(assignmentID, i);
+            out[i] =
+                Frozen(m.binding.id, m.binding.generation, m.weight, m.rawWeight, m.bindingHash);
+        }
+    }
+
+    /// @notice The digest a member's EVM key signs to prove possession for one frozen result: it names the network, chain, this
+    /// module, the result, its assignment and snapshot, the attempt and the member's identity, generation and EVM key. Registration and
+    /// delegation signatures cover other domains and cannot substitute. For an id that is not a frozen member of the result the
+    /// generation word is zero; every caller checks membership first.
+    function popDigest(bytes32 resultID, uint64 id, bytes32 evmKeyHash)
+        public
+        view
+        returns (bytes32)
+    {
+        Result storage r = _results[resultID];
+        Frozen[] memory f = frozenMembers(resultID);
+        uint64 generation = 0;
+        for (uint256 i = 0; i < f.length; ++i) {
+            if (f[i].id == id) generation = f[i].generation;
+        }
+        return keccak256(
+            abi.encode(
+                POP_DOMAIN,
+                network,
+                block.chainid,
+                address(this),
+                resultID,
+                r.assignmentID,
+                r.snapshotDigest,
+                r.attempt,
+                id,
+                generation,
+                evmKeyHash
+            )
+        );
+    }
+}
+
+contract ElectionPolicy is ElectionStorage {
+    address public immutable PUBLICATION_IMPL;
+    bytes32 public immutable PUBLICATION_CODE_HASH;
+
+    constructor(address factory_) ElectionStorage(factory_) {
+        address impl = address(new ElectionPublication());
+        PUBLICATION_IMPL = impl;
+        PUBLICATION_CODE_HASH = impl.codehash;
+    }
+
     function initialize(bytes32 manifestHash_, Manifest calldata m) external {
         if (msg.sender != FACTORY) revert NotFactory();
         if (initialized) revert AlreadyInitialized();
@@ -330,15 +399,6 @@ contract ElectionPolicy {
             _addIndex(id);
         }
         emit Initialized(manifestHash_);
-    }
-
-    modifier whenInitialized() {
-        _requireInitialized();
-        _;
-    }
-
-    function _requireInitialized() private view {
-        if (!initialized) revert NotInitialized();
     }
 
     /// @notice The digest both the owner and the EVM key sign.
@@ -400,6 +460,19 @@ contract ElectionPolicy {
         bytes32 evmHash = keccak256(r.binding.evmKey);
         custody.registerEvmKey(r.id, evmHash);
 
+        if (registry != address(0)) {
+            custody.internSeatBinding(
+                SeatBinding(
+                    r.id,
+                    r.generation,
+                    r.binding.rootNodeID,
+                    rootHash,
+                    r.binding.evmNodeID,
+                    evmHash,
+                    r.binding.operatorPayee
+                )
+            );
+        }
         s.binding = r.binding;
         s.rootKeyHash = rootHash;
         s.evmKeyHash = evmHash;
@@ -645,13 +718,17 @@ contract ElectionPolicy {
         r.predecessor = predecessor;
         r.assignmentID = in_.assignmentID;
         r.snapshotDigest = digest;
-        Frozen[] storage f = _frozen[resultID];
-        k = 0;
-        for (uint256 i = 0; i < chosen.length; ++i) {
-            while (c[k].id != chosen[i].id) ++k;
-            f.push(
-                Frozen(c[k].id, c[k].generation, chosen[i].weight, c[k].weight, c[k].bindingHash)
-            );
+        if (custody.assignmentSeatCount(in_.assignmentID) == 0) {
+            Frozen[] storage f = _frozen[resultID];
+            k = 0;
+            for (uint256 i = 0; i < chosen.length; ++i) {
+                while (c[k].id != chosen[i].id) ++k;
+                f.push(
+                    Frozen(
+                        c[k].id, c[k].generation, chosen[i].weight, c[k].weight, c[k].bindingHash
+                    )
+                );
+            }
         }
         _openPublication(resultID, in_.assignmentID, predecessor, digest);
         attemptCursor = attempt;
@@ -852,163 +929,31 @@ contract ElectionPolicy {
         );
     }
 
-    /// @notice The digest a member's EVM key signs to prove possession for one frozen result: it names the network, chain, this
-    /// module, the result, its assignment and snapshot, the attempt and the member's identity, generation and EVM key. Registration and
-    /// delegation signatures cover other domains and cannot substitute. For an id that is not a frozen member of the result the
-    /// generation word is zero; every caller checks membership first.
-    function popDigest(bytes32 resultID, uint64 id, bytes32 evmKeyHash)
-        public
-        view
-        returns (bytes32)
-    {
-        Result storage r = _results[resultID];
-        Frozen[] storage f = _frozen[resultID];
-        uint64 generation = 0;
-        for (uint256 i = 0; i < f.length; ++i) {
-            if (f[i].id == id) generation = f[i].generation;
-        }
-        return keccak256(
-            abi.encode(
-                POP_DOMAIN,
-                network,
-                block.chainid,
-                address(this),
-                resultID,
-                r.assignmentID,
-                r.snapshotDigest,
-                r.attempt,
-                id,
-                generation,
-                evmKeyHash
-            )
-        );
+    function submitAssignmentPoPs(bytes32, PoPInput[] calldata) external {
+        _publicationStep();
     }
 
-    /// @notice Store the possession proofs of frozen members of a reserved result. Anyone may relay; a proof is valid only as a
-    /// signature by the member's frozen EVM key over `popDigest`. An exact repeat is a no-op, a different proof for a stored slot is
-    /// refused, and nothing is accepted once the result is published or no longer reserved.
-    function submitAssignmentPoPs(bytes32 resultID, PoPInput[] calldata pops)
-        external
-        whenInitialized
-    {
-        Result storage r = _results[resultID];
-        Publication storage pub = _publications[resultID];
-        if (r.state != ResultState.Reserved) revert NotReserved();
-        if (pub.published) revert AlreadyPublished();
-        if (pub.lost) revert CoverageLost();
-        if (pops.length == 0 || pops.length > maxBatch) revert BatchSize();
-        Frozen[] storage f = _frozen[resultID];
-        bytes32[] memory eids = custody.assignmentExposures(r.assignmentID);
-        for (uint256 n = 0; n < pops.length; ++n) {
-            PoPInput calldata pop = pops[n];
-            uint256 pos = f.length;
-            for (uint256 i = 0; i < f.length; ++i) {
-                if (f[i].id == pop.id) pos = i;
-            }
-            if (pos == f.length) revert NotMember(pop.id);
-            bytes32 evmKeyHash = keccak256(pop.evmKey);
-            if (reader.evmKeyHashOf(eids[pos]) != evmKeyHash) revert WrongEvmKey(pop.id);
-            if (!KeyLib.verify(pop.evmKey, popDigest(resultID, pop.id, evmKeyHash), pop.signature))
-            {
-                revert BadPossession(pop.id);
-            }
-            bytes32 h = keccak256(pop.signature);
-            bytes32 stored = _popHashes[resultID][pop.id];
-            if (stored == h) continue;
-            if (stored != bytes32(0)) revert PoPConflict(pop.id);
-            _popHashes[resultID][pop.id] = h;
-            ++pub.popCount;
-            emit PoPAccepted(resultID, pop.id, h);
-        }
+    function finalizeCandidate(bytes32) external {
+        _publicationStep();
     }
 
-    /// @notice Publish a reserved result: every member has a stored proof, the session and the assignment are still open, and every
-    /// member is still eligible and fully covered by the unreleased lots of its exposure. A result that cannot be published stays
-    /// reserved until the root orders its rejection. Publishing derives the primary commitment and writes the fixed proof slots.
-    function finalizeCandidate(bytes32 resultID) external whenInitialized {
-        Result storage r = _results[resultID];
-        Publication storage pub = _publications[resultID];
-        if (r.state != ResultState.Reserved) revert NotReserved();
-        if (pub.published) revert AlreadyPublished();
-        Frozen[] storage f = _frozen[resultID];
-        if (pub.lost) revert CoverageLost();
-        if (pub.popCount != f.length) revert MissingProofs();
-        (uint8 asgState, bytes32 exposureDigest, bytes32 keyDigest) = reader.digests(r.assignmentID);
-        if (asgState != 1 || reader.sessionState(resultID) != 1) revert SessionNotOpen();
-        bytes32[] memory eids = custody.assignmentExposures(r.assignmentID);
-        bytes32 popSet = POPSET_DOMAIN;
-        // the frozen delegation records (the root and EVM node ids, keys and payee of each member) are part of the commitment: the root
-        // recomputes each member's binding hash from the identity record it is shown, so a renamed node is a different primary
-        bytes32 bindings = BINDINGS_DOMAIN;
-        for (uint256 i = 0; i < f.length; ++i) {
-            if (!reader.covered(f[i].id, f[i].generation, f[i].raw, eids[i])) {
-                revert NotCovered(f[i].id);
-            }
-            popSet = keccak256(abi.encode(popSet, f[i].id, _popHashes[resultID][f[i].id]));
-            bindings = keccak256(abi.encode(bindings, f[i].id, f[i].bindingHash));
-        }
-        pub.popSetDigest = popSet;
-        pub.primaryHash = keccak256(
-            abi.encode(
-                PRIMARY_DOMAIN,
-                network,
-                block.chainid,
-                address(custody),
-                address(this),
-                resultID,
-                r.assignmentID,
-                r.predecessor,
-                pub.attempt,
-                r.snapshotDigest,
-                exposureDigest,
-                keyDigest,
-                popSet,
-                bindings
-            )
-        );
-        pub.published = true;
-        emit CandidatePublished(resultID, pub.primaryHash);
+    function coverageChanged(uint64) external {
+        _publicationStep();
     }
 
-    /// @notice Evidence-only: an identity was excluded or had a penalty settled. If it is a member of the open, reserved result and no longer
-    /// covers its committed weight, the result is marked lost (published or not): a primary that passes Prepare must not predate a slash.
-    function coverageChanged(uint64 id) external whenInitialized {
-        if (msg.sender != address(evidence)) revert NotEvidence();
-        bytes32 resultID = openResult;
-        if (resultID == bytes32(0) || _results[resultID].state != ResultState.Reserved) return;
-        Frozen[] storage f = _frozen[resultID];
-        for (uint256 i = 0; i < f.length; ++i) {
-            if (f[i].id == id) {
-                _checkMember(resultID, i);
-                return;
-            }
-        }
+    function reconcileCandidate(bytes32) external returns (bool) {
+        return abi.decode(_publicationStep(), (bool));
     }
 
-    /// @notice Anyone: re-check every member of a reserved result against its committed weight and mark the result lost if one fell
-    /// short. Marking is permanent and never releases anything; it is the backstop for changes the event-driven path cannot see.
-    function reconcileCandidate(bytes32 resultID) external whenInitialized returns (bool) {
-        if (_results[resultID].state != ResultState.Reserved) revert NotReserved();
-        Frozen[] storage f = _frozen[resultID];
-        for (uint256 i = 0; i < f.length; ++i) {
-            _checkMember(resultID, i);
+    function _publicationStep() private returns (bytes memory) {
+        // The four selector-specific entry points forward only to the fixed publication implementation.
+        if (PUBLICATION_IMPL.codehash != PUBLICATION_CODE_HASH) revert ManifestMismatch();
+        // forge-lint: disable-next-line(controlled-delegatecall)
+        (bool ok, bytes memory ret) = PUBLICATION_IMPL.delegatecall(msg.data);
+        if (!ok) {
+            assembly ("memory-safe") { revert(add(ret, 32), mload(ret)) }
         }
-        return _publications[resultID].lost;
-    }
-
-    function _checkMember(bytes32 resultID, uint256 index) private {
-        Publication storage pub = _publications[resultID];
-        if (pub.lost) return;
-        Frozen storage m = _frozen[resultID][index];
-        bytes32 eid = custody.assignmentExposures(_results[resultID].assignmentID)[index];
-        if (!reader.stillCovered(m.id, m.generation, m.raw, eid)) {
-            pub.lost = true;
-            emit CoverageLostFor(resultID, m.id);
-            // The atomic loss (design 3.8 change 2): at the one place `lost` is first set, the adapter invalidates the result in VR. No
-            // try/catch: `VR.invalidate` is total for its source, so with enough gas the loss transaction always succeeds, and with too
-            // little the whole transaction reverts and can be retried.
-            if (hookCaller != address(0)) IPosAdapter(hookCaller).outputLost(resultID);
-        }
+        return ret;
     }
 
     function publication(bytes32 resultID) external view returns (Publication memory) {
@@ -1042,10 +987,6 @@ contract ElectionPolicy {
         return _results[resultID];
     }
 
-    function frozenMembers(bytes32 resultID) external view returns (Frozen[] memory) {
-        return _frozen[resultID];
-    }
-
     function delegation(uint64 id, uint64 generation)
         external
         view
@@ -1070,3 +1011,168 @@ contract ElectionPolicy {
 }
 
 // forge-lint: disable-end(require-revert-in-loop, calls-loop, reentrancy-no-eth)
+
+/// @dev Fixed publication implementation. Every mutation uses the election's storage and entry points.
+contract ElectionPublication is ElectionStorage {
+    constructor() ElectionStorage(address(0)) {}
+
+    /// @notice Store the possession proofs of frozen members of a reserved result. Anyone may relay; a proof is valid only as a
+    /// signature by the member's frozen EVM key over `popDigest`. An exact repeat is a no-op, a different proof for a stored slot is
+    /// refused, and nothing is accepted once the result is published or no longer reserved.
+    function submitAssignmentPoPs(bytes32 resultID, PoPInput[] calldata pops)
+        external
+        whenInitialized
+    {
+        Result storage r = _results[resultID];
+        Publication storage pub = _publications[resultID];
+        if (r.state != ResultState.Reserved) revert NotReserved();
+        if (pub.published) revert AlreadyPublished();
+        if (pub.lost) revert CoverageLost();
+        if (pops.length == 0 || pops.length > maxBatch) revert BatchSize();
+        Frozen[] memory f = frozenMembers(resultID);
+        bool compact = custody.assignmentSeatCount(r.assignmentID) != 0;
+        bytes32[] memory eids;
+        if (!compact) eids = custody.assignmentExposures(r.assignmentID);
+        for (uint256 n = 0; n < pops.length; ++n) {
+            PoPInput calldata pop = pops[n];
+            uint256 pos = f.length;
+            for (uint256 i = 0; i < f.length; ++i) {
+                if (f[i].id == pop.id) pos = i;
+            }
+            if (pos == f.length) revert NotMember(pop.id);
+            bytes32 evmKeyHash = keccak256(pop.evmKey);
+            // Each proof in the bounded batch checks its own frozen key.
+            // forge-lint: disable-start(calls-loop)
+            bytes32 frozenKey = compact
+                ? custody.assignmentSeat(r.assignmentID, pos).binding.evmKeyHash
+                : reader.evmKeyHashOf(eids[pos]);
+            // forge-lint: disable-end(calls-loop)
+            if (frozenKey != evmKeyHash) revert WrongEvmKey(pop.id);
+            if (!KeyLib.verify(pop.evmKey, popDigest(resultID, pop.id, evmKeyHash), pop.signature))
+            {
+                revert BadPossession(pop.id);
+            }
+            bytes32 h = keccak256(pop.signature);
+            bytes32 stored = _popHashes[resultID][pop.id];
+            if (stored == h) continue;
+            if (stored != bytes32(0)) revert PoPConflict(pop.id);
+            _popHashes[resultID][pop.id] = h;
+            ++pub.popCount;
+            emit PoPAccepted(resultID, pop.id, h);
+        }
+    }
+
+    /// @notice Publish a reserved result: every member has a stored proof, the session and the assignment are still open, and every
+    /// member is still eligible and fully covered by the unreleased lots of its exposure. A result that cannot be published stays
+    /// reserved until the root orders its rejection. Publishing derives the primary commitment and writes the fixed proof slots.
+    function finalizeCandidate(bytes32 resultID) external whenInitialized {
+        Result storage r = _results[resultID];
+        Publication storage pub = _publications[resultID];
+        if (r.state != ResultState.Reserved) revert NotReserved();
+        if (pub.published) revert AlreadyPublished();
+        Frozen[] memory f = frozenMembers(resultID);
+        if (pub.lost) revert CoverageLost();
+        if (pub.popCount != f.length) revert MissingProofs();
+        (uint8 asgState, bytes32 exposureDigest, bytes32 keyDigest) = reader.digests(r.assignmentID);
+        if (asgState != 1 || reader.sessionState(resultID) != 1) revert SessionNotOpen();
+        bool compact = custody.assignmentSeatCount(r.assignmentID) != 0;
+        bytes32[] memory eids;
+        if (!compact) eids = custody.assignmentExposures(r.assignmentID);
+        bytes32 popSet = POPSET_DOMAIN;
+        // the frozen delegation records (the root and EVM node ids, keys and payee of each member) are part of the commitment: the root
+        // recomputes each member's binding hash from the identity record it is shown, so a renamed node is a different primary
+        bytes32 bindings = BINDINGS_DOMAIN;
+        // Publication checks current lot coverage for every member of the bounded committee.
+        // forge-lint: disable-start(calls-loop)
+        for (uint256 i = 0; i < f.length; ++i) {
+            bool covered = compact
+                ? reader.coveredSeat(
+                    f[i].id,
+                    f[i].generation,
+                    f[i].raw,
+                    custody.assignmentSeat(r.assignmentID, i).lotID,
+                    true
+                )
+                : reader.covered(f[i].id, f[i].generation, f[i].raw, eids[i]);
+            if (!covered) {
+                revert NotCovered(f[i].id);
+            }
+            popSet = keccak256(abi.encode(popSet, f[i].id, _popHashes[resultID][f[i].id]));
+            bindings = keccak256(abi.encode(bindings, f[i].id, f[i].bindingHash));
+        }
+        // forge-lint: disable-end(calls-loop)
+        pub.popSetDigest = popSet;
+        pub.primaryHash = keccak256(
+            abi.encode(
+                PRIMARY_DOMAIN,
+                network,
+                block.chainid,
+                address(custody),
+                address(this),
+                resultID,
+                r.assignmentID,
+                r.predecessor,
+                pub.attempt,
+                r.snapshotDigest,
+                exposureDigest,
+                keyDigest,
+                popSet,
+                bindings
+            )
+        );
+        pub.published = true;
+        emit CandidatePublished(resultID, pub.primaryHash);
+    }
+
+    /// @notice Evidence-only: an identity was excluded or had a penalty settled. If it is a member of the open, reserved result and no longer
+    /// covers its committed weight, the result is marked lost (published or not): a primary that passes Prepare must not predate a slash.
+    function coverageChanged(uint64 id) external whenInitialized {
+        if (msg.sender != address(evidence)) revert NotEvidence();
+        bytes32 resultID = openResult;
+        if (resultID == bytes32(0) || _results[resultID].state != ResultState.Reserved) return;
+        Frozen[] memory f = frozenMembers(resultID);
+        for (uint256 i = 0; i < f.length; ++i) {
+            if (f[i].id == id) {
+                _checkMember(resultID, i, f[i]);
+                return;
+            }
+        }
+    }
+
+    /// @notice Anyone: re-check every member of a reserved result against its committed weight and mark the result lost if one fell
+    /// short. Marking is permanent and never releases anything; it is the backstop for changes the event-driven path cannot see.
+    function reconcileCandidate(bytes32 resultID) external whenInitialized returns (bool) {
+        if (_results[resultID].state != ResultState.Reserved) revert NotReserved();
+        Frozen[] memory f = frozenMembers(resultID);
+        for (uint256 i = 0; i < f.length; ++i) {
+            _checkMember(resultID, i, f[i]);
+        }
+        return _publications[resultID].lost;
+    }
+
+    function _checkMember(bytes32 resultID, uint256 index, Frozen memory m) private {
+        Publication storage pub = _publications[resultID];
+        if (pub.lost) return;
+        bytes32 assignmentID = _results[resultID].assignmentID;
+        // Reconciliation checks each frozen member's historical lot in the bounded committee.
+        // forge-lint: disable-start(calls-loop)
+        bool covered = custody.assignmentSeatCount(assignmentID) != 0
+            ? reader.coveredSeat(
+                m.id, m.generation, m.raw, custody.assignmentSeat(assignmentID, index).lotID, false
+            )
+            : reader.stillCovered(
+                m.id, m.generation, m.raw, custody.assignmentExposures(assignmentID)[index]
+            );
+        // forge-lint: disable-end(calls-loop)
+        if (!covered) {
+            pub.lost = true;
+            emit CoverageLostFor(resultID, m.id);
+            // The atomic loss (design 3.8 change 2): at the one place `lost` is first set, the adapter invalidates the result in VR. No
+            // try/catch: `VR.invalidate` is total for its source, so with enough gas the loss transaction always succeeds, and with too
+            // little the whole transaction reverts and can be retried.
+            // The sticky lost flag makes this callback occur at most once per result.
+            // forge-lint: disable-next-line(calls-loop)
+            if (hookCaller != address(0)) IPosAdapter(hookCaller).outputLost(resultID);
+        }
+    }
+}

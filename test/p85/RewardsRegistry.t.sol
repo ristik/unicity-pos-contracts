@@ -4,7 +4,7 @@ pragma solidity 0.8.37;
 import {P85Flow} from "./P85Flow.sol";
 import {RegistryDriver} from "./RegistryDriver.sol";
 import {SealRegistry} from "../../src/SealRegistry.sol";
-import {ElectionPolicy} from "../../src/p85/ElectionPolicy.sol";
+import {ElectionPolicy, ElectionStorage} from "../../src/p85/ElectionPolicy.sol";
 import {RewardPool} from "../../src/p85/RewardPool.sol";
 import {ElectionParams, RootRecord, RecordKind, AckData} from "../../src/p85/P85Types.sol";
 
@@ -100,11 +100,11 @@ contract RewardsRegistryTest is P85Flow {
         vm.prank(sys);
         election.elect(ORIGIN);
         resultID = election.openResult();
-        ElectionPolicy.PoPInput[] memory inputs =
-            new ElectionPolicy.PoPInput[](election.frozenMembers(resultID).length);
+        ElectionStorage.PoPInput[] memory inputs =
+            new ElectionStorage.PoPInput[](election.frozenMembers(resultID).length);
         for (uint256 i; i < inputs.length; ++i) {
             bytes memory key = compressed(evmPk(i));
-            inputs[i] = ElectionPolicy.PoPInput(
+            inputs[i] = ElectionStorage.PoPInput(
                 gid(i), key, _sig(evmPk(i), election.popDigest(resultID, gid(i), keccak256(key)))
             );
         }
@@ -137,7 +137,7 @@ contract RewardsRegistryTest is P85Flow {
 
     function test_theGoAcknowledgedHistoryIsRewardedOverTheRealRegistry() public {
         bytes32 result = _publish();
-        ElectionPolicy.Result memory res = election.result(result);
+        ElectionStorage.Result memory res = election.result(result);
         RewardPool pool = factory.REWARDS();
         assertEq(address(pool.ROOTS()), driver.registry(), "the pool reads the real registry");
 

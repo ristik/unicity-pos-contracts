@@ -50,7 +50,7 @@ contract VRGovernanceTest is VRBase {
     /// @dev CAP_ELECT of the build under test (VR_BUILD=pos: the PoS-capable build).
     function _electCap() internal view returns (uint64) {
         return keccak256(bytes(vm.envOr("VR_BUILD", string("")))) == keccak256("pos")
-            ? 5_000_000
+            ? 7_000_000
             : 4_000_000;
     }
 

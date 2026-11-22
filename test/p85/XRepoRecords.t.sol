@@ -2,7 +2,7 @@
 pragma solidity 0.8.37;
 
 import {P85Flow} from "./P85Flow.sol";
-import {ElectionPolicy} from "../../src/p85/ElectionPolicy.sol";
+import {ElectionPolicy, ElectionStorage} from "../../src/p85/ElectionPolicy.sol";
 import {CustodyStorage} from "../../src/p85/CustodyStorage.sol";
 import {ElectionParams, RootRecord, RecordKind, ClosureData} from "../../src/p85/P85Types.sol";
 
@@ -56,11 +56,11 @@ contract XRepoRecordsTest is P85Flow {
         vm.prank(SYS);
         election.elect(ORIGIN);
         resultID = election.openResult();
-        ElectionPolicy.PoPInput[] memory inputs =
-            new ElectionPolicy.PoPInput[](election.frozenMembers(resultID).length);
+        ElectionStorage.PoPInput[] memory inputs =
+            new ElectionStorage.PoPInput[](election.frozenMembers(resultID).length);
         for (uint256 i; i < inputs.length; ++i) {
             bytes memory key = compressed(evmPk(i));
-            inputs[i] = ElectionPolicy.PoPInput(
+            inputs[i] = ElectionStorage.PoPInput(
                 gid(i), key, _sig(evmPk(i), election.popDigest(resultID, gid(i), keccak256(key)))
             );
         }
@@ -313,7 +313,7 @@ contract XRepoRecordsTest is P85Flow {
         string memory pub = vm.readFile(string.concat(vm.projectRoot(), PUBLICATION));
         Ids memory ids;
         ids.result = _publish();
-        ElectionPolicy.Result memory r = election.result(ids.result);
+        ElectionStorage.Result memory r = election.result(ids.result);
         ids.genesis = r.predecessor;
         ids.primary = r.assignmentID;
         ids.recovery = vm.parseJsonBytes32(json, ".recoveryAssignmentId");
@@ -401,7 +401,7 @@ contract XRepoRecordsTest is P85Flow {
     function test_theDisagreementsThatStoppedTheLaneAreRefused() public {
         string memory json = vm.readFile(string.concat(vm.projectRoot(), GO_RECORDS));
         bytes32 result = _publish();
-        ElectionPolicy.Result memory r = election.result(result);
+        ElectionStorage.Result memory r = election.result(result);
         bytes32 gExposure = asg(r.predecessor).exposureDigest;
 
         // runs 25 and 26: the first closure names a genesis assignment custody was never deployed with (the id of the base shard

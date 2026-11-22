@@ -4,7 +4,7 @@ pragma solidity 0.8.37;
 import {P85Flow} from "./P85Flow.sol";
 import {StakeCustody} from "../../src/p85/StakeCustody.sol";
 import {CustodyStorage} from "../../src/p85/CustodyStorage.sol";
-import {ElectionPolicy} from "../../src/p85/ElectionPolicy.sol";
+import {ElectionPolicy, ElectionStorage} from "../../src/p85/ElectionPolicy.sol";
 import {Evidence} from "../../src/p85/Evidence.sol";
 import {UncheckedPolicy} from "./UncheckedPolicy.sol";
 import {
@@ -556,7 +556,7 @@ contract PendingClosureSpecTest is P85Flow {
         clock(cadP, cadT);
         vm.prank(SYS);
         assertEq(
-            uint8(election.elect(keccak256("origin/1"))), uint8(ElectionPolicy.Outcome.Reserved)
+            uint8(election.elect(keccak256("origin/1"))), uint8(ElectionStorage.Outcome.Reserved)
         );
         bytes32 resultID = election.openResult();
         bytes32 asgID = keccak256(abi.encode(keccak256("unicity.p85.primary-assignment"), resultID));
@@ -573,7 +573,7 @@ contract PendingClosureSpecTest is P85Flow {
         vm.prank(SYS);
         assertEq(
             uint8(election.elect(keccak256("origin/2"))),
-            uint8(ElectionPolicy.Outcome.Disabled),
+            uint8(ElectionStorage.Outcome.Disabled),
             "the result is unresolved"
         );
         assertEq(election.openResult(), resultID);
@@ -585,7 +585,7 @@ contract PendingClosureSpecTest is P85Flow {
         custody.applyRootRecords(1);
         assertEq(election.openResult(), bytes32(0), "the RecoveryAck resolves it");
         assertEq(
-            uint8(election.result(resultID).state), uint8(ElectionPolicy.ResultState.Recovered)
+            uint8(election.result(resultID).state), uint8(ElectionStorage.ResultState.Recovered)
         );
         assertEq(election.anchorProgress(), 0, "a recovery moves no cadence anchor");
     }

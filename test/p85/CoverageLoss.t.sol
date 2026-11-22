@@ -3,7 +3,7 @@ pragma solidity 0.8.37;
 
 import {P85Flow} from "./P85Flow.sol";
 import {Evidence} from "../../src/p85/Evidence.sol";
-import {ElectionPolicy} from "../../src/p85/ElectionPolicy.sol";
+import {ElectionPolicy, ElectionStorage} from "../../src/p85/ElectionPolicy.sol";
 import {IElectionPolicy} from "../../src/p85/IP85.sol";
 import {ElectionParams, RecordKind} from "../../src/p85/P85Types.sol";
 
@@ -35,11 +35,11 @@ contract CoverageLossTest is P85Flow {
         resultID = election.openResult();
     }
 
-    function _pops() internal returns (ElectionPolicy.PoPInput[] memory pops) {
-        pops = new ElectionPolicy.PoPInput[](N_GENESIS);
+    function _pops() internal returns (ElectionStorage.PoPInput[] memory pops) {
+        pops = new ElectionStorage.PoPInput[](N_GENESIS);
         for (uint256 i; i < N_GENESIS; ++i) {
             bytes memory key = compressed(evmPk(i));
-            pops[i] = ElectionPolicy.PoPInput(
+            pops[i] = ElectionStorage.PoPInput(
                 gid(i), key, sign(evmPk(i), election.popDigest(resultID, gid(i), keccak256(key)))
             );
         }
@@ -63,10 +63,10 @@ contract CoverageLossTest is P85Flow {
     // --- event-driven ---------------------------------------------------------------------------
 
     function test_coverageChangedIsEvidenceOnly() public {
-        vm.expectRevert(ElectionPolicy.NotEvidence.selector);
+        vm.expectRevert(ElectionStorage.NotEvidence.selector);
         election.coverageChanged(gid(0));
         vm.prank(address(custody));
-        vm.expectRevert(ElectionPolicy.NotEvidence.selector);
+        vm.expectRevert(ElectionStorage.NotEvidence.selector);
         election.coverageChanged(gid(0));
     }
 
@@ -74,7 +74,7 @@ contract CoverageLossTest is P85Flow {
         _publish();
         _penalize(1);
         vm.expectEmit(true, true, false, false, address(election));
-        emit ElectionPolicy.CoverageLostFor(resultID, gid(1));
+        emit ElectionStorage.CoverageLostFor(resultID, gid(1));
         vm.prank(address(evidence));
         election.coverageChanged(gid(1));
         assertTrue(_lost());
@@ -161,7 +161,7 @@ contract CoverageLossTest is P85Flow {
     }
 
     function test_reconcileNeedsAReservedResult() public {
-        vm.expectRevert(ElectionPolicy.NotReserved.selector);
+        vm.expectRevert(ElectionStorage.NotReserved.selector);
         election.reconcileCandidate(keccak256("none"));
     }
 
@@ -170,10 +170,10 @@ contract CoverageLossTest is P85Flow {
     function test_aLostResultCannotBeFinalizedOrCollectProofs() public {
         _penalize(2);
         election.reconcileCandidate(resultID);
-        ElectionPolicy.PoPInput[] memory pops = _pops();
-        vm.expectRevert(ElectionPolicy.CoverageLost.selector);
+        ElectionStorage.PoPInput[] memory pops = _pops();
+        vm.expectRevert(ElectionStorage.CoverageLost.selector);
         election.submitAssignmentPoPs(resultID, pops);
-        vm.expectRevert(ElectionPolicy.CoverageLost.selector);
+        vm.expectRevert(ElectionStorage.CoverageLost.selector);
         election.finalizeCandidate(resultID);
     }
 

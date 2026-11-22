@@ -22,7 +22,9 @@ import {
     HolderRetirementData,
     Position,
     Exposure,
-    Assignment
+    Assignment,
+    SeatBinding,
+    AssignmentSeat
 } from "./P85Types.sol";
 import {IRootRecords, IPolicySource, IEvidence, IElectionPolicy, CaseView} from "./IP85.sol";
 import {KeyLib} from "./KeyLib.sol";
@@ -41,22 +43,23 @@ import {CustodyStorage} from "./CustodyStorage.sol";
 ///
 /// Conservation after every successful call (section 3):
 ///     balance = F + E + D + C + U,  F + E + D = sum(remaining),  C = sum(credits),  U >= 0.
-/// No proxy, arbitrary call, sweep, administrator withdrawal or module setter exists. The one delegatecall is the factory's genesis step:
-/// `initialize`, `seedGenesis` and `sealGenesis` run in CustodyGenesis (an immutable address fixed at construction) in this contract's storage,
-/// reachable only by the factory and only until genesis is sealed (afterwards each of them reverts); the code is not here to keep the runtime
-/// under EIP-170.
+/// The fixed implementation handles genesis and election reservation in custody's storage.
+/// Custody authenticates its runtime before every delegation.
 contract StakeCustody is CustodyStorage {
     /// @notice This custody's liability-holder index in its validator-registry generation (design section 3.9.1: P85 custody is holder 0
     /// of the PoS-prototype generation). A HolderRetirement record of any other holder is a no-op here.
     uint8 public constant HOLDER_INDEX = 0;
-    /// @notice The address of the genesis implementation the genesis stubs delegate to.
+    /// @notice The implementation for genesis and election reservation.
     address public immutable GENESIS_IMPL;
+    bytes32 private immutable GENESIS_IMPL_CODE_HASH;
 
     /// @param factory_ the deployment factory that will initialize this module, fixed at construction. The module is deployed first so
     /// the factory's own creation code stays small; only that factory can initialize it, and it can do so once.
     // forge-lint: disable-next-line(missing-zero-check)
     constructor(address factory_, address genesisImpl_) CustodyStorage(factory_) {
+        if (genesisImpl_.code.length == 0) revert InvalidGenesis();
         GENESIS_IMPL = genesisImpl_;
+        GENESIS_IMPL_CODE_HASH = genesisImpl_.codehash;
     }
 
     // --- genesis (delegated) ------------------------------------------------------------------
@@ -68,10 +71,15 @@ contract StakeCustody is CustodyStorage {
         _genesis();
     }
 
-    function seedGenesis(address, address, bytes calldata, bytes calldata, address)
-        external
-        payable
-    {
+    function seedGenesis(
+        address,
+        address,
+        bytes calldata,
+        bytes calldata,
+        address,
+        bytes32,
+        bytes32
+    ) external payable {
         _genesis();
     }
 
@@ -81,15 +89,21 @@ contract StakeCustody is CustodyStorage {
 
     function _genesis() private {
         if (msg.sender != FACTORY) revert NotFactory();
-        // the genesis functions return nothing; a revert of the implementation is passed on as it is
-        // the target is the immutable genesis implementation fixed at construction, and only the factory reaches this line
+        _delegate();
+    }
+
+    function _delegate() private {
+        address impl = GENESIS_IMPL;
+        if (impl.codehash != GENESIS_IMPL_CODE_HASH) revert InvalidGenesis();
+        // The fixed implementation validates each entry point's caller and state.
         // forge-lint: disable-next-line(controlled-delegatecall)
-        (bool ok, bytes memory ret) = GENESIS_IMPL.delegatecall(msg.data);
-        if (!ok) {
-            // forge-lint: disable-next-line(unsafe-typecast)
-            assembly ("memory-safe") {
-                revert(add(ret, 32), mload(ret))
-            }
+        assembly ("memory-safe") {
+            let ptr := mload(0x40)
+            calldatacopy(ptr, 0, calldatasize())
+            let ok := delegatecall(gas(), impl, ptr, calldatasize(), 0, 0)
+            returndatacopy(ptr, 0, returndatasize())
+            if iszero(ok) { revert(ptr, returndatasize()) }
+            return(ptr, returndatasize())
         }
     }
 
@@ -256,109 +270,12 @@ contract StakeCustody is CustodyStorage {
         k.role = ROLE_EVM;
     }
 
-    // --- reservation --------------------------------------------------------------------------
-
-    /// @notice Reserve a primary candidate's exact lots and lock the incumbent exposures (the
-    /// recovery slate K) for the session. Primary coverage and eligibility only; K is never
-    /// filtered, never re-collateralized and never recreated.
-    function reserveCandidate(ReserveInput calldata in_)
-        external
-        whenInitialized
-        returns (bytes32 exposureDigest)
-    {
-        if (msg.sender != election) revert NotElection();
-        if (_sessions[in_.resultID].state != 0) revert SessionExists();
-        if (in_.assignmentID == bytes32(0) || assignments[in_.assignmentID].state != 0) {
-            revert AssignmentExists();
-        }
-        if (in_.incumbentAssignmentID != lastAckedAssignment) revert IncumbentMismatch();
-        Assignment storage incumbent = assignments[in_.incumbentAssignmentID];
-        if (incumbent.lineage != in_.lineage) revert LineageMismatch();
-        if (in_.members.length == 0 || in_.members.length > limits.vMax) {
-            revert InvalidMemberCount();
-        }
-
-        Assignment storage a = assignments[in_.assignmentID];
-        a.state = ASSIGN_RESERVED;
-        a.lineage = in_.lineage;
-        a.rootEpoch = in_.rootEpoch;
-        a.evmEpoch = in_.evmEpoch;
-        a.policyID = IPolicySource(policySource).currentPolicyID();
-
-        uint64 previous = 0;
-        for (uint256 i = 0; i < in_.members.length; ++i) {
-            ReserveMember calldata m = in_.members[i];
-            if (m.id <= previous) revert MembersUnsorted();
-            previous = m.id;
-            _checkPrimaryMember(m);
-            a.exposureIDs
-                .push(
-                    _createExposure(
-                        in_.assignmentID,
-                        m.id,
-                        positions[m.id].generation,
-                        m.weight,
-                        m.rawWeight,
-                        m.rootKeyHash,
-                        m.evmKeyHash,
-                        m.operatorPayee,
-                        m.lotIDs
-                    )
-                );
-        }
-        a.exposureDigest = _digestExposures(a.exposureIDs);
-        a.keyDigest = _digestKeys(a.exposureIDs);
-        exposureDigest = a.exposureDigest;
-
-        _sessions[in_.resultID] = Session({
-            state: SESSION_OPEN,
-            assignmentID: in_.assignmentID,
-            lineage: in_.lineage,
-            attempt: in_.attempt,
-            incumbentAssignmentID: in_.incumbentAssignmentID
-        });
-        // Lock the incumbent slate (K) for the session and keep one reference slot per incumbent lot
-        // free for deriving K at recovery, so recovery can never be blocked by reference capacity.
-        bytes32[] storage ids = incumbent.exposureIDs;
-        for (uint256 i = 0; i < ids.length; ++i) {
-            Exposure storage inc = exposures[ids[i]];
-            inc.sessionLocks++;
-            for (uint256 j = 0; j < inc.lotIDs.length; ++j) {
-                if (lots[inc.lotIDs[j]].refCount >= limits.rMax) revert ReferenceCapacity();
-            }
-        }
-        emit CandidateReserved(in_.resultID, in_.resultID, exposureDigest);
+    function internSeatBinding(SeatBinding calldata) external {
+        _delegate();
     }
 
-    function _checkPrimaryMember(ReserveMember calldata m) private view {
-        Position storage p = positions[m.id];
-        if (p.owner == address(0)) revert UnknownIdentity();
-        if (p.retirementRequested) revert PrimaryRetiring();
-        if (IEvidence(evidence).excluded(m.id)) revert IdentityExcluded();
-        if (m.weight == 0) revert ZeroWeight();
-        if (
-            m.rootKeyHash != p.rootKeyHash
-                && (p.stagedRootKeyHash == bytes32(0) || m.rootKeyHash != p.stagedRootKeyHash)
-        ) revert WrongKey();
-        KeyRecord storage ek = _keys[m.evmKeyHash];
-        if (ek.id != m.id || ek.role != ROLE_EVM) revert WrongKey();
-        if (m.operatorPayee == address(0)) revert ZeroAddress();
-        if (m.lotIDs.length != p.openLots) revert LotSetMismatch();
-        uint256 backing = 0;
-        uint256 previousLot = 0;
-        for (uint256 j = 0; j < m.lotIDs.length; ++j) {
-            uint256 lotID = m.lotIDs[j];
-            if (lotID <= previousLot) revert LotSetMismatch();
-            previousLot = lotID;
-            Lot storage l = lots[lotID];
-            if (l.id != m.id || l.generation != p.generation || l.category == CAT_RELEASED) {
-                revert LotNotEligible();
-            }
-            if (l.refCount >= limits.rMax) revert ReferenceCapacity();
-            backing += l.remaining;
-        }
-        // the lots must cover the RAW weight x the committed q was derived from (q <= x), not q itself
-        if (backing < uint256(m.rawWeight) * bondUnit) revert InsufficientCoverage();
+    function reserveCandidate(ReserveInput calldata) external returns (bytes32) {
+        _delegate();
     }
 
     // --- root records -------------------------------------------------------------------------
@@ -457,8 +374,12 @@ contract StakeCustody is CustodyStorage {
         (Session storage s, Assignment storage j) = _openSession(d.resultID, false);
         j.state = ASSIGN_ABORTED;
         s.state = SESSION_CLOSED;
-        for (uint256 i = 0; i < j.exposureIDs.length; ++i) {
-            _forceRelease(exposures[j.exposureIDs[i]]);
+        if (_compact()) {
+            _releaseSlate(s.assignmentID, true);
+        } else {
+            for (uint256 i = 0; i < j.exposureIDs.length; ++i) {
+                _forceRelease(exposures[j.exposureIDs[i]]);
+            }
         }
         _unlockIncumbent(s.incumbentAssignmentID);
     }
@@ -469,15 +390,28 @@ contract StakeCustody is CustodyStorage {
         _activate(j, d.offset, d.firstRound);
         _setH(assignments[s.incumbentAssignmentID], d.replacedHRound);
         // Root-key rotation activates only with committed membership.
-        for (uint256 i = 0; i < j.exposureIDs.length; ++i) {
-            Exposure storage e = exposures[j.exposureIDs[i]];
-            Position storage p = positions[e.id];
-            p.rootKeyHash = e.rootKeyHash;
-            if (e.rootKeyHash == p.stagedRootKeyHash) p.stagedRootKeyHash = bytes32(0);
+        if (_compact()) {
+            uint256[] storage seats = _seats[s.assignmentID];
+            for (uint256 i = 0; i < seats.length; ++i) {
+                // forge-lint: disable-next-line(unsafe-typecast)
+                SeatBinding storage binding = _bindings[uint64(seats[i] >> 64)];
+                _activateKey(binding.id, binding.rootKeyHash);
+            }
+        } else {
+            for (uint256 i = 0; i < j.exposureIDs.length; ++i) {
+                Exposure storage e = exposures[j.exposureIDs[i]];
+                _activateKey(e.id, e.rootKeyHash);
+            }
         }
         lastAckedAssignment = s.assignmentID;
         s.state = SESSION_ACKED;
         _unlockIncumbent(s.incumbentAssignmentID);
+    }
+
+    function _activateKey(uint64 id, bytes32 rootKeyHash) private {
+        Position storage p = positions[id];
+        p.rootKeyHash = rootKeyHash;
+        if (rootKeyHash == p.stagedRootKeyHash) p.stagedRootKeyHash = bytes32(0);
     }
 
     /// @dev J committed H and never acknowledged; the exact incumbent slate K was committed and
@@ -505,29 +439,34 @@ contract StakeCustody is CustodyStorage {
         k.firstRound = d.kFirstRound;
         k.offsetSet = true;
         k.policyID = incumbent.policyID; // captured policies of the incumbent slate
-        bytes32[] storage ids = incumbent.exposureIDs;
-        for (uint256 i = 0; i < ids.length; ++i) {
-            Exposure storage old = exposures[ids[i]];
-            uint256[] memory oldLots = old.lotIDs;
-            bytes32 kid = _createExposure(
-                d.recoveryAssignmentID,
-                old.id,
-                old.generation,
-                old.weight,
-                old.rawWeight,
-                old.rootKeyHash,
-                old.evmKeyHash,
-                old.operatorPayee,
-                oldLots
-            );
-            k.exposureIDs.push(kid);
-            // K is exactly the incumbent committee: its members keep their member digest (VT-04)
-            if (exposureMemberDigest[ids[i]] != bytes32(0)) {
-                exposureMemberDigest[kid] = exposureMemberDigest[ids[i]];
+        if (_compact()) {
+            _slateState[d.recoveryAssignmentID].source = _source(s.incumbentAssignmentID);
+            _foldCompact(d.recoveryAssignmentID, true);
+        } else {
+            bytes32[] storage ids = incumbent.exposureIDs;
+            for (uint256 i = 0; i < ids.length; ++i) {
+                Exposure storage old = exposures[ids[i]];
+                uint256[] memory oldLots = old.lotIDs;
+                bytes32 kid = _createExposure(
+                    d.recoveryAssignmentID,
+                    old.id,
+                    old.generation,
+                    old.weight,
+                    old.rawWeight,
+                    old.rootKeyHash,
+                    old.evmKeyHash,
+                    old.operatorPayee,
+                    oldLots
+                );
+                k.exposureIDs.push(kid);
+                // K is exactly the incumbent committee: its members keep their member digest (VT-04)
+                if (exposureMemberDigest[ids[i]] != bytes32(0)) {
+                    exposureMemberDigest[kid] = exposureMemberDigest[ids[i]];
+                }
             }
+            k.exposureDigest = _digestExposures(k.exposureIDs);
+            k.keyDigest = _digestKeys(k.exposureIDs);
         }
-        k.exposureDigest = _digestExposures(k.exposureIDs);
-        k.keyDigest = _digestKeys(k.exposureIDs);
         lastAckedAssignment = d.recoveryAssignmentID;
         s.state = SESSION_RECOVERED;
         if (pendingAssignment == s.assignmentID) {
@@ -598,22 +537,47 @@ contract StakeCustody is CustodyStorage {
         uint64 window = terms.evidenceWindow > terms.suffixEvidenceWindow
             ? terms.evidenceWindow
             : terms.suffixEvidenceWindow;
-        for (uint256 i = 0; i < a.exposureIDs.length; ++i) {
-            Exposure storage e = exposures[a.exposureIDs[i]];
-            if (anchor > maxLiabilityAnchor[e.id][e.generation]) {
-                maxLiabilityAnchor[e.id][e.generation] = anchor;
-                _writeFacts(e.id, e.generation);
+        uint64 holdUntil = anchor + hold;
+        uint64 evidenceUntil = anchor + window;
+        uint64 timeUntil = tClose + terms.timeFloor;
+        if (_compact()) {
+            bytes32 source = _source(assignmentID);
+            uint256[] storage seats = _seats[source];
+            for (uint256 i = 0; i < seats.length; ++i) {
+                (uint64 id, uint64 generation, uint256 lotID) = _seatLot(seats[i]);
+                _raiseAnchor(id, generation, anchor);
+                _raiseFloors(lots[lotID], holdUntil, evidenceUntil, timeUntil);
             }
-            for (uint256 j = 0; j < e.lotIDs.length; ++j) {
-                Lot storage l = lots[e.lotIDs[j]];
-                if (anchor + hold > l.holdUntil) l.holdUntil = anchor + hold;
-                if (anchor + window > l.evidenceUntil) l.evidenceUntil = anchor + window;
-                uint64 t = tClose + terms.timeFloor;
-                if (t > l.timeUntil) l.timeUntil = t;
+            _releaseSlate(assignmentID, false);
+        } else {
+            for (uint256 i = 0; i < a.exposureIDs.length; ++i) {
+                Exposure storage e = exposures[a.exposureIDs[i]];
+                _raiseAnchor(e.id, e.generation, anchor);
+                for (uint256 j = 0; j < e.lotIDs.length; ++j) {
+                    _raiseFloors(lots[e.lotIDs[j]], holdUntil, evidenceUntil, timeUntil);
+                }
+                _releaseIfClear(e);
             }
-            _releaseIfClear(e);
         }
         emit LiabilityClosed(assignmentID, pClose, tClose, anchor);
+    }
+
+    function _raiseAnchor(uint64 id, uint64 generation, uint64 anchor) private {
+        if (_compact()) {
+            VRLiability.Facts storage f = VRLiability.load().facts[id][generation];
+            if (anchor > f.maxLiabilityAnchor) f.maxLiabilityAnchor = anchor;
+            return;
+        }
+        if (anchor > _legacyMaxLiabilityAnchor[id][generation]) {
+            _legacyMaxLiabilityAnchor[id][generation] = anchor;
+            _writeFacts(id, generation);
+        }
+    }
+
+    function _raiseFloors(Lot storage l, uint64 hold, uint64 window, uint64 time) private {
+        if (hold > l.holdUntil) l.holdUntil = hold;
+        if (window > l.evidenceUntil) l.evidenceUntil = window;
+        if (time > l.timeUntil) l.timeUntil = time;
     }
 
     function _importRetirement(RetirementData memory d, uint64 pRet, uint64 tRet) private {
@@ -623,9 +587,9 @@ contract StakeCustody is CustodyStorage {
         if (!p.retirementRequested) revert RetirementNotRequested();
         RetirementInfo storage info = retirements[d.id][d.generation];
         if (info.imported) revert RetirementAlreadyImported();
-        if (liveExposures[d.id][d.generation] != 0) revert RefsStillLive();
-        if (d.refDigest != exposureChain[d.id][d.generation]) revert RefDigestMismatch();
-        if (pRet < maxLiabilityAnchor[d.id][d.generation]) revert RetirementBeforeLiability();
+        if (liveExposures(d.id, d.generation) != 0) revert RefsStillLive();
+        if (d.refDigest != exposureChain(d.id, d.generation)) revert RefDigestMismatch();
+        if (pRet < maxLiabilityAnchor(d.id, d.generation)) revert RetirementBeforeLiability();
         info.imported = true;
         info.pRet = pRet;
         info.tRet = tRet;
@@ -646,10 +610,19 @@ contract StakeCustody is CustodyStorage {
         if (penaltyApplied[caseID][lotID]) revert PenaltyAlreadyApplied();
         CaseView memory c = IEvidence(evidence).caseInfo(caseID);
         bytes32 exposureID = c.exposureID;
-        if (!_exposureHasLot[exposureID][lotID]) revert LotNotInExposure();
+        bytes32 assignmentID;
+        if (_compact()) {
+            uint256 ordinal;
+            (assignmentID, ordinal) = IEvidence(evidence).caseLocation(caseID);
+            AssignmentSeat memory seat = assignmentSeat(assignmentID, ordinal);
+            if (seat.exposureID != exposureID || seat.lotID != lotID) revert LotNotInExposure();
+        } else {
+            if (!_exposureHasLot[exposureID][lotID]) revert LotNotInExposure();
+            assignmentID = exposures[exposureID].assignmentID;
+        }
         penaltyApplied[caseID][lotID] = true;
         Lot storage l = lots[lotID];
-        Policy memory terms = policyTerms(exposures[exposureID].assignmentID);
+        Policy memory terms = policyTerms(assignmentID);
         uint256 budgetLeft = c.budget - caseDebited[caseID];
         uint256 capRoom = (uint256(l.initial) * l.capBps) / BPS - l.penalized;
         // capRoom <= remaining always holds (cap <= 100% of initial and remaining = initial - penalized
@@ -757,11 +730,43 @@ contract StakeCustody is CustodyStorage {
     }
 
     function _unlockIncumbent(bytes32 incumbentAssignmentID) private {
+        if (_compact()) {
+            _slateState[incumbentAssignmentID].locks--;
+            _releaseSlate(incumbentAssignmentID, false);
+            return;
+        }
         bytes32[] storage ids = assignments[incumbentAssignmentID].exposureIDs;
         for (uint256 i = 0; i < ids.length; ++i) {
             Exposure storage e = exposures[ids[i]];
             e.sessionLocks--;
             _releaseIfClear(e);
+        }
+    }
+
+    function _releaseSlate(bytes32 assignmentID, bool aborting) private {
+        SlateState storage state = _slateState[assignmentID];
+        if (
+            state.released || (!aborting && (!assignments[assignmentID].closed || state.locks != 0))
+        ) return;
+        state.released = true;
+        bytes32 source = _source(assignmentID);
+        uint256[] storage seats = _seats[source];
+        for (uint256 i = 0; i < seats.length; ++i) {
+            (uint64 id, uint64 generation, uint256 lotID) = _seatLot(seats[i]);
+            VRLiability.Facts storage f = VRLiability.load().facts[id][generation];
+            f.liveExposures--;
+            f.lotReferences--;
+            _unreference(lots[lotID], positions[id]);
+        }
+    }
+
+    function _unreference(Lot storage lot, Position storage p) private {
+        lot.refCount--;
+        if (lot.refCount == 0 && lot.category == CAT_ENCUMBERED) {
+            _move(
+                lot,
+                p.retirementRequested && p.generation == lot.generation ? CAT_DRAINING : CAT_FREE
+            );
         }
     }
 
@@ -776,20 +781,46 @@ contract StakeCustody is CustodyStorage {
     function _forceRelease(Exposure storage e) private {
         if (e.referencesReleased) return;
         e.referencesReleased = true;
-        liveExposures[e.id][e.generation]--;
+        _legacyLiveExposures[e.id][e.generation]--;
         Position storage p = positions[e.id];
         for (uint256 i = 0; i < e.lotIDs.length; ++i) {
-            Lot storage l = lots[e.lotIDs[i]];
-            l.refCount--;
-            if (l.refCount == 0 && l.category == CAT_ENCUMBERED) {
-                bool retiring = p.retirementRequested && p.generation == l.generation;
-                _move(l, retiring ? CAT_DRAINING : CAT_FREE);
-            }
+            _unreference(lots[e.lotIDs[i]], p);
         }
         _writeFacts(e.id, e.generation);
     }
 
     // --- getters ------------------------------------------------------------------------------
+
+    function liveExposures(uint64 id, uint64 generation) public view returns (uint32) {
+        return _compact()
+            ? VRLiability.load().facts[id][generation].liveExposures
+            : _legacyLiveExposures[id][generation];
+    }
+
+    function exposureChain(uint64 id, uint64 generation) public view returns (bytes32) {
+        return _compact()
+            ? VRLiability.load().facts[id][generation].refDigest
+            : _legacyExposureChain[id][generation];
+    }
+
+    function maxLiabilityAnchor(uint64 id, uint64 generation) public view returns (uint64) {
+        return _compact()
+            ? VRLiability.load().facts[id][generation].maxLiabilityAnchor
+            : _legacyMaxLiabilityAnchor[id][generation];
+    }
+
+    function assignmentSeatCount(bytes32 assignmentID) external view returns (uint256) {
+        return _seats[_source(assignmentID)].length;
+    }
+
+    function assignmentSeat(bytes32 assignmentID, uint256 ordinal)
+        public
+        view
+        returns (AssignmentSeat memory)
+    {
+        bytes32 source = _source(assignmentID);
+        return _readSeat(assignmentID, source, _seats[source][ordinal]);
+    }
 
     function generationLots(uint64 id, uint64 generation) external view returns (uint256[] memory) {
         return _generationLots[id][generation];
@@ -805,7 +836,14 @@ contract StakeCustody is CustodyStorage {
     }
 
     function assignmentExposures(bytes32 assignmentID) external view returns (bytes32[] memory) {
-        return assignments[assignmentID].exposureIDs;
+        if (!_compact()) return assignments[assignmentID].exposureIDs;
+        uint256[] storage seats = _seats[_source(assignmentID)];
+        bytes32[] memory ids = new bytes32[](seats.length);
+        for (uint256 i = 0; i < ids.length; ++i) {
+            // forge-lint: disable-next-line(unsafe-typecast)
+            ids[i] = _exposureID(assignmentID, uint64(seats[i]));
+        }
+        return ids;
     }
 
     function policyTerms(bytes32 assignmentID) public view returns (Policy memory) {

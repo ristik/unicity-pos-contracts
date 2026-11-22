@@ -21,7 +21,7 @@ work, out = sys.argv[1], sys.argv[2]
 state = json.load(open(f"{work}/state.json"))
 dep = json.load(open(f"{work}/deployment.json"))
 core = ("registry", "governanceFacet", "repairFacet", "recordsFacet", "module", "governor")
-stack = ("factory", "custody", "genesisImpl", "election", "evidence", "selection", "reader", "policy", "rewardPool")
+stack = ("factory", "custody", "genesisImpl", "election", "electionPublication", "evidence", "selection", "reader", "policy", "rewardPool")
 keep = {dep[k].lower() for k in core + stack}
 if len(keep) != len(core) + len(stack):
     sys.exit("the deployment names fewer distinct accounts than expected")

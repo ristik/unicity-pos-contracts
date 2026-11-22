@@ -8,7 +8,7 @@ pragma solidity 0.8.37;
 import {ReentrancyGuard} from "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
 import {Math} from "@openzeppelin/contracts/utils/math/Math.sol";
 import {IRootRecords, GovernanceSnapshot} from "./IP85.sol";
-import {RecordKind, RootRecord, RecoveryAckData} from "./P85Types.sol";
+import {AssignmentSeat, RecordKind, RootRecord, RecoveryAckData} from "./P85Types.sol";
 import {OutputView} from "../vr/VRTypes.sol";
 
 interface IRewardCustody {
@@ -23,6 +23,11 @@ interface IRewardCustody {
             uint64 attempt,
             bytes32 incumbentAssignmentID
         );
+    function assignmentSeatCount(bytes32 assignmentID) external view returns (uint256);
+    function assignmentSeat(bytes32 assignmentID, uint256 ordinal)
+        external
+        view
+        returns (AssignmentSeat memory);
     function assignmentExposures(bytes32 assignmentID) external view returns (bytes32[] memory);
     function exposures(bytes32 exposureID)
         external
@@ -392,14 +397,28 @@ contract RewardPool is ReentrancyGuard {
     }
 
     function _settle(bytes32 assignmentID, uint256 budget) private returns (uint256 distributed) {
-        bytes32[] memory ids = CUSTODY.assignmentExposures(assignmentID);
-        uint256 n = ids.length;
+        uint256 count = CUSTODY.assignmentSeatCount(assignmentID);
+        bytes32[] memory ids;
+        bool compact = count != 0;
+        if (!compact) {
+            ids = CUSTODY.assignmentExposures(assignmentID);
+            count = ids.length;
+        }
+        uint256 n = count;
         if (n > MAX_MEMBERS) revert CommitteeTooLarge();
         uint64[] memory weights = new uint64[](n);
         address[] memory payees = new address[](n);
         uint256 total;
         for (uint256 i = 0; i < n; ++i) {
-            (,,, uint64 weight,,,, address payee,,) = CUSTODY.exposures(ids[i]);
+            uint64 weight;
+            address payee;
+            if (compact) {
+                AssignmentSeat memory m = CUSTODY.assignmentSeat(assignmentID, i);
+                weight = m.weight;
+                payee = m.binding.payee;
+            } else {
+                (,,, weight,,,, payee,,) = CUSTODY.exposures(ids[i]);
+            }
             weights[i] = weight;
             payees[i] = payee;
             total += weight;

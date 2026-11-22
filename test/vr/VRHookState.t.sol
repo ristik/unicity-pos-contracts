@@ -119,7 +119,7 @@ contract VRHookStateTest is PoaBase {
         H = uint32(vm.envOr("VR_HOOK_H", isPos ? uint256(16) : uint256(32)));
         require(H >= 3 && H <= 32, "H is 3..32");
         if (isPos) {
-            CAP_ELECT = 5_000_000;
+            CAP_ELECT = 7_000_000;
             CAP_OUTPUT = 1_500_000;
             CAP_RECORD = 2_500_000;
         } else {

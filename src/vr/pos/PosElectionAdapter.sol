@@ -5,10 +5,11 @@ pragma solidity 0.8.37;
 // through contained steps (design section 3.3); the adapter calls the fixed, immutable P85 modules it is constructed with.
 // forge-lint: disable-start(calls-loop, unsafe-typecast, unused-return)
 
+import {AssignmentSeat} from "../../p85/P85Types.sol";
 import {VRC} from "../VRConstants.sol";
 import {VRCodec} from "../VRCodec.sol";
 import {Member, IVR, IElectionModule} from "../VRTypes.sol";
-import {ElectionPolicy} from "../../p85/ElectionPolicy.sol";
+import {ElectionPolicy, ElectionStorage} from "../../p85/ElectionPolicy.sol";
 import {IStakeCustody, IPosAdapter} from "../../p85/IP85.sol";
 
 /// @notice The two custody calls the adapter makes that `IStakeCustody` does not carry.
@@ -62,7 +63,7 @@ contract PosElectionAdapter is IElectionModule, IPosAdapter {
     bytes32 internal constant BINDING_DOMAIN = keccak256("unicity.p85.delegation-binding");
 
     // ---- gas bounds: the measured worst case x 5/4, below VR's caps (test/vr/pos/PosGas.t.sol) ----
-    uint64 internal constant GAS_ELECT = 5_000_000;
+    uint64 internal constant GAS_ELECT = 7_000_000;
     uint64 internal constant GAS_OUTPUT = 1_500_000;
     uint64 internal constant GAS_RECORD = 2_500_000;
     uint64 internal constant GAS_RESOLVED = 10_000;
@@ -156,14 +157,14 @@ contract PosElectionAdapter is IElectionModule, IPosAdapter {
     function elect(bytes calldata context) external onlyVR returns (bytes memory) {
         (uint8 err, VRCodec.Context memory c) = VRCodec.decodeContext(context);
         if (err != VRCodec.OK) revert BadArgument();
-        ElectionPolicy.Outcome o = ELECTION.elect(c.origin);
-        if (o == ElectionPolicy.Outcome.Reserved) {
+        ElectionStorage.Outcome o = ELECTION.elect(c.origin);
+        if (o == ElectionStorage.Outcome.Reserved) {
             return VRCodec.packElect(VRC.ELECT_RESERVED, false, ELECTION.lastAttemptResult());
         }
-        if (o == ElectionPolicy.Outcome.NotDue) {
+        if (o == ElectionStorage.Outcome.NotDue) {
             return VRCodec.packElect(VRC.ELECT_NOT_DUE, false, 0);
         }
-        if (o == ElectionPolicy.Outcome.NoCandidateRecorded) {
+        if (o == ElectionStorage.Outcome.NoCandidateRecorded) {
             return VRCodec.packElect(VRC.ELECT_NO_CANDIDATE, false, 0);
         }
         return VRCodec.packElect(VRC.ELECT_DISABLED, false, 0);
@@ -173,24 +174,36 @@ contract PosElectionAdapter is IElectionModule, IPosAdapter {
     /// names a member VR does not hold as P85 does), Ready for a published, not lost, Reserved result.
     function outputOf(bytes32 resultId) external view returns (bytes memory) {
         if (resultId == bytes32(0)) return VRCodec.packStatus(VRC.STATUS_NOT_MINE);
-        ElectionPolicy.Result memory r = ELECTION.result(resultId);
-        if (r.state != ElectionPolicy.ResultState.Reserved) {
+        ElectionStorage.Result memory r = ELECTION.result(resultId);
+        if (r.state != ElectionStorage.ResultState.Reserved) {
             return VRCodec.packStatus(VRC.STATUS_NOT_MINE);
         }
-        ElectionPolicy.Publication memory p = ELECTION.publication(resultId);
+        ElectionStorage.Publication memory p = ELECTION.publication(resultId);
         if (p.lost) return VRCodec.packStatus(VRC.STATUS_NOT_MINE);
         if (!p.published) return VRCodec.packStatus(VRC.STATUS_PENDING);
 
-        ElectionPolicy.Frozen[] memory f = ELECTION.frozenMembers(resultId);
-        bytes32[] memory eids = CUSTODY.assignmentExposures(r.assignmentID);
-        if (f.length == 0 || f.length > VRC.MAX_COMMITTEE || eids.length != f.length) {
-            return VRCodec.packStatus(VRC.STATUS_NOT_MINE);
-        }
-        Member[] memory ms = new Member[](f.length);
-        for (uint256 i = 0; i < f.length; ++i) {
-            Member memory m = _member(f[i], eids[i]);
-            if (m.id == 0) return VRCodec.packStatus(VRC.STATUS_NOT_MINE);
-            ms[i] = m;
+        uint256 count = CUSTODY.assignmentSeatCount(r.assignmentID);
+        Member[] memory ms;
+        if (count != 0) {
+            ms = new Member[](count);
+            for (uint256 i = 0; i < count; ++i) {
+                AssignmentSeat memory seat = CUSTODY.assignmentSeat(r.assignmentID, i);
+                Member memory m = _compactMember(seat);
+                if (m.id == 0) return VRCodec.packStatus(VRC.STATUS_NOT_MINE);
+                ms[i] = m;
+            }
+        } else {
+            ElectionStorage.Frozen[] memory f = ELECTION.frozenMembers(resultId);
+            bytes32[] memory eids = CUSTODY.assignmentExposures(r.assignmentID);
+            if (f.length == 0 || f.length > VRC.MAX_COMMITTEE || eids.length != f.length) {
+                return VRCodec.packStatus(VRC.STATUS_NOT_MINE);
+            }
+            ms = new Member[](f.length);
+            for (uint256 i = 0; i < f.length; ++i) {
+                Member memory m = _member(f[i], eids[i]);
+                if (m.id == 0) return VRCodec.packStatus(VRC.STATUS_NOT_MINE);
+                ms[i] = m;
+            }
         }
         VRCodec.OutputHeader memory h;
         h.resultId = resultId;
@@ -201,11 +214,26 @@ contract PosElectionAdapter is IElectionModule, IPosAdapter {
         return VRCodec.packOutput(h, ms);
     }
 
+    function _compactMember(AssignmentSeat memory seat) private view returns (Member memory m) {
+        ElectionStorage.Frozen memory f = ElectionStorage.Frozen(
+            seat.binding.id, seat.binding.generation, seat.weight, seat.rawWeight, seat.bindingHash
+        );
+        Member memory b = IVR(VR).bindingOf(f.id, false);
+        if (!_matches(b, f)) {
+            b = IVR(VR).bindingOf(f.id, true);
+            if (!_matches(b, f)) return m;
+        }
+        b.weight = seat.weight;
+        b.rawWeight = seat.rawWeight;
+        b.exposureDigest = seat.memberDigest;
+        return b;
+    }
+
     /// @dev One frozen member as VR's member words: the quantized and raw weights and the exposure's frozen key hashes and operator payee
     /// (custody), the generation, and the node words of the VR binding those frozen keys, payee and generation identify (current, or
     /// staged at g + 1). VR is the authority for the words, so a later `admitDelegation` cannot make an aligned frozen member
     /// unservable. A member VR does not hold as frozen is returned with id 0 (the caller serves nothing).
-    function _member(ElectionPolicy.Frozen memory f, bytes32 exposureId)
+    function _member(ElectionStorage.Frozen memory f, bytes32 exposureId)
         internal
         view
         returns (Member memory m)
@@ -234,7 +262,11 @@ contract PosElectionAdapter is IElectionModule, IPosAdapter {
     /// @dev The candidate VR binding is the one P85 froze: the same generation, and the complete binding (node words, keys, payee) hashes to
     /// the frozen `bindingHash` (ElectionPolicy's formula). So a staged VR binding replaced at the same prospective generation, with other
     /// node words and the same keys and payee, is not served.
-    function _matches(Member memory b, ElectionPolicy.Frozen memory f) private pure returns (bool) {
+    function _matches(Member memory b, ElectionStorage.Frozen memory f)
+        private
+        pure
+        returns (bool)
+    {
         if (b.generation == 0 || b.generation != f.generation) return false;
         return keccak256(
             abi.encode(
