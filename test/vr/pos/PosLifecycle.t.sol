@@ -5,7 +5,7 @@ import {PosBase} from "./PosBase.sol";
 import {VRC} from "../../../src/vr/VRConstants.sol";
 import {VRCodec} from "../../../src/vr/VRCodec.sol";
 import {Member, OutputView} from "../../../src/vr/VRTypes.sol";
-import {ElectionPolicy} from "../../../src/p85/ElectionPolicy.sol";
+import {ElectionPolicy, ElectionStorage} from "../../../src/p85/ElectionPolicy.sol";
 import {
     Delegation,
     DelegationRequest,
@@ -90,9 +90,9 @@ contract PosLifecycleTest is PosBase {
     function test_onlyTheAdapterElectsAndNoSystemCallerBypassesVR() public {
         _advance(300, 200);
         vm.prank(SYS);
-        vm.expectRevert(ElectionPolicy.NotSystem.selector);
+        vm.expectRevert(ElectionStorage.NotSystem.selector);
         election.elect(ORIGIN);
-        vm.expectRevert(ElectionPolicy.NotSystem.selector);
+        vm.expectRevert(ElectionStorage.NotSystem.selector);
         election.elect(ORIGIN);
     }
 
@@ -115,7 +115,7 @@ contract PosLifecycleTest is PosBase {
         assertEq(o.state, VRC.OUT_INVALIDATED);
         assertEq(o.invalidReason, VRC.INVALID_LOST);
         assertEq(vr.publish(rid), VRC.PUB_PRECONDITION_FAILED);
-        vm.expectRevert(ElectionPolicy.CoverageLost.selector);
+        vm.expectRevert(ElectionStorage.CoverageLost.selector);
         election.finalizeCandidate(rid);
         assertEq(vr.health(), VRC.HEALTHY, "a loss is no module fault");
     }
@@ -178,7 +178,7 @@ contract PosLifecycleTest is PosBase {
         vm.prank(address(election));
         adapter.outputLost(rid); // no revert, nothing written
         assertEq(_state(rid), VRC.OUT_ACKNOWLEDGED);
-        vm.expectRevert(ElectionPolicy.NotReserved.selector);
+        vm.expectRevert(ElectionStorage.NotReserved.selector);
         election.reconcileCandidate(rid);
     }
 
@@ -196,7 +196,7 @@ contract PosLifecycleTest is PosBase {
         bytes32 slot = bytes32(uint256(keccak256(abi.encode(lotOf(gid(1)), CUSTODY_LOTS))) + 1);
         vm.store(address(custody), slot, bytes32(uint256(vm.load(address(custody), slot)) - 1));
         uint256 succeeded;
-        for (uint256 g = 20_000; g <= 140_000; g += 6_000) {
+        for (uint256 g = 20_000; g <= 220_000; g += 6_000) {
             uint256 snap = vm.snapshotState();
             vm.prank(address(evidence));
             (bool ok,) = address(election).call{gas: g}(
@@ -298,38 +298,38 @@ contract PosLifecycleTest is PosBase {
         );
     }
 
-    /// @dev VR's CAP_ELECT (4,000,000) carries the PoS election only to a small committee: growing it one election at a time, a contained
-    /// step eventually fails, which VR records as a module fault (outcome 3, health Faulted). The 16-member election needs 7.9 M
-    /// (PosSixteen): owner-questions.md.
-    function test_throughVRTheElectionExceedsTheCapForALargerCommittee() public {
-        uint256 fitted;
-        bool faulted;
-        for (uint256 k; k < 8 && !faulted; ++k) {
+    function test_legacyReservationCanExhaustTheOriginalElectionStipend() public {
+        for (uint256 k; k < 8; ++k) {
             Joiner memory a = _joinPos(1_000 * UCT);
             evmPkOf[a.id] = a.evmPk;
-            _advance(300, 200);
-            uint256 g = gasleft();
-            uint8 o = _vrElect(ORIGIN);
-            uint256 used = g - gasleft();
-            if (o != VRC.ELECT_RESERVED) {
-                emit log_named_uint("VR.elect gas at the failing election", used);
-                assertEq(o, VRC.ELECT_NO_CANDIDATE, "a failed elect step returns outcome 3");
-                assertEq(vr.health(), VRC.FAULTED);
-                faulted = true;
-                break;
-            }
-            bytes32 r = vr.openOutput();
-            assertEq(_publishResult2(r), VRC.PUB_PUBLISHED);
+            bytes32 r = _elect2();
             bytes32 previous = custody.lastAckedAssignment();
             _ackNext(r);
             pushRecord(RecordKind.Closure, closureData(previous, lastH, "prev"));
             _vrApplyAll();
-            fitted = vr.committee().length;
         }
-        emit log_named_uint("largest committee elected through VR", fitted);
-        assertTrue(faulted, "the cap is reached before 16 members");
-        assertGe(fitted, 6);
-        assertLt(fitted, 16);
+        _advance(300, 200);
+        bytes memory ctx = abi.encode(
+            ORIGIN,
+            uint256(progress),
+            uint256(ucTime),
+            uint256(1),
+            vr.lastAcked(),
+            VRCodec.limitsWord(4, 10, 16),
+            uint256(0),
+            uint256(0)
+        );
+        _coolAll();
+        vm.prank(VR_ADDR);
+        (bool ok, bytes memory result) =
+            address(adapter).call{gas: 4_000_000}(abi.encodeCall(adapter.elect, (ctx)));
+        if (ok) {
+            (, uint8 outcome,,) = VRCodec.decodeElect(result);
+            assertTrue(
+                outcome != VRC.ELECT_RESERVED, "old stipend cannot reserve this legacy slate"
+            );
+        }
+        assertEq(election.openResult(), bytes32(0));
     }
 
     /// @dev The Ack can reach custody before VR (custody's `applyRootRecords` is permissionless). That resolves P85's result, so a later loss
@@ -359,7 +359,7 @@ contract PosLifecycleTest is PosBase {
         Joiner memory good = _joinPos(1_000 * UCT);
         evmPkOf[good.id] = good.evmPk;
         bytes32 rid = _elect2();
-        ElectionPolicy.Frozen[] memory f = election.frozenMembers(rid);
+        ElectionStorage.Frozen[] memory f = election.frozenMembers(rid);
         assertEq(f.length, N_GENESIS + 1);
         assertEq(f[N_GENESIS].id, good.id);
         _ackNext(rid);

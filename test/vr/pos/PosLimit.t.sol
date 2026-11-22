@@ -5,7 +5,7 @@ import {PosBase} from "./PosBase.sol";
 import {Member} from "../../../src/vr/VRTypes.sol";
 import {VRC} from "../../../src/vr/VRConstants.sol";
 import {VRCodec} from "../../../src/vr/VRCodec.sol";
-import {ElectionPolicy} from "../../../src/p85/ElectionPolicy.sol";
+import {ElectionPolicy, ElectionStorage} from "../../../src/p85/ElectionPolicy.sol";
 import {Limits, ElectionParams, RecordKind, RecoveryAckData} from "../../../src/p85/P85Types.sol";
 
 /// @notice The prototype's supported deployment limit, through VR (sol and astra, #92): a committee of at most 5 (nMax, so K <= 5) drawn
@@ -33,7 +33,7 @@ abstract contract PosLimitBase is PosBase {
         });
     }
 
-    function _manifestLimits() internal pure override returns (Limits memory) {
+    function _manifestLimits() internal pure virtual override returns (Limits memory) {
         return Limits({vMax: 8, lMax: 1, rMax: 4, maxBatch: 32});
     }
 
@@ -49,11 +49,12 @@ abstract contract PosLimitBase is PosBase {
             _vrApplyAll();
         }
         assertEq(vr.committee().length, _nMax());
-        for (uint256 k; k < 8 - _nMax(); ++k) {
+        uint256 capacity = _manifestLimits().vMax;
+        for (uint256 k; k < capacity - _nMax(); ++k) {
             Joiner memory o = _joinPos(1_100 * UCT);
             evmPkOf[o.id] = o.evmPk;
         }
-        assertEq(election.liveCount(), 8);
+        assertEq(election.liveCount(), capacity);
     }
 
     function joinExtra() external {
@@ -62,7 +63,14 @@ abstract contract PosLimitBase is PosBase {
 
     uint256 internal constant ELECT_STIPEND = 4_000_000;
     uint256 internal constant OUTPUT_STIPEND = 1_200_000;
-    uint256 internal constant RECORD_STIPEND = 2_000_000;
+
+    function _recordCap() internal pure virtual returns (uint256) {
+        return 2_500_000;
+    }
+
+    function _recordStipend() internal pure returns (uint256) {
+        return _recordCap() * 4 / 5;
+    }
 
     function _ctx() internal view returns (bytes memory) {
         return abi.encode(
@@ -71,7 +79,7 @@ abstract contract PosLimitBase is PosBase {
             uint256(ucTime),
             uint256(1),
             vr.lastAcked(),
-            VRCodec.limitsWord(4, 6, 6),
+            VRCodec.limitsWord(4, _nMax(), _nMax()),
             uint256(0),
             uint256(0)
         );
@@ -80,13 +88,13 @@ abstract contract PosLimitBase is PosBase {
     /// @dev astra's qualification, enforced (ruling on option 1, round 2): each callback is CALLED with its actual qualification stipend,
     /// cold (state prepared first, every account cooled), and must succeed with the right answer: elect Reserved, outputOf a full Ready
     /// output of 6 members, a one-record onRecords applied. The enclosing VR calls are asserted end to end as well.
-    function _popsFor2(bytes32 rid) internal returns (ElectionPolicy.PoPInput[] memory pops) {
-        ElectionPolicy.Frozen[] memory f = election.frozenMembers(rid);
-        pops = new ElectionPolicy.PoPInput[](f.length);
+    function _popsFor2(bytes32 rid) internal returns (ElectionStorage.PoPInput[] memory pops) {
+        ElectionStorage.Frozen[] memory f = election.frozenMembers(rid);
+        pops = new ElectionStorage.PoPInput[](f.length);
         for (uint256 k; k < f.length; ++k) {
             uint256 pk = f[k].id <= N_GENESIS ? evmPk(f[k].id - 1) : evmPkOf[f[k].id];
             bytes memory key = compressed(pk);
-            pops[k] = ElectionPolicy.PoPInput(
+            pops[k] = ElectionStorage.PoPInput(
                 f[k].id, key, sign(pk, election.popDigest(rid, f[k].id, keccak256(key)))
             );
         }
@@ -147,11 +155,11 @@ abstract contract PosLimitBase is PosBase {
         vm.prank(VR_ADDR);
         uint256 g = gasleft();
         (bool ok,) =
-            address(adapter).call{gas: 2_500_000}(abi.encodeCall(adapter.onRecords, (from, 1)));
+            address(adapter).call{gas: _recordCap()}(abi.encodeCall(adapter.onRecords, (from, 1)));
         uint256 callback = g - gasleft();
         assertTrue(ok, "the one-record onRecords succeeds inside the hard cap 2.5 M");
         if (!(savedClosure && k == 6)) {
-            assertLe(callback, RECORD_STIPEND, "within the 2.0 M stipend");
+            assertLe(callback, _recordStipend(), "within the 2.0 M stipend");
         }
         assertEq(custody.recordCursor(), from + 1, "applied");
         vm.revertToState(snap);
@@ -165,7 +173,7 @@ abstract contract PosLimitBase is PosBase {
         );
         // the least gas the adapter must receive (binary search over snapshots): inside the 2.0 M stipend
         uint256 lo = callback / 2;
-        uint256 hi = 2_500_000;
+        uint256 hi = _recordCap();
         while (hi - lo > 500) {
             uint256 mid = (lo + hi) / 2;
             uint256 s2 = vm.snapshotState();
@@ -178,10 +186,10 @@ abstract contract PosLimitBase is PosBase {
             else lo = mid;
         }
         emit log_named_uint("  least gas the adapter must receive", hi);
-        if (!(savedClosure && k == 6)) assertLe(hi, RECORD_STIPEND);
+        if (!(savedClosure && k == 6)) assertLe(hi, _recordStipend());
         if (fullIndex) {
             emit log_named_uint(
-                "  full index: forwarded gas headroom below 2.0 M", RECORD_STIPEND - hi
+                "  full index: forwarded gas headroom below 2.0 M", _recordStipend() - hi
             );
         }
         // through VR: the RecoveryAck alone, then its Boundary
@@ -207,7 +215,7 @@ abstract contract PosLimitBase is PosBase {
 contract PosLimitTest is PosLimitBase {
     function test_theIndexRefusesANinthIdentity() public {
         _atTheLimit();
-        vm.expectRevert(ElectionPolicy.IndexFull.selector);
+        vm.expectRevert(ElectionStorage.IndexFull.selector);
         this.joinExtra();
     }
 
@@ -272,7 +280,7 @@ contract PosLimitTest is PosLimitBase {
 
     /// @dev astra's regression (#92 round 3): the full-index setup (V = 8) with the K = 5 recovery and both closures staged. She measured
     /// 1,924,873 consumed and at most 1,986,101 forwarded, only 13,899 below the 2.0 M ceiling: it must stay pinned (the asserts in
-    /// `_recovery` bound the callback and the forwarded gas by RECORD_STIPEND and require a healthy VR, matching cursors and holder facts).
+    /// `_recovery` bound the callback and the forwarded gas by _recordStipend() and require a healthy VR, matching cursors and holder facts).
     function test_savedClosureRecoveryK5WithAFullIndexThroughVR() public {
         _recovery(5, true, true);
     }

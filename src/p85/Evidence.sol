@@ -5,7 +5,7 @@ pragma solidity 0.8.37;
 // Fixed deployment modules are trusted; guard failures must revert the entire bounded operation.
 // forge-lint: disable-start(require-revert-in-loop, calls-loop)
 
-import {Manifest, Policy} from "./P85Types.sol";
+import {AssignmentSeat, Manifest, Policy} from "./P85Types.sol";
 import {IRootRecords, IStakeCustody, IElectionPolicy, CaseView} from "./IP85.sol";
 import {KeyLib} from "./KeyLib.sol";
 import {RootVoteCbor} from "./RootVoteCbor.sol";
@@ -130,6 +130,8 @@ contract Evidence {
     mapping(bytes32 => bool) public offenceSeen;
     mapping(uint256 => uint32) internal _holds;
     mapping(uint64 => bool) internal _excluded;
+    mapping(bytes32 => bytes32) internal _caseAssignments;
+    mapping(bytes32 => uint256) internal _caseOrdinals;
 
     /// @param factory_ the deployment factory that will initialize this module, fixed at construction. The module is deployed first so
     /// the factory's own creation code stays small; only that factory can initialize it, and it can do so once.
@@ -286,6 +288,38 @@ contract Evidence {
         SignedVote calldata b,
         bytes32 exposureID
     ) external whenInitialized returns (bytes32 caseID) {
+        _verifyEvidence(h, a, b);
+        (bytes32 assignmentID, uint64 id,,,, bytes32 rootKeyHash,,,,) =
+            custody.exposures(exposureID);
+        if (assignmentID == bytes32(0)) revert ExposureUnknown();
+        return
+            _admit(h, exposureID, assignmentID, id, rootKeyHash, custody.exposureLots(exposureID));
+    }
+
+    /// @notice Submit evidence by ordered seat locator and authenticate the claimed exposure ID.
+    function submitSeatEvidence(
+        VoteHeader calldata h,
+        SignedVote calldata a,
+        SignedVote calldata b,
+        bytes32 assignmentID,
+        uint256 ordinal,
+        bytes32 exposureID
+    ) external whenInitialized returns (bytes32 caseID) {
+        _verifyEvidence(h, a, b);
+        if (ordinal >= custody.assignmentSeatCount(assignmentID)) revert ExposureUnknown();
+        AssignmentSeat memory m = custody.assignmentSeat(assignmentID, ordinal);
+        if (m.exposureID != exposureID) revert ExposureUnknown();
+        uint256[] memory lotIDs = new uint256[](1);
+        lotIDs[0] = m.lotID;
+        caseID = _admit(h, exposureID, assignmentID, m.binding.id, m.binding.rootKeyHash, lotIDs);
+        _caseAssignments[caseID] = assignmentID;
+        _caseOrdinals[caseID] = ordinal;
+    }
+
+    function _verifyEvidence(VoteHeader calldata h, SignedVote calldata a, SignedVote calldata b)
+        private
+        view
+    {
         if (h.network != network) revert WrongNetwork();
         if (h.domain != DOMAIN_ROOT) revert BadDomain();
         // The key is decompressed once and the domain built once; both statements and both seals are checked against that address.
@@ -294,7 +328,6 @@ contract Evidence {
         bytes32 da = _verifyStatement(h, a, dv, signer);
         bytes32 db = _verifyStatement(h, b, dv, signer);
         if (da == db) revert IdenticalStatements();
-        return _admit(h, exposureID);
     }
 
     /// @notice EVM-domain evidence. The EVM-validator vote needs its own authenticated format, which is not defined yet; until it is,
@@ -308,15 +341,16 @@ contract Evidence {
         revert EvmEvidenceUndefined();
     }
 
-    function _admit(VoteHeader calldata h, bytes32 exposureID) private returns (bytes32 caseID) {
+    function _admit(
+        VoteHeader calldata h,
+        bytes32 exposureID,
+        bytes32 assignmentID,
+        uint64 identity,
+        bytes32 rootKeyHash,
+        uint256[] memory lotIDs
+    ) private returns (bytes32 caseID) {
         bytes32 offenceID = offenceIDOf(h);
         if (offenceSeen[offenceID]) revert DuplicateOffence();
-
-        // forge-lint: disable-start(unused-return)
-        (bytes32 assignmentID, uint64 identity,,,, bytes32 rootKeyHash,,,,) =
-            custody.exposures(exposureID);
-        // forge-lint: disable-end(unused-return)
-        if (assignmentID == bytes32(0)) revert ExposureUnknown();
         Asg memory asg = _assignment(assignmentID);
         if (asg.state == 3) revert NotAttributable();
         // only the root domain is admitted (submitEvmEvidence is fail-closed)
@@ -328,7 +362,6 @@ contract Evidence {
         offenceSeen[offenceID] = true;
         caseID =
             keccak256(abi.encode(CASE_DOMAIN, network, block.chainid, address(this), offenceID));
-        uint256[] memory lotIDs = custody.exposureLots(exposureID);
         uint256 total = 0;
         for (uint256 i = 0; i < lotIDs.length; ++i) {
             // forge-lint: disable-start(unused-return)
@@ -371,6 +404,14 @@ contract Evidence {
         if (progress > offenceProgress + terms.evidenceWindow) revert EvidenceLate();
     }
 
+    function caseLocation(bytes32 caseID)
+        external
+        view
+        returns (bytes32 assignmentID, uint256 ordinal)
+    {
+        return (_caseAssignments[caseID], _caseOrdinals[caseID]);
+    }
+
     /// @notice Settle the next ascending lots of a case. Each lot's hold is removed once its
     /// penalty work is done; custody reads the case itself and caps the debit.
     function settleEvidence(bytes32 caseID, uint256[] calldata lotIDs)
@@ -383,7 +424,14 @@ contract Evidence {
         if (c.cursor == c.lotCount) revert CaseSettled();
         if (lotIDs.length == 0) revert EmptyBatch();
         if (lotIDs.length > maxBatch) revert BatchTooLarge();
-        uint256[] memory lots = custody.exposureLots(c.exposureID);
+        bytes32 assignmentID = _caseAssignments[caseID];
+        uint256[] memory lots;
+        if (assignmentID == bytes32(0)) {
+            lots = custody.exposureLots(c.exposureID);
+        } else {
+            lots = new uint256[](1);
+            lots[0] = custody.assignmentSeat(assignmentID, _caseOrdinals[caseID]).lotID;
+        }
         uint256 bounty = 0;
         for (uint256 i = 0; i < lotIDs.length; ++i) {
             if (c.cursor >= c.lotCount || lotIDs[i] != lots[c.cursor]) revert NotNextLot();

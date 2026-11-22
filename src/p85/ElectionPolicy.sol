@@ -6,6 +6,8 @@ pragma solidity 0.8.37;
 // forge-lint: disable-start(require-revert-in-loop, calls-loop, reentrancy-no-eth)
 
 import {
+    AssignmentSeat,
+    SeatBinding,
     Manifest,
     GenesisIdentity,
     Delegation,
@@ -59,7 +61,7 @@ interface IVRBinding {
 /// (network, chain, ElectionPolicyAddress, admitDelegation, StakingID, generation, rootNodeID,
 /// rootVerificationKey, evmNodeID, evmVerificationKey, operatorPayee, roleNonce, delegationNonce,
 /// expiry); both the owner and the EVM key sign that exact digest.
-contract ElectionPolicy {
+abstract contract ElectionStorage {
     bytes32 internal constant DELEGATION_DOMAIN = keccak256("unicity.p85.admitDelegation");
     bytes32 internal constant BINDING_DOMAIN = keccak256("unicity.p85.delegation-binding");
     bytes32 internal constant SIGNING_DOMAIN = keccak256("unicity.p85.signing-binding");
@@ -279,6 +281,70 @@ contract ElectionPolicy {
 
     /// @notice Seeds the genesis live index and staged bindings from the manifest. Custody has
     /// already assigned StakingIDs 1..n in manifest order.
+    modifier whenInitialized() {
+        _requireInitialized();
+        _;
+    }
+
+    function _requireInitialized() private view {
+        if (!initialized) revert NotInitialized();
+    }
+
+    function frozenMembers(bytes32 resultID) public view returns (Frozen[] memory out) {
+        bytes32 assignmentID = _results[resultID].assignmentID;
+        uint256 count = custody.assignmentSeatCount(assignmentID);
+        if (count == 0) return _frozen[resultID];
+        out = new Frozen[](count);
+        for (uint256 i; i < count; ++i) {
+            AssignmentSeat memory m = custody.assignmentSeat(assignmentID, i);
+            out[i] =
+                Frozen(m.binding.id, m.binding.generation, m.weight, m.rawWeight, m.bindingHash);
+        }
+    }
+
+    /// @notice The digest a member's EVM key signs to prove possession for one frozen result: it names the network, chain, this
+    /// module, the result, its assignment and snapshot, the attempt and the member's identity, generation and EVM key. Registration and
+    /// delegation signatures cover other domains and cannot substitute. For an id that is not a frozen member of the result the
+    /// generation word is zero; every caller checks membership first.
+    function popDigest(bytes32 resultID, uint64 id, bytes32 evmKeyHash)
+        public
+        view
+        returns (bytes32)
+    {
+        Result storage r = _results[resultID];
+        Frozen[] memory f = frozenMembers(resultID);
+        uint64 generation = 0;
+        for (uint256 i = 0; i < f.length; ++i) {
+            if (f[i].id == id) generation = f[i].generation;
+        }
+        return keccak256(
+            abi.encode(
+                POP_DOMAIN,
+                network,
+                block.chainid,
+                address(this),
+                resultID,
+                r.assignmentID,
+                r.snapshotDigest,
+                r.attempt,
+                id,
+                generation,
+                evmKeyHash
+            )
+        );
+    }
+}
+
+contract ElectionPolicy is ElectionStorage {
+    address public immutable PUBLICATION_IMPL;
+    bytes32 public immutable PUBLICATION_CODE_HASH;
+
+    constructor(address factory_) ElectionStorage(factory_) {
+        address impl = address(new ElectionPublication());
+        PUBLICATION_IMPL = impl;
+        PUBLICATION_CODE_HASH = impl.codehash;
+    }
+
     function initialize(bytes32 manifestHash_, Manifest calldata m) external {
         if (msg.sender != FACTORY) revert NotFactory();
         if (initialized) revert AlreadyInitialized();
@@ -330,15 +396,6 @@ contract ElectionPolicy {
             _addIndex(id);
         }
         emit Initialized(manifestHash_);
-    }
-
-    modifier whenInitialized() {
-        _requireInitialized();
-        _;
-    }
-
-    function _requireInitialized() private view {
-        if (!initialized) revert NotInitialized();
     }
 
     /// @notice The digest both the owner and the EVM key sign.
@@ -400,6 +457,19 @@ contract ElectionPolicy {
         bytes32 evmHash = keccak256(r.binding.evmKey);
         custody.registerEvmKey(r.id, evmHash);
 
+        if (registry != address(0)) {
+            custody.internSeatBinding(
+                SeatBinding(
+                    r.id,
+                    r.generation,
+                    r.binding.rootNodeID,
+                    rootHash,
+                    r.binding.evmNodeID,
+                    evmHash,
+                    r.binding.operatorPayee
+                )
+            );
+        }
         s.binding = r.binding;
         s.rootKeyHash = rootHash;
         s.evmKeyHash = evmHash;
@@ -645,13 +715,17 @@ contract ElectionPolicy {
         r.predecessor = predecessor;
         r.assignmentID = in_.assignmentID;
         r.snapshotDigest = digest;
-        Frozen[] storage f = _frozen[resultID];
-        k = 0;
-        for (uint256 i = 0; i < chosen.length; ++i) {
-            while (c[k].id != chosen[i].id) ++k;
-            f.push(
-                Frozen(c[k].id, c[k].generation, chosen[i].weight, c[k].weight, c[k].bindingHash)
-            );
+        if (custody.assignmentSeatCount(in_.assignmentID) == 0) {
+            Frozen[] storage f = _frozen[resultID];
+            k = 0;
+            for (uint256 i = 0; i < chosen.length; ++i) {
+                while (c[k].id != chosen[i].id) ++k;
+                f.push(
+                    Frozen(
+                        c[k].id, c[k].generation, chosen[i].weight, c[k].weight, c[k].bindingHash
+                    )
+                );
+            }
         }
         _openPublication(resultID, in_.assignmentID, predecessor, digest);
         attemptCursor = attempt;
@@ -852,37 +926,92 @@ contract ElectionPolicy {
         );
     }
 
-    /// @notice The digest a member's EVM key signs to prove possession for one frozen result: it names the network, chain, this
-    /// module, the result, its assignment and snapshot, the attempt and the member's identity, generation and EVM key. Registration and
-    /// delegation signatures cover other domains and cannot substitute. For an id that is not a frozen member of the result the
-    /// generation word is zero; every caller checks membership first.
-    function popDigest(bytes32 resultID, uint64 id, bytes32 evmKeyHash)
-        public
-        view
-        returns (bytes32)
-    {
-        Result storage r = _results[resultID];
-        Frozen[] storage f = _frozen[resultID];
-        uint64 generation = 0;
-        for (uint256 i = 0; i < f.length; ++i) {
-            if (f[i].id == id) generation = f[i].generation;
+    function submitAssignmentPoPs(bytes32, PoPInput[] calldata) external {
+        _publicationStep();
+    }
+
+    function finalizeCandidate(bytes32) external {
+        _publicationStep();
+    }
+
+    function coverageChanged(uint64) external {
+        _publicationStep();
+    }
+
+    function reconcileCandidate(bytes32) external returns (bool) {
+        return abi.decode(_publicationStep(), (bool));
+    }
+
+    function _publicationStep() private returns (bytes memory) {
+        // The four selector-specific entry points forward only to the fixed publication implementation.
+        if (PUBLICATION_IMPL.codehash != PUBLICATION_CODE_HASH) revert ManifestMismatch();
+        // forge-lint: disable-next-line(controlled-delegatecall)
+        (bool ok, bytes memory ret) = PUBLICATION_IMPL.delegatecall(msg.data);
+        if (!ok) {
+            assembly ("memory-safe") { revert(add(ret, 32), mload(ret)) }
         }
-        return keccak256(
-            abi.encode(
-                POP_DOMAIN,
-                network,
-                block.chainid,
-                address(this),
-                resultID,
-                r.assignmentID,
-                r.snapshotDigest,
-                r.attempt,
-                id,
-                generation,
-                evmKeyHash
-            )
+        return ret;
+    }
+
+    function publication(bytes32 resultID) external view returns (Publication memory) {
+        return _publications[resultID];
+    }
+
+    function popHash(bytes32 resultID, uint64 id) external view returns (bytes32) {
+        return _popHashes[resultID][id];
+    }
+
+    /// @notice The recovery authorization of a result: K, its custody commitments, the captured policies and the deployment.
+    function recoveryAuthorization(bytes32 resultID)
+        external
+        view
+        returns (RecoveryAuthorization memory a)
+    {
+        Publication storage p = _publications[resultID];
+        return RecoveryAuthorization(
+            resultID,
+            p.snapshotDigest,
+            p.incumbent,
+            p.incumbentExposureDigest,
+            p.incumbentKeyDigest,
+            p.policyDigest,
+            p.contractsDigest,
+            p.kCommit
         );
     }
+
+    function result(bytes32 resultID) external view returns (Result memory) {
+        return _results[resultID];
+    }
+
+    function delegation(uint64 id, uint64 generation)
+        external
+        view
+        returns (Delegation memory binding, bytes32 bindingHash, uint64 nextNonce)
+    {
+        Staged storage s = _staged[id][generation];
+        return (s.binding, s.bindingHash, s.nextNonce);
+    }
+
+    function liveCount() external view returns (uint32) {
+        // forge-lint: disable-next-line(unsafe-typecast)
+        return uint32(_index.length); // bounded by vMax, a uint32
+    }
+
+    function isIndexed(uint64 id) external view returns (bool) {
+        return _indexPosition[id] != 0;
+    }
+
+    function liveIndexAt(uint32 i) external view returns (uint64) {
+        return _index[i];
+    }
+}
+
+// forge-lint: disable-end(require-revert-in-loop, calls-loop, reentrancy-no-eth)
+
+/// @dev Fixed publication implementation. Every mutation uses the election's storage and entry points.
+contract ElectionPublication is ElectionStorage {
+    constructor() ElectionStorage(address(0)) {}
 
     /// @notice Store the possession proofs of frozen members of a reserved result. Anyone may relay; a proof is valid only as a
     /// signature by the member's frozen EVM key over `popDigest`. An exact repeat is a no-op, a different proof for a stored slot is
@@ -897,8 +1026,10 @@ contract ElectionPolicy {
         if (pub.published) revert AlreadyPublished();
         if (pub.lost) revert CoverageLost();
         if (pops.length == 0 || pops.length > maxBatch) revert BatchSize();
-        Frozen[] storage f = _frozen[resultID];
-        bytes32[] memory eids = custody.assignmentExposures(r.assignmentID);
+        Frozen[] memory f = frozenMembers(resultID);
+        bool compact = custody.assignmentSeatCount(r.assignmentID) != 0;
+        bytes32[] memory eids;
+        if (!compact) eids = custody.assignmentExposures(r.assignmentID);
         for (uint256 n = 0; n < pops.length; ++n) {
             PoPInput calldata pop = pops[n];
             uint256 pos = f.length;
@@ -907,7 +1038,10 @@ contract ElectionPolicy {
             }
             if (pos == f.length) revert NotMember(pop.id);
             bytes32 evmKeyHash = keccak256(pop.evmKey);
-            if (reader.evmKeyHashOf(eids[pos]) != evmKeyHash) revert WrongEvmKey(pop.id);
+            bytes32 frozenKey = compact
+                ? custody.assignmentSeat(r.assignmentID, pos).binding.evmKeyHash
+                : reader.evmKeyHashOf(eids[pos]);
+            if (frozenKey != evmKeyHash) revert WrongEvmKey(pop.id);
             if (!KeyLib.verify(pop.evmKey, popDigest(resultID, pop.id, evmKeyHash), pop.signature))
             {
                 revert BadPossession(pop.id);
@@ -930,18 +1064,29 @@ contract ElectionPolicy {
         Publication storage pub = _publications[resultID];
         if (r.state != ResultState.Reserved) revert NotReserved();
         if (pub.published) revert AlreadyPublished();
-        Frozen[] storage f = _frozen[resultID];
+        Frozen[] memory f = frozenMembers(resultID);
         if (pub.lost) revert CoverageLost();
         if (pub.popCount != f.length) revert MissingProofs();
         (uint8 asgState, bytes32 exposureDigest, bytes32 keyDigest) = reader.digests(r.assignmentID);
         if (asgState != 1 || reader.sessionState(resultID) != 1) revert SessionNotOpen();
-        bytes32[] memory eids = custody.assignmentExposures(r.assignmentID);
+        bool compact = custody.assignmentSeatCount(r.assignmentID) != 0;
+        bytes32[] memory eids;
+        if (!compact) eids = custody.assignmentExposures(r.assignmentID);
         bytes32 popSet = POPSET_DOMAIN;
         // the frozen delegation records (the root and EVM node ids, keys and payee of each member) are part of the commitment: the root
         // recomputes each member's binding hash from the identity record it is shown, so a renamed node is a different primary
         bytes32 bindings = BINDINGS_DOMAIN;
         for (uint256 i = 0; i < f.length; ++i) {
-            if (!reader.covered(f[i].id, f[i].generation, f[i].raw, eids[i])) {
+            bool covered = compact
+                ? reader.coveredSeat(
+                    f[i].id,
+                    f[i].generation,
+                    f[i].raw,
+                    custody.assignmentSeat(r.assignmentID, i).lotID,
+                    true
+                )
+                : reader.covered(f[i].id, f[i].generation, f[i].raw, eids[i]);
+            if (!covered) {
                 revert NotCovered(f[i].id);
             }
             popSet = keccak256(abi.encode(popSet, f[i].id, _popHashes[resultID][f[i].id]));
@@ -976,10 +1121,10 @@ contract ElectionPolicy {
         if (msg.sender != address(evidence)) revert NotEvidence();
         bytes32 resultID = openResult;
         if (resultID == bytes32(0) || _results[resultID].state != ResultState.Reserved) return;
-        Frozen[] storage f = _frozen[resultID];
+        Frozen[] memory f = frozenMembers(resultID);
         for (uint256 i = 0; i < f.length; ++i) {
             if (f[i].id == id) {
-                _checkMember(resultID, i);
+                _checkMember(resultID, i, f[i]);
                 return;
             }
         }
@@ -989,19 +1134,25 @@ contract ElectionPolicy {
     /// short. Marking is permanent and never releases anything; it is the backstop for changes the event-driven path cannot see.
     function reconcileCandidate(bytes32 resultID) external whenInitialized returns (bool) {
         if (_results[resultID].state != ResultState.Reserved) revert NotReserved();
-        Frozen[] storage f = _frozen[resultID];
+        Frozen[] memory f = frozenMembers(resultID);
         for (uint256 i = 0; i < f.length; ++i) {
-            _checkMember(resultID, i);
+            _checkMember(resultID, i, f[i]);
         }
         return _publications[resultID].lost;
     }
 
-    function _checkMember(bytes32 resultID, uint256 index) private {
+    function _checkMember(bytes32 resultID, uint256 index, Frozen memory m) private {
         Publication storage pub = _publications[resultID];
         if (pub.lost) return;
-        Frozen storage m = _frozen[resultID][index];
-        bytes32 eid = custody.assignmentExposures(_results[resultID].assignmentID)[index];
-        if (!reader.stillCovered(m.id, m.generation, m.raw, eid)) {
+        bytes32 assignmentID = _results[resultID].assignmentID;
+        bool covered = custody.assignmentSeatCount(assignmentID) != 0
+            ? reader.coveredSeat(
+                m.id, m.generation, m.raw, custody.assignmentSeat(assignmentID, index).lotID, false
+            )
+            : reader.stillCovered(
+                m.id, m.generation, m.raw, custody.assignmentExposures(assignmentID)[index]
+            );
+        if (!covered) {
             pub.lost = true;
             emit CoverageLostFor(resultID, m.id);
             // The atomic loss (design 3.8 change 2): at the one place `lost` is first set, the adapter invalidates the result in VR. No
@@ -1010,63 +1161,4 @@ contract ElectionPolicy {
             if (hookCaller != address(0)) IPosAdapter(hookCaller).outputLost(resultID);
         }
     }
-
-    function publication(bytes32 resultID) external view returns (Publication memory) {
-        return _publications[resultID];
-    }
-
-    function popHash(bytes32 resultID, uint64 id) external view returns (bytes32) {
-        return _popHashes[resultID][id];
-    }
-
-    /// @notice The recovery authorization of a result: K, its custody commitments, the captured policies and the deployment.
-    function recoveryAuthorization(bytes32 resultID)
-        external
-        view
-        returns (RecoveryAuthorization memory a)
-    {
-        Publication storage p = _publications[resultID];
-        return RecoveryAuthorization(
-            resultID,
-            p.snapshotDigest,
-            p.incumbent,
-            p.incumbentExposureDigest,
-            p.incumbentKeyDigest,
-            p.policyDigest,
-            p.contractsDigest,
-            p.kCommit
-        );
-    }
-
-    function result(bytes32 resultID) external view returns (Result memory) {
-        return _results[resultID];
-    }
-
-    function frozenMembers(bytes32 resultID) external view returns (Frozen[] memory) {
-        return _frozen[resultID];
-    }
-
-    function delegation(uint64 id, uint64 generation)
-        external
-        view
-        returns (Delegation memory binding, bytes32 bindingHash, uint64 nextNonce)
-    {
-        Staged storage s = _staged[id][generation];
-        return (s.binding, s.bindingHash, s.nextNonce);
-    }
-
-    function liveCount() external view returns (uint32) {
-        // forge-lint: disable-next-line(unsafe-typecast)
-        return uint32(_index.length); // bounded by vMax, a uint32
-    }
-
-    function isIndexed(uint64 id) external view returns (bool) {
-        return _indexPosition[id] != 0;
-    }
-
-    function liveIndexAt(uint32 i) external view returns (uint64) {
-        return _index[i];
-    }
 }
-
-// forge-lint: disable-end(require-revert-in-loop, calls-loop, reentrancy-no-eth)

@@ -3,7 +3,7 @@ pragma solidity 0.8.37;
 
 import {P85Flow} from "./P85Flow.sol";
 import {Evidence} from "../../src/p85/Evidence.sol";
-import {ElectionPolicy} from "../../src/p85/ElectionPolicy.sol";
+import {ElectionPolicy, ElectionStorage} from "../../src/p85/ElectionPolicy.sol";
 import {ElectionParams} from "../../src/p85/P85Types.sol";
 
 /// @notice Slice 7 acceptance, slash before election: an incumbent whose offence was admitted and settled through the real Evidence module
@@ -44,7 +44,7 @@ contract SlashBeforeElectionTest is P85Flow {
         evidence.settleEvidence(caseID, lots);
     }
 
-    function _elect() internal returns (ElectionPolicy.Outcome) {
+    function _elect() internal returns (ElectionStorage.Outcome) {
         vm.prank(SYS);
         return election.elect(ORIGIN);
     }
@@ -55,11 +55,11 @@ contract SlashBeforeElectionTest is P85Flow {
         assertTrue(evidence.excluded(gid(0)), "the real Evidence module excluded the offender");
 
         clock(CAD_P, CAD_T);
-        assertEq(uint8(_elect()), uint8(ElectionPolicy.Outcome.NoCandidateRecorded));
+        assertEq(uint8(_elect()), uint8(ElectionStorage.Outcome.NoCandidateRecorded));
 
-        ElectionPolicy.Result memory r = election.result(_only());
-        assertEq(uint8(r.state), uint8(ElectionPolicy.ResultState.NoCandidate));
-        assertEq(uint8(r.reason), uint8(ElectionPolicy.Reason.MembershipChurn));
+        ElectionStorage.Result memory r = election.result(_only());
+        assertEq(uint8(r.state), uint8(ElectionStorage.ResultState.NoCandidate));
+        assertEq(uint8(r.reason), uint8(ElectionStorage.Reason.MembershipChurn));
         assertEq(election.openResult(), bytes32(0), "no unresolved result");
         assertEq(custody.lastAckedAssignment(), GENESIS_ASSIGNMENT, "the authority continues");
         assertEq(
@@ -70,14 +70,14 @@ contract SlashBeforeElectionTest is P85Flow {
     function test_theSameElectionWithoutTheOffenceIsReserved() public {
         // the control: only the offence differs, so the NoCandidate above is the exclusion and nothing else
         clock(CAD_P, CAD_T);
-        assertEq(uint8(_elect()), uint8(ElectionPolicy.Outcome.Reserved));
+        assertEq(uint8(_elect()), uint8(ElectionStorage.Outcome.Reserved));
     }
 
     function test_anOffenceAdmittedButNotSettledStillExcludes() public {
         _offend(0);
         assertTrue(evidence.excluded(gid(0)), "exclusion is at admission, not at settlement");
         clock(CAD_P, CAD_T);
-        assertEq(uint8(_elect()), uint8(ElectionPolicy.Outcome.NoCandidateRecorded));
+        assertEq(uint8(_elect()), uint8(ElectionStorage.Outcome.NoCandidateRecorded));
     }
 
     function _only() internal view returns (bytes32) {

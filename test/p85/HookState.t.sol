@@ -4,7 +4,7 @@ pragma solidity 0.8.37;
 import {P85Flow} from "./P85Flow.sol";
 import {MockRootRecords} from "./MockRootRecords.sol";
 import {StakeCustody} from "../../src/p85/StakeCustody.sol";
-import {ElectionPolicy} from "../../src/p85/ElectionPolicy.sol";
+import {ElectionPolicy, ElectionStorage} from "../../src/p85/ElectionPolicy.sol";
 import {RecordKind, RecoveryAckData, RootRecord, ElectionParams} from "../../src/p85/P85Types.sol";
 
 /// @notice Generates the custody states the ureth records hook is tested against: the real `StakeCustody` runtime and its storage
@@ -177,8 +177,8 @@ contract HookStateElectTest is HookStateBase {
         pushRecord(RecordKind.Ack, ackData(RES_J, H_ROUND, 100, 101));
         applyAll();
         vm.prank(SYS);
-        ElectionPolicy.Outcome out = election.elect(ORIGIN);
-        assertEq(uint8(out), uint8(ElectionPolicy.Outcome.Reserved));
+        ElectionStorage.Outcome out = election.elect(ORIGIN);
+        assertEq(uint8(out), uint8(ElectionStorage.Outcome.Reserved));
         _dumpElect(dir, "elect.post");
         _meta(dir, "elect", 1);
         string memory e = "elect";

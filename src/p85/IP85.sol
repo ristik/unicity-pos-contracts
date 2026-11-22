@@ -1,7 +1,14 @@
 // SPDX-License-Identifier: Apache-2.0
 pragma solidity 0.8.37;
 
-import {Policy, Delegation, ReserveInput, RootRecord} from "./P85Types.sol";
+import {
+    AssignmentSeat,
+    SeatBinding,
+    Policy,
+    Delegation,
+    ReserveInput,
+    RootRecord
+} from "./P85Types.sol";
 
 /// @notice A policy snapshot of the governed source: immutable once written. `effective*` is the election block that activated it (0 for genesis).
 struct GovernanceSnapshot {
@@ -67,6 +74,12 @@ interface IStakeCustody {
             bool referencesReleased,
             uint32 sessionLocks
         );
+    function assignmentSeatCount(bytes32 assignmentID) external view returns (uint256);
+    function assignmentSeat(bytes32 assignmentID, uint256 ordinal)
+        external
+        view
+        returns (AssignmentSeat memory);
+    function internSeatBinding(SeatBinding calldata binding) external;
     function assignments(bytes32 assignmentID)
         external
         view
@@ -139,6 +152,10 @@ struct CaseView {
 
 interface IEvidence {
     function caseInfo(bytes32 caseID) external view returns (CaseView memory);
+    function caseLocation(bytes32 caseID)
+        external
+        view
+        returns (bytes32 assignmentID, uint256 ordinal);
     function pendingHolds(uint256 lotID) external view returns (uint32);
     function excluded(uint64 id) external view returns (bool);
 }

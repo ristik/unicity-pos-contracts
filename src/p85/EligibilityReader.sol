@@ -4,7 +4,7 @@ pragma solidity 0.8.37;
 // Loops are bounded by the V ceiling (at most 128 identities) and L ceiling (at most 8 lots per generation).
 // forge-lint: disable-start(calls-loop)
 
-import {Position} from "./P85Types.sol";
+import {AssignmentSeat, Position} from "./P85Types.sol";
 import {Continuity} from "./Continuity.sol";
 import {IStakeCustody, IEvidence} from "./IP85.sol";
 
@@ -124,6 +124,21 @@ contract EligibilityReader {
 
     /// @notice The last committed committee: the exposures of an assignment (ascending by StakingID) as continuity members.
     function committed(bytes32 assignmentID) external view returns (Continuity.Member[] memory o) {
+        uint256 count = CUSTODY.assignmentSeatCount(assignmentID);
+        if (count != 0) {
+            o = new Continuity.Member[](count);
+            for (uint256 i; i < count; ++i) {
+                AssignmentSeat memory m = CUSTODY.assignmentSeat(assignmentID, i);
+                o[i] = Continuity.Member(
+                    m.binding.id,
+                    keccak256(
+                        abi.encode(SIGNING_DOMAIN, m.binding.rootKeyHash, m.binding.evmKeyHash)
+                    ),
+                    m.weight
+                );
+            }
+            return o;
+        }
         bytes32[] memory ids = CUSTODY.assignmentExposures(assignmentID);
         o = new Continuity.Member[](ids.length);
         for (uint256 i = 0; i < ids.length; ++i) {
@@ -290,14 +305,9 @@ contract EligibilityReader {
         bytes32 exposureID,
         bool retirementCounts
     ) private view returns (bool) {
-        (bool read, bytes memory ret) = address(CUSTODY)
-            .staticcall(abi.encodeCall(IStakeCustody.positions, (id)));
-        if (!read) revert CustodyRead();
-        Position memory pos = abi.decode(ret, (Position));
-        if (
-            pos.owner == address(0) || (retirementCounts && pos.retirementRequested)
-                || pos.generation != generation || EVIDENCE.excluded(id)
-        ) return false;
+        if (!_eligibleForCoverage(id, generation, retirementCounts)) {
+            return false;
+        }
         uint256[] memory lots = CUSTODY.exposureLots(exposureID);
         uint256 backing = 0;
         for (uint256 j = 0; j < lots.length; ++j) {
@@ -306,6 +316,34 @@ contract EligibilityReader {
             backing += remaining;
         }
         return backing >= uint256(weight) * CUSTODY.bondUnit();
+    }
+
+    function coveredSeat(
+        uint64 id,
+        uint64 generation,
+        uint64 weight,
+        uint256 lotID,
+        bool retirementCounts
+    ) external view returns (bool) {
+        if (!_eligibleForCoverage(id, generation, retirementCounts)) return false;
+        (uint256 remaining, uint256 category) = _lotWords(lotID);
+        return category != 4 && remaining >= uint256(weight) * CUSTODY.bondUnit();
+    }
+
+    function _eligibleForCoverage(uint64 id, uint64 generation, bool retirementCounts)
+        private
+        view
+        returns (bool)
+    {
+        (bool read, bytes memory ret) =
+            address(CUSTODY).staticcall(abi.encodeCall(IStakeCustody.positions, (id)));
+        if (!read) revert CustodyRead();
+        Position memory pos = abi.decode(ret, (Position));
+        if (
+            pos.owner == address(0) || (retirementCounts && pos.retirementRequested)
+                || pos.generation != generation || EVIDENCE.excluded(id)
+        ) return false;
+        return true;
     }
 
     /// @dev Only the first six words of the lot getter are read: (id, generation, initial, remaining, penalized, category).

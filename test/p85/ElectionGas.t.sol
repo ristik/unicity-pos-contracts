@@ -3,7 +3,7 @@ pragma solidity 0.8.37;
 
 import {P85Flow} from "./P85Flow.sol";
 import {MockRootRecords} from "./MockRootRecords.sol";
-import {ElectionPolicy} from "../../src/p85/ElectionPolicy.sol";
+import {ElectionPolicy, ElectionStorage} from "../../src/p85/ElectionPolicy.sol";
 import {Quantize} from "../../src/p85/Quantize.sol";
 import {GovernanceParams} from "../../src/p85/GovernanceParams.sol";
 import {StakeCustody} from "../../src/p85/StakeCustody.sol";
@@ -178,7 +178,7 @@ contract ElectionGasTest is P85Flow {
         vm.prank(SYS);
         vm.resumeGasMetering();
         uint256 before_ = gasleft();
-        ElectionPolicy.Outcome out = election.elect(keccak256("origin"));
+        ElectionStorage.Outcome out = election.elect(keccak256("origin"));
         used = before_ - gasleft();
         emit log_named_uint(
             string.concat(
@@ -186,7 +186,7 @@ contract ElectionGasTest is P85Flow {
             ),
             used
         );
-        assertEq(uint8(out), uint8(ElectionPolicy.Outcome.Reserved));
+        assertEq(uint8(out), uint8(ElectionStorage.Outcome.Reserved));
         // the measured election activated the scheduled snapshot and captured it (elect swallows an activation failure, so without this
         // the pinned price could silently be that of an election without the activation)
         assertEq(factory.POLICY().currentPolicyID(), 2, "the governance snapshot was not activated");
@@ -288,7 +288,7 @@ contract ElectionGasTest is P85Flow {
 
         uint64 extra = register(ownerPk(16), rootPk(16), vm.addr(wdPk(16)));
         // joining the live index is what the cap bounds: the seventeenth identity cannot become a candidate
-        vm.expectRevert(ElectionPolicy.IndexFull.selector);
+        vm.expectRevert(ElectionStorage.IndexFull.selector);
         this.bondExtra(extra);
 
         uint64 id = gid(0); // a genesis identity holds one lot

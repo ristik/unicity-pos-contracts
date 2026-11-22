@@ -122,7 +122,13 @@ contract PosFactory {
             total += g.bond;
             weight += g.bond / c.bondUnit;
             CUSTODY.seedGenesis{value: g.bond}(
-                g.owner, g.withdrawal, g.rootKey, g.evmKey, g.operatorPayee
+                g.owner,
+                g.withdrawal,
+                g.rootKey,
+                g.evmKey,
+                g.operatorPayee,
+                g.rootNodeID,
+                g.evmNodeID
             );
         }
         if (total + c.rewardFunding != msg.value) revert GenesisValueMismatch();

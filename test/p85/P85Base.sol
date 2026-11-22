@@ -275,7 +275,13 @@ abstract contract P85Base is Test {
         vm.deal(address(this), N_GENESIS * GENESIS_BOND);
         for (uint256 i; i < N_GENESIS; ++i) {
             custody.seedGenesis{value: ids[i].bond}(
-                ids[i].owner, ids[i].withdrawal, ids[i].rootKey, ids[i].evmKey, ids[i].operatorPayee
+                ids[i].owner,
+                ids[i].withdrawal,
+                ids[i].rootKey,
+                ids[i].evmKey,
+                ids[i].operatorPayee,
+                ids[i].rootNodeID,
+                ids[i].evmNodeID
             );
         }
         custody.sealGenesis();
