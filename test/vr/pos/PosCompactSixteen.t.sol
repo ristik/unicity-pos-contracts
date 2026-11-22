@@ -4,7 +4,7 @@ pragma solidity 0.8.37;
 import {PosLimitBase} from "./PosLimit.t.sol";
 import {VRC} from "../../../src/vr/VRConstants.sol";
 import {Evidence} from "../../../src/p85/Evidence.sol";
-import {AssignmentSeat, Limits} from "../../../src/p85/P85Types.sol";
+import {AssignmentSeat, Limits, RecordKind, RecoveryAckData} from "../../../src/p85/P85Types.sol";
 import {ElectionPolicy, ElectionStorage} from "../../../src/p85/ElectionPolicy.sol";
 
 contract PosCompactSixteenTest is PosLimitBase {
@@ -66,6 +66,84 @@ contract PosCompactSixteenTest is PosLimitBase {
 
     function test_savedClosureRecoveryAtSixteenWithFullIndex() public {
         _recovery(16, true, true);
+    }
+
+    function test_secondRecoveryRetainsPrimarySeatsAndLegacyCommitments() public {
+        _recovery(16, true, true);
+        bytes32 first = custody.lastAckedAssignment();
+        bytes32 slates = bytes32(uint256(45));
+        bytes32 primary = vm.load(address(custody), keccak256(abi.encode(first, slates)));
+        assertTrue(primary != bytes32(0) && primary != first);
+
+        bytes32 rid = _elect2();
+        bytes32 reserved = election.result(rid).assignmentID;
+        _advance(10, 10);
+        uint64 jH = 120 + progress;
+        pushRecord(RecordKind.Closure, closureData(first, jH, "saved first K"));
+        pushRecord(RecordKind.Closure, closureData(reserved, jH, "saved second J"));
+        _vrApply(2);
+        bytes32 next = keccak256("second recovery");
+        uint64 epoch = vr.config().knownRootEpoch + 1;
+        pushRecord(
+            RecordKind.RecoveryAck,
+            abi.encode(
+                RecoveryAckData(
+                    rid,
+                    next,
+                    progress + 5,
+                    progress + 6,
+                    jH,
+                    progress + 7,
+                    progress + 8,
+                    epoch + 1,
+                    epoch
+                )
+            )
+        );
+        _boundaryRecord(rid, true);
+        _vrApplyAll();
+        assertEq(_state(rid), VRC.OUT_RECOVERED);
+        assertEq(custody.lastAckedAssignment(), next);
+        assertEq(vm.load(address(custody), keccak256(abi.encode(next, slates))), primary);
+        assertEq(vm.load(address(custody), keccak256(abi.encode(next, uint256(44)))), bytes32(0));
+        _assertLegacyCommitments(first, next);
+    }
+
+    function _assertLegacyCommitments(bytes32 incumbent, bytes32 recovered) private view {
+        bytes32 exposures = keccak256("unicity.p85.exposure-digest");
+        bytes32 keys = keccak256("unicity.p85.key-history-digest");
+        uint256[] memory lots = new uint256[](1);
+        for (uint256 i; i < 16; ++i) {
+            AssignmentSeat memory old = custody.assignmentSeat(incumbent, i);
+            AssignmentSeat memory seat = custody.assignmentSeat(recovered, i);
+            assertEq(abi.encode(seat.binding), abi.encode(old.binding));
+            assertEq(seat.weight, old.weight);
+            assertEq(seat.rawWeight, old.rawWeight);
+            assertEq(seat.lotID, old.lotID);
+            assertEq(seat.exposureID, _eid(recovered, old.binding.id));
+            lots[0] = old.lotID;
+            bytes32 memberDigest = keccak256(abi.encode(lots));
+            assertEq(seat.memberDigest, memberDigest);
+            exposures = keccak256(
+                abi.encode(
+                    exposures,
+                    seat.exposureID,
+                    old.binding.id,
+                    old.weight,
+                    old.rawWeight,
+                    old.binding.payee,
+                    memberDigest
+                )
+            );
+            keys = keccak256(
+                abi.encode(keys, old.binding.id, old.binding.rootKeyHash, old.binding.evmKeyHash)
+            );
+            (,,,,,,, uint32 references,,,,,) = custody.lots(old.lotID);
+            assertEq(references, 1);
+        }
+        (,,,,,,,,,,,,, bytes32 exposureDigest, bytes32 keyDigest,) = custody.assignments(recovered);
+        assertEq(exposureDigest, exposures);
+        assertEq(keyDigest, keys);
     }
 
     function test_evidenceFindsOnlyTheHistoricalSeatLot() public {
