@@ -22,7 +22,9 @@ contract PostTermSigHarness {
 /// term of epoch e, and that term is closed with the corpus' Closure facts and anchored. Every submission's rebuilt digest is the Go one,
 /// every signature verdict of the strict native rule is the Go one, every accepted submission is admitted, every refused one reverts
 /// with the error of its Go reason, and accepted submissions with the same offence label are one case. Each statement is the seal's
-/// signed fields with the opaque PreviousHash (no VoteInfo opening); the corpus' statement-shape cases test an opening and are skipped.
+/// signed fields with the opaque PreviousHash (no VoteInfo opening): seals with random PreviousHash bytes and with sha256 of a VoteInfo
+/// of epoch e+1 are charged, the opaque frozen-root repeat is exempt, and `ok.foreign-genesis.opaque` (another root history's seal by
+/// the same keys under the same N) is charged: the reason consensus keys must be genesis-specific.
 abstract contract PostTermCorpusBase is P85Flow {
     string internal constant CORPUS = "/test/p85/fixtures/post-term-corpus-v1.json";
     string internal _json;
@@ -154,6 +156,16 @@ abstract contract PostTermCorpusBase is P85Flow {
         q.signatures = vm.parseJsonBytesArray(_json, _s(k, "signatures"));
     }
 
+    /// @dev The refusal error of submission k. The corpus' two `statement` refusals (commitEpoch e+1; commitRound 0) have no shape check
+    /// of their own here: the seal's epoch and round are checked against the installed lineage instead, so they are refused by the
+    /// successor check (epoch e+1 is the open tip, not a closed term) and by the post-term boundary (0 < start[e+1]).
+    function _expected(uint256 k, string memory id) internal view returns (bytes4) {
+        bytes32 h = keccak256(bytes(id));
+        if (h == keccak256("no.statement.commit-epoch")) return Evidence.SuccessorUnknown.selector;
+        if (h == keccak256("no.statement.commit-round-zero")) return Evidence.NotPostTerm.selector;
+        return _selector(vm.parseJsonString(_json, _s(k, "reason")));
+    }
+
     /// @dev The Go corpus' refusal reason as this verifier's error (P3-3).
     function _selector(string memory reason) internal pure returns (bytes4) {
         bytes32 r = keccak256(bytes(reason));
@@ -179,6 +191,8 @@ abstract contract PostTermCorpusBase is P85Flow {
         uint256 n = _count();
         uint256 checked;
         for (uint256 k; k < n; ++k) {
+            // the generator rebuilds no seal bytes for a statement it refuses on shape (commitEpoch != e, commitRound 0)
+            if (!vm.parseJsonBool(_json, _s(k, "hasDigest"))) continue;
             Evidence.PostTermSeal memory s = _seal(k);
             bytes32 d = vm.parseJsonBytes32(_json, _s(k, "digest"));
             string memory id = vm.parseJsonString(_json, _s(k, "id"));
@@ -210,7 +224,7 @@ abstract contract PostTermCorpusBase is P85Flow {
                 (bool ok, bytes memory ret) = address(evidence)
                     .call(abi.encodeCall(Evidence.submitPostTermEvidence, (s, q, eid)));
                 assertFalse(ok, id);
-                assertEq(bytes4(ret), _selector(vm.parseJsonString(_json, _s(k, "reason"))), id);
+                assertEq(bytes4(ret), _expected(k, id), id);
                 continue;
             }
             ++accepted;
@@ -231,6 +245,24 @@ abstract contract PostTermCorpusBase is P85Flow {
             }
         }
         assertGt(accepted, cases, "the corpus repeats an offence");
+        if (_scenario() == 0) {
+            // the opaque-PreviousHash cases (astra option (a)) are in the replay
+            string[5] memory named = [
+                "ok.opaque.random-prev",
+                "ok.opaque.random-prev.above",
+                "ok.opaque.vi-successor-epoch",
+                "ok.foreign-genesis.opaque",
+                "no.opaque.frozen-root"
+            ];
+            for (uint256 j; j < named.length; ++j) {
+                bool found;
+                for (uint256 k; k < n && !found; ++k) {
+                    found = keccak256(bytes(vm.parseJsonString(_json, _s(k, "id"))))
+                        == keccak256(bytes(named[j]));
+                }
+                assertTrue(found, named[j]);
+            }
+        }
         assertGt(cases, 0);
     }
 }

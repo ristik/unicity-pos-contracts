@@ -25,6 +25,7 @@
      "commitTimestamp": 1764094337,
      "digest": "0x1a361f88065ea1f27196af7c7fdf05778269104c73a92515e7fb1e95cf48109b",
      "epoch": 2,
+     "hasDigest": true,
      "hash": "0xd18f2743f11c7ed2261afa42839f2445084502a7115806f5e19c575ce5301a56",
      "id": "ok.min-quorum",
      "indices": [
@@ -53,6 +54,7 @@
      "commitTimestamp": 1764094337,
      "digest": "0x1a361f88065ea1f27196af7c7fdf05778269104c73a92515e7fb1e95cf48109b",
      "epoch": 2,
+     "hasDigest": true,
      "hash": "0xd18f2743f11c7ed2261afa42839f2445084502a7115806f5e19c575ce5301a56",
      "id": "ok.other-subset",
      "indices": [
@@ -81,6 +83,7 @@
      "commitTimestamp": 1764094337,
      "digest": "0x1a361f88065ea1f27196af7c7fdf05778269104c73a92515e7fb1e95cf48109b",
      "epoch": 2,
+     "hasDigest": true,
      "hash": "0xd18f2743f11c7ed2261afa42839f2445084502a7115806f5e19c575ce5301a56",
      "id": "ok.all",
      "indices": [
@@ -115,6 +118,7 @@
      "commitTimestamp": 1764094337,
      "digest": "0x1a361f88065ea1f27196af7c7fdf05778269104c73a92515e7fb1e95cf48109b",
      "epoch": 2,
+     "hasDigest": true,
      "hash": "0xd18f2743f11c7ed2261afa42839f2445084502a7115806f5e19c575ce5301a56",
      "id": "ok.other-signer",
      "indices": [
@@ -146,6 +150,7 @@
      "commitTimestamp": 1764094344,
      "digest": "0xbac99b93d142903bce843daca277729e61be04c052cc97ecff3cec6e09c3ef56",
      "epoch": 2,
+     "hasDigest": true,
      "hash": "0xd18f2743f11c7ed2261afa42839f2445084502a7115806f5e19c575ce5301a56",
      "id": "ok.above",
      "indices": [
@@ -172,8 +177,9 @@
      "chargedKey": "0x03e698cdfec1cd7d9a9c22da661661b67c9c477aea2b1f65d7adaea8d5790254bc",
      "commitRound": 65538,
      "commitTimestamp": 1764094339,
-     "digest": "0x647c286049f9a632247da55db8ebfd2c01b3d3075fda2586bf9ea6f2c2cccb6c",
+     "digest": "0xa87f9e6ee0e4cea3114fdfbdc3cf5083fcab36351f72d951dcfcef3094b7214f",
      "epoch": 2,
+     "hasDigest": true,
      "hash": "0xd18f2743f11c7ed2261afa42839f2445084502a7115806f5e19c575ce5301a56",
      "id": "ok.exec-is-rh",
      "indices": [
@@ -182,7 +188,7 @@
       4
      ],
      "offence": "post.exec-is-rh/r5",
-     "previousHash": "0xb09b06f3ee60712865e908da9687c1a2296268bb28961f0933ebfb0ff86b1d3f",
+     "previousHash": "0x86aa42990fa9b37eb6382a42039ab03e922667c5dc10da90de0588c0e1f30b44",
      "reason": "ok",
      "signatureValid": [
       true,
@@ -190,9 +196,9 @@
       true
      ],
      "signatures": [
-      "0x9548da98e1db5db7561fdfc0deac6ada68b9622785db97b5d2a7df9a9f0be061614d55522e469065f649aa42b24334a964ba28eb80ceb3ebf91390d69c7907a400",
-      "0x24c89b83f85a903a18423547864f8abbc00b010d97a2522a2c2b1d99a0edf34a6ec4d481b8ceaa96341bc213c76f7def99308b0d817deae92536685c846e5c1301",
-      "0xdb4e2b3b1f65f8a5ce6c44e440fa2b01fc4dca4330b3674d613630fcd2a5eb2408b51943e564957756d2d5c4824977e67f335f41bd5f08ab8e9795ba676f6dc201"
+      "0x837486293cb8084fbdaa6dca07aa3f40cf3d0c02d1c1783af7e5273058090a5508ffb66ea2e204e065f7de3b6061dcacb5375d0c05604e5437eea5457d9fbfe101",
+      "0xa24579c190b802ce6dd7597bac2ee57c9b138c20c2e41784fe93a4b393158ca407a9b7e9c726a9835362b544fecc7153b0a0f16742c034c323292b90109742be00",
+      "0x90f7f9b4811420e204192bd2eaeda144d763afb6d6b5613fe2507f4a7682da4d28bba3e8d71c1056cf0d357e8a03d2a360ff1ca6436f759328fef249b3412ba500"
      ]
     },
     {
@@ -202,6 +208,7 @@
      "commitTimestamp": 1764094336,
      "digest": "0xb52c4f6f2b76e9e1fc6833a064e4e2eeda420251c607b75c56b67cc80ca00568",
      "epoch": 2,
+     "hasDigest": true,
      "hash": "0xc3f1b78b0a3b1414c6d513cdc987c98d315462d6f24b855ece0789780000e220",
      "id": "no.in-term",
      "indices": [
@@ -230,6 +237,7 @@
      "commitTimestamp": 1764094336,
      "digest": "0x86f3eef2be911211aba3bb8c2804948902f6eedf29d228718747b04be8641fdf",
      "epoch": 2,
+     "hasDigest": true,
      "hash": "0xc3f1b78b0a3b1414c6d513cdc987c98d315462d6f24b855ece0789780000e220",
      "id": "no.in-term.late-vote",
      "indices": [
@@ -256,9 +264,10 @@
      "chargedKey": "0x03e698cdfec1cd7d9a9c22da661661b67c9c477aea2b1f65d7adaea8d5790254bc",
      "commitRound": 65536,
      "commitTimestamp": 1764094337,
-     "digest": "0x6f110c28417644c7e25b5ae14e973f532da1ce4c1bcd5210b204087fc322cee9",
+     "digest": "0x8f8062731e47efe2531f7af83b7504dc2560cb26ccc71864e29fd8f9d1643623",
      "epoch": 2,
-     "hash": "0x858716df327d61ef9c3412e6bb18b7859e1a5b689b424b9fcc95d847dc8f7231",
+     "hasDigest": true,
+     "hash": "0x6a09af5e1513ff7c9a443bf6e02b90161444402c80940604ece408ba15209168",
      "id": "no.exempt.h-commit",
      "indices": [
       1,
@@ -266,7 +275,7 @@
       4
      ],
      "offence": "",
-     "previousHash": "0x3e42cbae332f4bd9fbaec4c21ee286c10b16660feeb9c87ea94aaf1080cd4af7",
+     "previousHash": "0xb02bd6ac60a8e092d3d292552f87504d39c7c9b34783ddd20f70b48bea3633f1",
      "reason": "exempt-terminal-root",
      "signatureValid": [
       true,
@@ -274,9 +283,9 @@
       true
      ],
      "signatures": [
-      "0x47ae0e9d5f47ca97487cc1511b1575c5d00f613bea8be09e7afc8e49d31a973477807683ebf83b923385fcc955a3fc2866a51f805546ce866753424a82746f0c00",
-      "0x93aac269e722e1ba840946e48e54ad0b1dd30eba304f51e0d5dc589fc1349daf0eac38d309b60b4da683a90f8035e9fbd1bb757800df3d416127d787671d65fc01",
-      "0x9ff8ebdf002c2cf15189e6b29a157b377fca643e000b4780c1901c254f3862c8736bdb7f6b4fecd6d69a4717ad3cbf7390a7d968db819c0415c5fb520dc822c201"
+      "0x917c38c99cbfa2c2f74f75b7032e56aba23723ef3681a79b53eb57ecab8e998d36b878e65c975ff9e44d8d0ca7d61b6589efbd330bf18ba98a36f431ae0eed5101",
+      "0xee16782253488c5386f98e25afeb8e0fdd60db2f31c26a09f38c35dbee03392406b5282b88fd704fa670f7ca09a02fff5c1c6bcf969f3582ab1823975823606400",
+      "0x19cbb17aaa3df0b601abe05a00db2c1ed13d2691ad794e37b9ebd9c7ec39fd83035f22a566d2ca9ca7d673b1f6855f07c6819e55929f780f59da94a94dc3021301"
      ]
     },
     {
@@ -284,9 +293,10 @@
      "chargedKey": "0x03e698cdfec1cd7d9a9c22da661661b67c9c477aea2b1f65d7adaea8d5790254bc",
      "commitRound": 65576,
      "commitTimestamp": 1764094377,
-     "digest": "0xcc21106027bb0ad20c9910e0d5717b947ea364401e168ee90fedb2d033a07650",
+     "digest": "0x22d203c2a13baf18c67fdd1fe9ede985d007f0636d0d94c2c1b598034606a8df",
      "epoch": 2,
-     "hash": "0x858716df327d61ef9c3412e6bb18b7859e1a5b689b424b9fcc95d847dc8f7231",
+     "hasDigest": true,
+     "hash": "0x6a09af5e1513ff7c9a443bf6e02b90161444402c80940604ece408ba15209168",
      "id": "no.exempt.suffix",
      "indices": [
       1,
@@ -294,7 +304,7 @@
       4
      ],
      "offence": "",
-     "previousHash": "0xe1a32791162409df87a4b3649b9508d7b4434a995256de0785dd7580b81b6d1f",
+     "previousHash": "0x84adcfc46c4bb368775a4350f9f886b7d7b22d62e09d2f31658c5fa23ba2e8e6",
      "reason": "exempt-terminal-root",
      "signatureValid": [
       true,
@@ -302,9 +312,9 @@
       true
      ],
      "signatures": [
-      "0x387bd5fb7eb6dc0590d67f091861a33a593351d2ce83744cdfbb62e450cb628372da8e180fa3d5ef3ac3200d9f75456629b1e8a20217ecbbd7880054bf6dfc7a00",
-      "0x110a3a5674b279a08edfc5c02ef3b4763c78df179c338ac915c4f57df999aa484d2afa4df7039cfe2ed650ffbc2700c2bd7dc0c2bcf07620944765b157417cb701",
-      "0xf48d2075b10b116a17a7a9ef8a5f39b6fac5527327b6a16cd19af8354d6d69cd2d1230a56ef7c0f636bf17ef388f06a43919b601bbacc43d75b418939ec6bc3f01"
+      "0xeb78f55922fa424aed8af6c24f3fbb1268d4f954905de8dfba2d2a0df5eb45661273d79518a0f2eeb9caa92072d3ad617f22658c770c5ef3e9491e7b28a826b700",
+      "0xee76cb1b4b21cbd5abb83f2471c744dae0609ed66cbd5e0201cf21db15e4c8af42bc7070079e8dfa4110d3af529731ea47622c03b7ded5bc79a32a0dbf196b8000",
+      "0x9966b1038f8c47b66ef38e64f913c38c31682bc6591c38f85e0dbbc6ad1582dd13321674c8856e22305e314d4a05bcb327ff8bfe0b1ccfe823aac994af272ae400"
      ]
     },
     {
@@ -312,9 +322,10 @@
      "chargedKey": "0x03e698cdfec1cd7d9a9c22da661661b67c9c477aea2b1f65d7adaea8d5790254bc",
      "commitRound": 65577,
      "commitTimestamp": 1764094378,
-     "digest": "0xe76d897572ab4d210c419e0539af52e1dcd3d8f3590717956b71d9332e1d3565",
+     "digest": "0xfea8f05ac0873001cef53379e19c94f16cb1bbed6e2992e406c24d80652a6abb",
      "epoch": 2,
-     "hash": "0x858716df327d61ef9c3412e6bb18b7859e1a5b689b424b9fcc95d847dc8f7231",
+     "hasDigest": true,
+     "hash": "0x6a09af5e1513ff7c9a443bf6e02b90161444402c80940604ece408ba15209168",
      "id": "no.exempt.suffix.exec-differs",
      "indices": [
       1,
@@ -330,9 +341,9 @@
       true
      ],
      "signatures": [
-      "0x698f4184ebfcdfe7e698e49bd24c35a975a99e0118336b026f8001ca8c3680b75bc61d39a8211db0f4c053cd3d1eb1d1bf195f28e95f2d137bb78cd802fc82ab00",
-      "0xbd982a163e3889ec36fb43cfce2f173a016ab7fbd7396e28ac8dfe34f408779113df3b94be8a1fff996f826a4e41922b1e96e0b47098c9f02f362a02dae9111401",
-      "0x59be0a3ead9dc8384b6431f081f214bd114ae9419f5202dcfb0887c48ba3ad1f1feab38ab341950fd2e8ca171ed309209a0e1bc632a40e60466f59a75051ccd600"
+      "0x76df234cbc866ef2eb8e1011fd8b91d63488022237cc6d64d45789741cd5eef3236807ad8442d4e865302b27581ab6910fef3597cd92a4dc63c913dff086906401",
+      "0xa0db09177112b672de6f04eca17a12f725f45a4d81825ad6b1821d516e7ae915330109b0c4938d245a1443b99cdf4622e08faa6dc8e4bf2d82a220c42fcf1dd101",
+      "0xc442c79e9007466efbc7d2489bcd3688baf9b49fa8d3cace4da4a13b9cdf04025a4ff721d13a782c3e8a7d386a5365354dba35487ab983557f72b3216bc6ff6200"
      ]
     },
     {
@@ -342,6 +353,7 @@
      "commitTimestamp": 1764094337,
      "digest": "0x1a361f88065ea1f27196af7c7fdf05778269104c73a92515e7fb1e95cf48109b",
      "epoch": 2,
+     "hasDigest": true,
      "hash": "0xd18f2743f11c7ed2261afa42839f2445084502a7115806f5e19c575ce5301a56",
      "id": "no.lone",
      "indices": [
@@ -364,6 +376,7 @@
      "commitTimestamp": 1764094337,
      "digest": "0x1a361f88065ea1f27196af7c7fdf05778269104c73a92515e7fb1e95cf48109b",
      "epoch": 2,
+     "hasDigest": true,
      "hash": "0xd18f2743f11c7ed2261afa42839f2445084502a7115806f5e19c575ce5301a56",
      "id": "no.below",
      "indices": [
@@ -392,6 +405,7 @@
      "commitTimestamp": 1764094337,
      "digest": "0x1a361f88065ea1f27196af7c7fdf05778269104c73a92515e7fb1e95cf48109b",
      "epoch": 2,
+     "hasDigest": true,
      "hash": "0xd18f2743f11c7ed2261afa42839f2445084502a7115806f5e19c575ce5301a56",
      "id": "no.charged-not-in-subset",
      "indices": [
@@ -420,6 +434,7 @@
      "commitTimestamp": 1764094337,
      "digest": "0x1a361f88065ea1f27196af7c7fdf05778269104c73a92515e7fb1e95cf48109b",
      "epoch": 2,
+     "hasDigest": true,
      "hash": "0xd18f2743f11c7ed2261afa42839f2445084502a7115806f5e19c575ce5301a56",
      "id": "no.sig.wrong-parity",
      "indices": [
@@ -454,6 +469,7 @@
      "commitTimestamp": 1764094337,
      "digest": "0x1a361f88065ea1f27196af7c7fdf05778269104c73a92515e7fb1e95cf48109b",
      "epoch": 2,
+     "hasDigest": true,
      "hash": "0xd18f2743f11c7ed2261afa42839f2445084502a7115806f5e19c575ce5301a56",
      "id": "no.sig.compact-64",
      "indices": [
@@ -488,6 +504,7 @@
      "commitTimestamp": 1764094337,
      "digest": "0x1a361f88065ea1f27196af7c7fdf05778269104c73a92515e7fb1e95cf48109b",
      "epoch": 2,
+     "hasDigest": true,
      "hash": "0xd18f2743f11c7ed2261afa42839f2445084502a7115806f5e19c575ce5301a56",
      "id": "no.sig.length-66",
      "indices": [
@@ -522,6 +539,7 @@
      "commitTimestamp": 1764094337,
      "digest": "0x1a361f88065ea1f27196af7c7fdf05778269104c73a92515e7fb1e95cf48109b",
      "epoch": 2,
+     "hasDigest": true,
      "hash": "0xd18f2743f11c7ed2261afa42839f2445084502a7115806f5e19c575ce5301a56",
      "id": "no.sig.high-s",
      "indices": [
@@ -556,6 +574,7 @@
      "commitTimestamp": 1764094337,
      "digest": "0x1a361f88065ea1f27196af7c7fdf05778269104c73a92515e7fb1e95cf48109b",
      "epoch": 2,
+     "hasDigest": true,
      "hash": "0xd18f2743f11c7ed2261afa42839f2445084502a7115806f5e19c575ce5301a56",
      "id": "no.sig.high-s-same-parity",
      "indices": [
@@ -590,6 +609,7 @@
      "commitTimestamp": 1764094337,
      "digest": "0x1a361f88065ea1f27196af7c7fdf05778269104c73a92515e7fb1e95cf48109b",
      "epoch": 2,
+     "hasDigest": true,
      "hash": "0xd18f2743f11c7ed2261afa42839f2445084502a7115806f5e19c575ce5301a56",
      "id": "no.sig.v2",
      "indices": [
@@ -624,6 +644,7 @@
      "commitTimestamp": 1764094337,
      "digest": "0x1a361f88065ea1f27196af7c7fdf05778269104c73a92515e7fb1e95cf48109b",
      "epoch": 2,
+     "hasDigest": true,
      "hash": "0xd18f2743f11c7ed2261afa42839f2445084502a7115806f5e19c575ce5301a56",
      "id": "no.sig.v3",
      "indices": [
@@ -658,6 +679,7 @@
      "commitTimestamp": 1764094337,
      "digest": "0x1a361f88065ea1f27196af7c7fdf05778269104c73a92515e7fb1e95cf48109b",
      "epoch": 2,
+     "hasDigest": true,
      "hash": "0xd18f2743f11c7ed2261afa42839f2445084502a7115806f5e19c575ce5301a56",
      "id": "no.sig.v27",
      "indices": [
@@ -692,6 +714,7 @@
      "commitTimestamp": 1764094337,
      "digest": "0x1a361f88065ea1f27196af7c7fdf05778269104c73a92515e7fb1e95cf48109b",
      "epoch": 2,
+     "hasDigest": true,
      "hash": "0xd18f2743f11c7ed2261afa42839f2445084502a7115806f5e19c575ce5301a56",
      "id": "no.sig.r-zero",
      "indices": [
@@ -726,6 +749,7 @@
      "commitTimestamp": 1764094337,
      "digest": "0x1a361f88065ea1f27196af7c7fdf05778269104c73a92515e7fb1e95cf48109b",
      "epoch": 2,
+     "hasDigest": true,
      "hash": "0xd18f2743f11c7ed2261afa42839f2445084502a7115806f5e19c575ce5301a56",
      "id": "no.sig.s-zero",
      "indices": [
@@ -760,6 +784,7 @@
      "commitTimestamp": 1764094337,
      "digest": "0x1a361f88065ea1f27196af7c7fdf05778269104c73a92515e7fb1e95cf48109b",
      "epoch": 2,
+     "hasDigest": true,
      "hash": "0xd18f2743f11c7ed2261afa42839f2445084502a7115806f5e19c575ce5301a56",
      "id": "no.sig.r-n",
      "indices": [
@@ -794,6 +819,7 @@
      "commitTimestamp": 1764094337,
      "digest": "0x1a361f88065ea1f27196af7c7fdf05778269104c73a92515e7fb1e95cf48109b",
      "epoch": 2,
+     "hasDigest": true,
      "hash": "0xd18f2743f11c7ed2261afa42839f2445084502a7115806f5e19c575ce5301a56",
      "id": "no.sig.s-n",
      "indices": [
@@ -828,6 +854,7 @@
      "commitTimestamp": 1764094337,
      "digest": "0x1a361f88065ea1f27196af7c7fdf05778269104c73a92515e7fb1e95cf48109b",
      "epoch": 2,
+     "hasDigest": true,
      "hash": "0xd18f2743f11c7ed2261afa42839f2445084502a7115806f5e19c575ce5301a56",
      "id": "no.sig.byte-flip",
      "indices": [
@@ -862,6 +889,7 @@
      "commitTimestamp": 1764094337,
      "digest": "0x1a361f88065ea1f27196af7c7fdf05778269104c73a92515e7fb1e95cf48109b",
      "epoch": 2,
+     "hasDigest": true,
      "hash": "0xd18f2743f11c7ed2261afa42839f2445084502a7115806f5e19c575ce5301a56",
      "id": "no.charged-unsigned",
      "indices": [
@@ -890,6 +918,7 @@
      "commitTimestamp": 1764094337,
      "digest": "0x1a361f88065ea1f27196af7c7fdf05778269104c73a92515e7fb1e95cf48109b",
      "epoch": 2,
+     "hasDigest": true,
      "hash": "0xd18f2743f11c7ed2261afa42839f2445084502a7115806f5e19c575ce5301a56",
      "id": "no.invalid-extra",
      "indices": [
@@ -921,6 +950,7 @@
      "commitTimestamp": 1764094337,
      "digest": "0x1a361f88065ea1f27196af7c7fdf05778269104c73a92515e7fb1e95cf48109b",
      "epoch": 2,
+     "hasDigest": true,
      "hash": "0xd18f2743f11c7ed2261afa42839f2445084502a7115806f5e19c575ce5301a56",
      "id": "no.extra-other-seal",
      "indices": [
@@ -952,6 +982,7 @@
      "commitTimestamp": 1764094337,
      "digest": "0x1a361f88065ea1f27196af7c7fdf05778269104c73a92515e7fb1e95cf48109b",
      "epoch": 2,
+     "hasDigest": true,
      "hash": "0xd18f2743f11c7ed2261afa42839f2445084502a7115806f5e19c575ce5301a56",
      "id": "no.unknown-extra",
      "indices": [
@@ -983,6 +1014,7 @@
      "commitTimestamp": 1764094337,
      "digest": "0x1a361f88065ea1f27196af7c7fdf05778269104c73a92515e7fb1e95cf48109b",
      "epoch": 2,
+     "hasDigest": true,
      "hash": "0xd18f2743f11c7ed2261afa42839f2445084502a7115806f5e19c575ce5301a56",
      "id": "no.duplicate-index",
      "indices": [
@@ -1014,6 +1046,7 @@
      "commitTimestamp": 1764094337,
      "digest": "0x1a361f88065ea1f27196af7c7fdf05778269104c73a92515e7fb1e95cf48109b",
      "epoch": 2,
+     "hasDigest": true,
      "hash": "0xd18f2743f11c7ed2261afa42839f2445084502a7115806f5e19c575ce5301a56",
      "id": "no.unsorted",
      "indices": [
@@ -1042,6 +1075,7 @@
      "commitTimestamp": 1764094337,
      "digest": "0x1a361f88065ea1f27196af7c7fdf05778269104c73a92515e7fb1e95cf48109b",
      "epoch": 2,
+     "hasDigest": true,
      "hash": "0xd18f2743f11c7ed2261afa42839f2445084502a7115806f5e19c575ce5301a56",
      "id": "no.signature-count",
      "indices": [
@@ -1068,6 +1102,7 @@
      "commitTimestamp": 1764094337,
      "digest": "0x1a361f88065ea1f27196af7c7fdf05778269104c73a92515e7fb1e95cf48109b",
      "epoch": 2,
+     "hasDigest": true,
      "hash": "0xd18f2743f11c7ed2261afa42839f2445084502a7115806f5e19c575ce5301a56",
      "id": "no.empty",
      "indices": [],
@@ -1084,6 +1119,7 @@
      "commitTimestamp": 1764094337,
      "digest": "0x1a361f88065ea1f27196af7c7fdf05778269104c73a92515e7fb1e95cf48109b",
      "epoch": 2,
+     "hasDigest": true,
      "hash": "0xd18f2743f11c7ed2261afa42839f2445084502a7115806f5e19c575ce5301a56",
      "id": "no.wrong-network",
      "indices": [
@@ -1112,6 +1148,7 @@
      "commitTimestamp": 1764094337,
      "digest": "0x1a361f88065ea1f27196af7c7fdf05778269104c73a92515e7fb1e95cf48109b",
      "epoch": 2,
+     "hasDigest": true,
      "hash": "0xd18f2743f11c7ed2261afa42839f2445084502a7115806f5e19c575ce5301a56",
      "id": "no.wrong-genesis",
      "indices": [
@@ -1134,12 +1171,42 @@
      ]
     },
     {
+     "accept": true,
+     "chargedKey": "0x03e698cdfec1cd7d9a9c22da661661b67c9c477aea2b1f65d7adaea8d5790254bc",
+     "commitRound": 65536,
+     "commitTimestamp": 1764094337,
+     "digest": "0xaa3a84f6f5d770f649d39aaf0366367999ce04d78afd18629171a952b5ada553",
+     "epoch": 2,
+     "hasDigest": true,
+     "hash": "0xd18f2743f11c7ed2261afa42839f2445084502a7115806f5e19c575ce5301a56",
+     "id": "ok.foreign-genesis.opaque",
+     "indices": [
+      1,
+      3,
+      4
+     ],
+     "offence": "foreign.genesis/r5",
+     "previousHash": "0xce782923966071afba980e69c95c1277ae9f9099dc41fa0a2168d2987f203995",
+     "reason": "ok",
+     "signatureValid": [
+      true,
+      true,
+      true
+     ],
+     "signatures": [
+      "0xe7b0a34888724a040c661df62a544385790d8f238091523f5ca7c75eb89a97a2071990495022426463e6b26e540ab6aaff36458b452ae8cdddc32c324325b19100",
+      "0x81c7142a7a0296792b568c9956881bc852ecb41725ad3946126ac2c0666d7cb95d3c827ab5a47b650e18f5a072c3c3499e7ca9868ede785066ef9da8ebc65aa501",
+      "0x35e218a231bfd56849249ca3bf8caaf6b48f227719e0ee78971757c398749ea73ba368237e6a2ce8030fffaf33c7eee19556299d1c5827cd85645d443b332aa101"
+     ]
+    },
+    {
      "accept": false,
      "chargedKey": "0x03e698cdfec1cd7d9a9c22da661661b67c9c477aea2b1f65d7adaea8d5790254bc",
      "commitRound": 65536,
      "commitTimestamp": 1764094337,
      "digest": "0x1a361f88065ea1f27196af7c7fdf05778269104c73a92515e7fb1e95cf48109b",
      "epoch": 2,
+     "hasDigest": true,
      "hash": "0xd18f2743f11c7ed2261afa42839f2445084502a7115806f5e19c575ce5301a56",
      "id": "no.rotated-key",
      "indices": [
@@ -1160,6 +1227,267 @@
       "0x65bf62dbd439ea07f5542998dca831ffddef8504f21449414ed0c2623c315de6768acc2f9179064d4c14c2d324a76a092e9cd448ebd79806947d3a7da832d5b600",
       "0xd1bfcdb27edc99592e6acdde50fd281224980cb5a13882a1d8514982462fdfa17b15c36e61e6ffd2181a26c29178981410f9f0a4bd5a2069ca42777cad3e761e01"
      ]
+    },
+    {
+     "accept": false,
+     "chargedKey": "0x03e698cdfec1cd7d9a9c22da661661b67c9c477aea2b1f65d7adaea8d5790254bc",
+     "commitRound": 65536,
+     "commitTimestamp": 1764094337,
+     "digest": "0x0000000000000000000000000000000000000000000000000000000000000000",
+     "epoch": 3,
+     "hasDigest": false,
+     "hash": "0xd18f2743f11c7ed2261afa42839f2445084502a7115806f5e19c575ce5301a56",
+     "id": "no.statement.commit-epoch",
+     "indices": [
+      1,
+      3,
+      4
+     ],
+     "offence": "",
+     "previousHash": "0x788f256d104d45975e25e1ac662ac918f81aae6e0d924e2d0ffda2015b78ae56",
+     "reason": "statement",
+     "signatureValid": [
+      true,
+      true,
+      true
+     ],
+     "signatures": [
+      "0x557fd0a7e6416e17eda912570839b3db923318ad2eadce41fc0b013f3555768503f50581152a8f65ba310c5ca2c2f5d3a2ff081176e1c63b513b4b19a31c2cca01",
+      "0x65bf62dbd439ea07f5542998dca831ffddef8504f21449414ed0c2623c315de6768acc2f9179064d4c14c2d324a76a092e9cd448ebd79806947d3a7da832d5b600",
+      "0x36dfe9bb8637e29f41fa778cd1d5496631afd68c439a6d633dbe16765cf133a41cfc54052d78e0c413e90c49c513f3fd51c572095a5254232b704e9f8badfdc201"
+     ]
+    },
+    {
+     "accept": false,
+     "chargedKey": "0x03e698cdfec1cd7d9a9c22da661661b67c9c477aea2b1f65d7adaea8d5790254bc",
+     "commitRound": 65536,
+     "commitTimestamp": 1764094337,
+     "digest": "0xa2210d22e028ed30319d20b04295bad0627fe101dabad8300273ee44658c2cec",
+     "epoch": 2,
+     "hasDigest": true,
+     "hash": "0xd18f2743f11c7ed2261afa42839f2445084502a7115806f5e19c575ce5301a56",
+     "id": "no.statement.voting-epoch",
+     "indices": [
+      1,
+      3,
+      4
+     ],
+     "offence": "",
+     "previousHash": "0x0f751a5cfcf1897db01184ca4201d13c7a9f87e87e74f7dc7c21b16b0418a3c8",
+     "reason": "signature",
+     "signatureValid": [
+      false,
+      false,
+      false
+     ],
+     "signatures": [
+      "0x557fd0a7e6416e17eda912570839b3db923318ad2eadce41fc0b013f3555768503f50581152a8f65ba310c5ca2c2f5d3a2ff081176e1c63b513b4b19a31c2cca01",
+      "0x65bf62dbd439ea07f5542998dca831ffddef8504f21449414ed0c2623c315de6768acc2f9179064d4c14c2d324a76a092e9cd448ebd79806947d3a7da832d5b600",
+      "0x36dfe9bb8637e29f41fa778cd1d5496631afd68c439a6d633dbe16765cf133a41cfc54052d78e0c413e90c49c513f3fd51c572095a5254232b704e9f8badfdc201"
+     ]
+    },
+    {
+     "accept": false,
+     "chargedKey": "0x03e698cdfec1cd7d9a9c22da661661b67c9c477aea2b1f65d7adaea8d5790254bc",
+     "commitRound": 65537,
+     "commitTimestamp": 1764094337,
+     "digest": "0x7cebf4c851e2e38356882c82f759cd934dcb46df9e12f1d15a34099000ada8e7",
+     "epoch": 2,
+     "hasDigest": true,
+     "hash": "0xd18f2743f11c7ed2261afa42839f2445084502a7115806f5e19c575ce5301a56",
+     "id": "no.statement.commit-round-not-below",
+     "indices": [
+      1,
+      3,
+      4
+     ],
+     "offence": "",
+     "previousHash": "0x788f256d104d45975e25e1ac662ac918f81aae6e0d924e2d0ffda2015b78ae56",
+     "reason": "signature",
+     "signatureValid": [
+      false,
+      false,
+      false
+     ],
+     "signatures": [
+      "0x557fd0a7e6416e17eda912570839b3db923318ad2eadce41fc0b013f3555768503f50581152a8f65ba310c5ca2c2f5d3a2ff081176e1c63b513b4b19a31c2cca01",
+      "0x65bf62dbd439ea07f5542998dca831ffddef8504f21449414ed0c2623c315de6768acc2f9179064d4c14c2d324a76a092e9cd448ebd79806947d3a7da832d5b600",
+      "0x36dfe9bb8637e29f41fa778cd1d5496631afd68c439a6d633dbe16765cf133a41cfc54052d78e0c413e90c49c513f3fd51c572095a5254232b704e9f8badfdc201"
+     ]
+    },
+    {
+     "accept": false,
+     "chargedKey": "0x03e698cdfec1cd7d9a9c22da661661b67c9c477aea2b1f65d7adaea8d5790254bc",
+     "commitRound": 65536,
+     "commitTimestamp": 1764094337,
+     "digest": "0xc36902728c450eff4286e2d8418ddb28dca3f32112a8a41da3fdf3412e70bdc7",
+     "epoch": 2,
+     "hasDigest": true,
+     "hash": "0xd18f2743f11c7ed2261afa42839f2445084502a7115806f5e19c575ce5301a56",
+     "id": "no.statement.parent-not-below",
+     "indices": [
+      1,
+      3,
+      4
+     ],
+     "offence": "",
+     "previousHash": "0x7c50e81ed15a424a94297db77466634cb692378d521db5e3b5030a9caa27ee83",
+     "reason": "signature",
+     "signatureValid": [
+      false,
+      false,
+      false
+     ],
+     "signatures": [
+      "0x557fd0a7e6416e17eda912570839b3db923318ad2eadce41fc0b013f3555768503f50581152a8f65ba310c5ca2c2f5d3a2ff081176e1c63b513b4b19a31c2cca01",
+      "0x65bf62dbd439ea07f5542998dca831ffddef8504f21449414ed0c2623c315de6768acc2f9179064d4c14c2d324a76a092e9cd448ebd79806947d3a7da832d5b600",
+      "0x36dfe9bb8637e29f41fa778cd1d5496631afd68c439a6d633dbe16765cf133a41cfc54052d78e0c413e90c49c513f3fd51c572095a5254232b704e9f8badfdc201"
+     ]
+    },
+    {
+     "accept": false,
+     "chargedKey": "0x03e698cdfec1cd7d9a9c22da661661b67c9c477aea2b1f65d7adaea8d5790254bc",
+     "commitRound": 0,
+     "commitTimestamp": 1764094337,
+     "digest": "0x0000000000000000000000000000000000000000000000000000000000000000",
+     "epoch": 2,
+     "hasDigest": false,
+     "hash": "0xd18f2743f11c7ed2261afa42839f2445084502a7115806f5e19c575ce5301a56",
+     "id": "no.statement.commit-round-zero",
+     "indices": [
+      1,
+      3,
+      4
+     ],
+     "offence": "",
+     "previousHash": "0x788f256d104d45975e25e1ac662ac918f81aae6e0d924e2d0ffda2015b78ae56",
+     "reason": "statement",
+     "signatureValid": [
+      true,
+      true,
+      true
+     ],
+     "signatures": [
+      "0x557fd0a7e6416e17eda912570839b3db923318ad2eadce41fc0b013f3555768503f50581152a8f65ba310c5ca2c2f5d3a2ff081176e1c63b513b4b19a31c2cca01",
+      "0x65bf62dbd439ea07f5542998dca831ffddef8504f21449414ed0c2623c315de6768acc2f9179064d4c14c2d324a76a092e9cd448ebd79806947d3a7da832d5b600",
+      "0x36dfe9bb8637e29f41fa778cd1d5496631afd68c439a6d633dbe16765cf133a41cfc54052d78e0c413e90c49c513f3fd51c572095a5254232b704e9f8badfdc201"
+     ]
+    },
+    {
+     "accept": true,
+     "chargedKey": "0x03e698cdfec1cd7d9a9c22da661661b67c9c477aea2b1f65d7adaea8d5790254bc",
+     "commitRound": 65536,
+     "commitTimestamp": 1682041620,
+     "digest": "0x04dcf291063d7f02162e58f98d45315ba798164cbf418cb13ae5cfc294507e6c",
+     "epoch": 2,
+     "hasDigest": true,
+     "hash": "0x26213fe8b6ca7cc4a00d324c0f62a53e4ddc94ec5cc3c6d08bb2c9bc8193f8b3",
+     "id": "ok.opaque.random-prev",
+     "indices": [
+      1,
+      3,
+      4
+     ],
+     "offence": "opaque.random-prev/r5",
+     "previousHash": "0x8361872c8aa24aa6aee95516dca2717d7d9931467eb0a5873afa1f2c8cf513cc",
+     "reason": "ok",
+     "signatureValid": [
+      true,
+      true,
+      true
+     ],
+     "signatures": [
+      "0xfaeda650e1fd20f43f6c1dd6d109f50e4ed73960eba9334367b101863d38a8823e4062445cd4d68d873e7f738c96a15ad736fce4891744877155965706f5306b00",
+      "0xc3e5de92ad0932273c58898b2850cbc27f06e720098b938b0b40bd460ce3ab7d00040d2e3e0bbb27676a192a59fafb9f573fd9aa04ea99aab2bdc9698bcf518601",
+      "0xeb453f098f7cf9668a36edcc4339e1e05e0f124b382c60461cedb6b6f8cbcdcd196b3a99b0bd826132b5dd23bbe876cea7a3b87301341a5a18d1a99c89db766e00"
+     ]
+    },
+    {
+     "accept": true,
+     "chargedKey": "0x02d010428be6f3b780c73a79744fb2f2d741eb5e3efb81bcc1c7e60f0a2e12ed4f",
+     "commitRound": 65545,
+     "commitTimestamp": 1682041629,
+     "digest": "0x2a9dced854eaa83de61893389f0948e3f72166dd97995f8504d0cc64e1cd5d47",
+     "epoch": 2,
+     "hasDigest": true,
+     "hash": "0x0c3c999d9f67a9b18bc4166ac86ee8964aee63be1af5451ea8755c16e3c8dc03",
+     "id": "ok.opaque.random-prev.above",
+     "indices": [
+      2,
+      3,
+      4
+     ],
+     "offence": "opaque.random-prev.above/r4",
+     "previousHash": "0x4c70fa94baf4f9f676448591b8f2c6c4b5b44bb9aa50bc3fb6f89207e9a75b93",
+     "reason": "ok",
+     "signatureValid": [
+      true,
+      true,
+      true
+     ],
+     "signatures": [
+      "0x283fe31d64ba9fd849bb213da3b717ad97197ab355bca59c657e3806769d37e149ad780a31f45af9901afcadb203c89f35663608b9cf89d3766f819d8bc2fb8b01",
+      "0x6f2bf8fcf8b55cefcc197294772f401c30bf505134b93bc39d59b2bed76b115b31d00f93baeb8dd8bd254b88764f335fe0d61a8a52847381004398df71986a1b00",
+      "0x212d978de3b70a350117d0e2e77fc54cc734cc9ba60508c78f9251a9477e17704c3b7c43f4d4b07dacf10048cb579745828037881ed669421377dd4ebbceb72501"
+     ]
+    },
+    {
+     "accept": true,
+     "chargedKey": "0x03e698cdfec1cd7d9a9c22da661661b67c9c477aea2b1f65d7adaea8d5790254bc",
+     "commitRound": 65539,
+     "commitTimestamp": 1682041623,
+     "digest": "0x2421414bd99751359d26d5ca14a82162f16e35b926ceeb6f8d8fd391c719fe16",
+     "epoch": 2,
+     "hasDigest": true,
+     "hash": "0x48806aedf042c78e6d5fac89ed7987df92c96cfa9d24c0953ad981d922386df8",
+     "id": "ok.opaque.vi-successor-epoch",
+     "indices": [
+      1,
+      3,
+      4
+     ],
+     "offence": "opaque.vi-successor-epoch/r5",
+     "previousHash": "0xb8ea5682e3c860b2b7f865435dc15ab5b9469b41461a7c19ce5333de0e5dc52a",
+     "reason": "ok",
+     "signatureValid": [
+      true,
+      true,
+      true
+     ],
+     "signatures": [
+      "0x0e404bcce3bef5eb5d63f577f223fb7cfbcf0ded28a5a51e398ff6078d4e974967331f53d7a7126b6374745ff8ebbf31c9b194c5847eb7e531884ff6a6d97f7100",
+      "0x173b453ff503585dffee2d4df79202854153c1910107cee8050a7c3f37bd189b1993498e6657754eb5e10eb65f460764debaf91fadc2fc9130a78b5ca596615f01",
+      "0xb84c545d37a24041d0bc0ce3a072b69a4a4d0d0fe015fd55b70b71110e4d73ec0c423d8a12823d90aa975343b9ec6a4ae445a3c0e974c390cbe56c41a9ed861100"
+     ]
+    },
+    {
+     "accept": false,
+     "chargedKey": "0x03e698cdfec1cd7d9a9c22da661661b67c9c477aea2b1f65d7adaea8d5790254bc",
+     "commitRound": 65596,
+     "commitTimestamp": 1682041680,
+     "digest": "0xe6a39245fae03decebb62c338b5d5ca61006871dbbc9795c9e1df13136f5f174",
+     "epoch": 2,
+     "hasDigest": true,
+     "hash": "0x6a09af5e1513ff7c9a443bf6e02b90161444402c80940604ece408ba15209168",
+     "id": "no.opaque.frozen-root",
+     "indices": [
+      1,
+      3,
+      4
+     ],
+     "offence": "",
+     "previousHash": "0x3af83750b817d8e3b92b5e0771730002b7672bdb1868cd0ca7bf75c89e6a559e",
+     "reason": "exempt-terminal-root",
+     "signatureValid": [
+      true,
+      true,
+      true
+     ],
+     "signatures": [
+      "0x428bf2e44c38720dbb94652cbd023ea439436f22efbd6bbde747f935dba2af6e5bda59b4f88d7f3ccb70d9b9f0cbf71ad99c2e4a51a62d73fa4d5a39b61dcb8c00",
+      "0x4677b0c5aaf0826b80af469f20ad06f207a253041aa6cc9f3915dd80cf4936b0124c3c43cfd436fb81a9244daa62aa082b50f8fe9734696bd15a22bb504f0fb700",
+      "0x07f55ca4070dc785fe9fd006f2ec63f228aa9ca7f4511162842db004fe9efde47a80c164cc78b465742f88df6f55109a07e0f21ad1c18c58d7b4ce2ee6162e6301"
+     ]
     }
    ],
    "successorKeys": [
@@ -1176,7 +1504,7 @@
     2,
     2
    ],
-   "terminalRoot": "0x858716df327d61ef9c3412e6bb18b7859e1a5b689b424b9fcc95d847dc8f7231",
+   "terminalRoot": "0x6a09af5e1513ff7c9a443bf6e02b90161444402c80940604ece408ba15209168",
    "weights": [
     1,
     2,
@@ -1220,6 +1548,7 @@
      "commitTimestamp": 6058996097,
      "digest": "0x76b636037fa9b0bc2cfe3aefb146fff23491e066b917c97bd41bf93d6b6131c8",
      "epoch": 7,
+     "hasDigest": true,
      "hash": "0xa4b38a6f8acc56fd5991fc1e25cf434917b35d2e0f344ad7fb7a78953c19a92e",
      "id": "ok.all-16",
      "indices": [
@@ -1287,6 +1616,7 @@
      "commitTimestamp": 6058996097,
      "digest": "0x76b636037fa9b0bc2cfe3aefb146fff23491e066b917c97bd41bf93d6b6131c8",
      "epoch": 7,
+     "hasDigest": true,
      "hash": "0xa4b38a6f8acc56fd5991fc1e25cf434917b35d2e0f344ad7fb7a78953c19a92e",
      "id": "ok.threshold-11",
      "indices": [
@@ -1339,6 +1669,7 @@
      "commitTimestamp": 6058996097,
      "digest": "0x76b636037fa9b0bc2cfe3aefb146fff23491e066b917c97bd41bf93d6b6131c8",
      "epoch": 7,
+     "hasDigest": true,
      "hash": "0xa4b38a6f8acc56fd5991fc1e25cf434917b35d2e0f344ad7fb7a78953c19a92e",
      "id": "no.ten",
      "indices": [
@@ -1388,6 +1719,7 @@
      "commitTimestamp": 6058996097,
      "digest": "0x76b636037fa9b0bc2cfe3aefb146fff23491e066b917c97bd41bf93d6b6131c8",
      "epoch": 7,
+     "hasDigest": true,
      "hash": "0xa4b38a6f8acc56fd5991fc1e25cf434917b35d2e0f344ad7fb7a78953c19a92e",
      "id": "no.seventeen",
      "indices": [
@@ -1458,6 +1790,7 @@
      "commitTimestamp": 6058996096,
      "digest": "0xc3fe4361c30841515da1226256774d5c8f60591aabdbe3096ee38be6b131f641",
      "epoch": 7,
+     "hasDigest": true,
      "hash": "0xa4b38a6f8acc56fd5991fc1e25cf434917b35d2e0f344ad7fb7a78953c19a92e",
      "id": "no.in-term",
      "indices": [

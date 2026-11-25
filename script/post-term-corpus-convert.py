@@ -9,8 +9,10 @@ Usage: post-term-corpus-convert.py <post-term-corpus-go-v1.json> <post-term-corp
 import json
 import sys
 
-# The statement-shape cases test a VoteInfo opening, which the opaque-PreviousHash verifier never takes; the Go generator rebuilds no
-# seal bytes for them (empty previousHash and digest), so they are not submissions of this verifier.
+# The statement is the seal's signed fields (astra option (a)): commitRound, commitEpoch, commitTimestamp, previousHash, hash. The
+# corpus' VoteInfo fields are informational and are not part of the contracts' PostTermSeal.
+STATEMENT = {"commitRound", "commitEpoch", "commitTimestamp", "previousHash", "hash"}
+VOTE_INFO = {"votingEpoch", "votingRound", "parent", "exec", "voteTimestamp"}
 
 
 def hx(s):
@@ -47,14 +49,15 @@ def convert(go):
         assert u(pre["end"]) == u(suc["start"]) == o["activationRound"]
         assert u(cl["closedEpoch"]) == o["epoch"] and u(suc["epoch"]) == o["epoch"] + 1
         for sub in sc["submissions"]:
-            if sub["previousHash"] == "":
-                assert sub["reason"] == "statement", sub["id"]
-                continue
             st = sub["statement"]
+            assert STATEMENT <= set(st) and set(st) <= STATEMENT | VOTE_INFO, sub["id"]
+            # where the generator rebuilt the seal bytes, it did so from exactly this previousHash
+            assert sub["previousHash"] in ("", st["previousHash"]), sub["id"]
+            assert (sub["digest"] == "") == (sub["previousHash"] == ""), sub["id"]
             o["submissions"].append({
                 "id": sub["id"],
                 "epoch": u(st["commitEpoch"]),
-                "previousHash": hx(sub["previousHash"]),
+                "previousHash": hx(st["previousHash"]),
                 "commitRound": u(st["commitRound"]),
                 "commitTimestamp": u(st["commitTimestamp"]),
                 "hash": hx(st["hash"]),
@@ -62,7 +65,8 @@ def convert(go):
                 "signatures": [hx(x["signature"]) for x in sub["signatures"]],
                 "signatureValid": [bool(x["valid"]) for x in sub["signatures"]],
                 "chargedKey": hx(keys[sub["charged"]]),
-                "digest": hx(sub["digest"]),
+                "digest": hx(sub["digest"] or "00" * 32),
+                "hasDigest": sub["digest"] != "",
                 "reason": sub["reason"],
                 "accept": bool(sub["accept"]),
                 "offence": sub["offence"],
