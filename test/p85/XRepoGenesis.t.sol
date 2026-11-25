@@ -55,7 +55,9 @@ contract XRepoGenesisTest is Test {
         );
         // the election's publication implementation (PoPs, finalization) is recorded, so script/p85-genesis.sh allocates it
         address publication = vm.parseJsonAddress(dep, ".electionPublication");
-        assertEq(publication, ElectionPolicy(vm.parseJsonAddress(dep, ".election")).PUBLICATION_IMPL());
+        assertEq(
+            publication, ElectionPolicy(vm.parseJsonAddress(dep, ".election")).PUBLICATION_IMPL()
+        );
         assertTrue(publication.code.length != 0);
         assertEq(vm.parseJsonBytes32(dep, ".electionPublicationCodeHash"), publication.codehash);
         StakeCustody custody = StakeCustody(vm.parseJsonAddress(dep, ".custody"));
