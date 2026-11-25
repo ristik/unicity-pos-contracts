@@ -331,7 +331,7 @@ abstract contract PosBase is P85Flow {
         election.admitDelegation(dr, sign(j.ownerPk, dd), sign(j.evmPk, dd));
     }
 
-    /// @dev Keys of identity `id`, genesis or joiner, for its proofs of possession.
+    /// @dev Keys of identity `id`, genesis or joiner, for its proofs of possession (a genesis identity's default key when unset).
     mapping(uint64 => uint256) internal evmPkOf;
 
     // ---- holder facts (design 3.9.2): read from custody's storage at the frozen slots ----
@@ -420,7 +420,9 @@ abstract contract PosBase is P85Flow {
         ElectionStorage.Frozen[] memory f = election.frozenMembers(rid);
         ElectionStorage.PoPInput[] memory pops = new ElectionStorage.PoPInput[](f.length);
         for (uint256 k; k < f.length; ++k) {
-            uint256 pk = f[k].id <= N_GENESIS ? evmPk(f[k].id - 1) : evmPkOf[f[k].id];
+            uint256 pk = evmPkOf[f[k].id] != 0
+                ? evmPkOf[f[k].id]
+                : f[k].id <= N_GENESIS ? evmPk(f[k].id - 1) : 0;
             bytes memory key = compressed(pk);
             pops[k] = ElectionStorage.PoPInput(
                 f[k].id, key, sign(pk, election.popDigest(rid, f[k].id, keccak256(key)))

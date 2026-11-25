@@ -779,17 +779,14 @@ contract ElectionPolicy is ElectionStorage {
         );
     }
 
-    /// @dev The delegation is the identity's VR binding at the custody generation: the current binding at generation g, or the staged one at
-    /// g + 1 (the words VR accepts in an output).
-    function _vrAligned(uint64 id, uint64 generation, Delegation storage d)
-        private
-        view
-        returns (bool)
-    {
+    /// @dev The delegation is the identity's VR binding: VR's exact current binding or its nonzero staged one (#1286). The generation is
+    /// custody's bond cycle, not VR's: it is bound into the delegation's binding hash and the frozen record, so VR's binding-version word
+    /// is only a presence check here (zero: no such binding).
+    function _vrAligned(uint64 id, Delegation storage d) private view returns (bool) {
         bytes32 rootKeyHash = keccak256(d.rootKey);
         bytes32 evmKeyHash = keccak256(d.evmKey);
         for (uint8 k = 0; k < 2; ++k) {
-            // `ValidatorRegistry.bindingOf` returns a ten-word static struct; only words 1 (generation), 4 to 7 and 8 (payee) are read, straight
+            // `ValidatorRegistry.bindingOf` returns a ten-word static struct; only words 1 (generation: presence), 4 to 7 and 8 (payee) are read, straight
             // from the return data (VR is this generation's fixed registry; a short return reverts). Decoding the whole struct costs the size
             // this module does not have (EIP-170).
             (bool ok, bytes memory r) =
@@ -810,7 +807,7 @@ contract ElectionPolicy is ElectionStorage {
                 payee := mload(add(r, 288))
             }
             if (
-                gen == generation && rootNode == d.rootNodeID && rootHash == rootKeyHash
+                gen != 0 && rootNode == d.rootNodeID && rootHash == rootKeyHash
                     && evmNode == d.evmNodeID && evmHash == evmKeyHash && payee == d.operatorPayee
             ) return true;
         }
@@ -836,7 +833,7 @@ contract ElectionPolicy is ElectionStorage {
             ) {
                 continue;
             }
-            if (registry != address(0) && !_vrAligned(ps[i].id, ps[i].generation, s.binding)) {
+            if (registry != address(0) && !_vrAligned(ps[i].id, s.binding)) {
                 continue;
             }
             tmp[n].id = ps[i].id;

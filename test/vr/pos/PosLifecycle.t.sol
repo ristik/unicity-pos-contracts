@@ -4,7 +4,7 @@ pragma solidity 0.8.37;
 import {PosBase} from "./PosBase.sol";
 import {VRC} from "../../../src/vr/VRConstants.sol";
 import {VRCodec} from "../../../src/vr/VRCodec.sol";
-import {Member, OutputView} from "../../../src/vr/VRTypes.sol";
+import {Member, OutputView, Registration, IdentityView} from "../../../src/vr/VRTypes.sol";
 import {ElectionPolicy, ElectionStorage} from "../../../src/p85/ElectionPolicy.sol";
 import {
     Delegation,
@@ -425,5 +425,323 @@ contract PosLifecycleTest is PosBase {
         payee.payee = address(0xBEEF);
         vm.mockCall(VR_ADDR, abi.encodeCall(vr.bindingOf, (1, true)), abi.encode(payee));
         assertEq(VRCodec.wordAt(adapter.outputOf(rid), 0), VRC.STATUS_NOT_MINE);
+    }
+
+    // ---- #1286: recovering a bonded identity whose EVM authority is lost (astra: delegation first, the generation is custody's) ----
+
+    /// @dev Genesis identity `i`'s binding with a fresh EVM node id and key; the root node, root key and payee stay.
+    function _rotatedEvm(uint256 i, uint256 newEvmPk) internal returns (Registration memory r) {
+        string memory letter = string(abi.encodePacked(bytes1(uint8(97 + i))));
+        r = Registration({
+            rootNodeID: string.concat("root-", letter),
+            rootKey: _rootKey(i),
+            evmNodeID: string.concat("evm-", letter, "-", vm.toString(newEvmPk)),
+            evmKey: compressed(newEvmPk),
+            payee: vm.addr(payeePk(i)),
+            nonce: 0
+        });
+    }
+
+    function _custodyGeneration(uint64 id) internal view returns (uint64 g) {
+        (,,,, g,,,,) = custody.positions(id);
+    }
+
+    /// @dev `admitDelegation` of `r`'s words at custody's current generation, signed by the owner and the new EVM key.
+    function _admitWords(uint64 id, uint256 ownerKey, uint256 evmKey, Registration memory r)
+        internal
+    {
+        (,,,, uint64 g, uint64 roleNonce,,,) = custody.positions(id);
+        (,, uint64 nonce) = election.delegation(id, g);
+        DelegationRequest memory dr;
+        dr.id = id;
+        dr.generation = g;
+        dr.binding = Delegation({
+            rootNodeID: keccak256(bytes(r.rootNodeID)),
+            rootKey: r.rootKey,
+            evmNodeID: keccak256(bytes(r.evmNodeID)),
+            evmKey: r.evmKey,
+            operatorPayee: r.payee
+        });
+        dr.roleNonce = roleNonce;
+        dr.delegationNonce = nonce;
+        dr.expiry = type(uint64).max;
+        bytes32 dd = election.delegationDigest(dr);
+        election.admitDelegation(dr, sign(ownerKey, dd), sign(evmKey, dd));
+    }
+
+    /// @dev `VR.proposeBinding` of the same words, both keys proving possession.
+    function _stageWords(
+        uint64 id,
+        uint256 ownerKey,
+        uint256 rootKey,
+        uint256 evmKey,
+        Registration memory r
+    ) internal {
+        r.nonce = vr.identity(id).bindingNonce;
+        address owner = vm.addr(ownerKey);
+        bytes32 d = keccak256(
+            abi.encode(
+                VRC.BINDING_DOMAIN,
+                NETWORK,
+                block.chainid,
+                VR_ADDR,
+                owner,
+                uint256(id),
+                keccak256(bytes(r.rootNodeID)),
+                keccak256(r.rootKey),
+                keccak256(bytes(r.evmNodeID)),
+                keccak256(r.evmKey),
+                r.payee,
+                uint256(r.nonce)
+            )
+        );
+        vm.prank(owner);
+        vr.proposeBinding(id, r, sign(rootKey, d), sign(evmKey, d));
+    }
+
+    function _refOf(Registration memory r) internal pure returns (bytes32) {
+        return keccak256(
+            abi.encode(
+                keccak256(bytes(r.rootNodeID)),
+                keccak256(r.rootKey),
+                keccak256(bytes(r.evmNodeID)),
+                keccak256(r.evmKey),
+                r.payee
+            )
+        );
+    }
+
+    function _frozenOf(bytes32 rid, uint64 id)
+        internal
+        view
+        returns (bool found, ElectionStorage.Frozen memory m)
+    {
+        ElectionStorage.Frozen[] memory f = election.frozenMembers(rid);
+        for (uint256 k; k < f.length; ++k) {
+            if (f[k].id == id) return (true, f[k]);
+        }
+    }
+
+    /// @dev The recovery: delegation to the fresh EVM key at the custody generation (it fences the dead key), then the identical words
+    /// staged in VR. The next election freezes the new key, a proof by the old key is refused, and the boundary installs the new binding
+    /// at the unchanged custody generation; the bond's lots stay where they were.
+    function test_anInPlaceEvmRotationIsElectedPublishedAndInstalled() public {
+        uint256 newEvm = 0x9101;
+        Registration memory r = _rotatedEvm(0, newEvm);
+        uint256[] memory lotsBefore = custody.generationLots(1, 1);
+        _admitWords(1, ownerPk(0), newEvm, r);
+        _stageWords(1, ownerPk(0), rootPk(0), newEvm, r);
+        IdentityView memory iv = vr.identity(1);
+        assertEq(iv.generation, 1);
+        assertEq(iv.stagedRef, _refOf(r), "staged words = delegated words");
+
+        bytes32 rid = _electFromStake();
+        (bool found, ElectionStorage.Frozen memory f) = _frozenOf(rid, 1);
+        assertTrue(found, "the rotated identity is elected");
+        assertEq(f.generation, 1, "at the custody generation");
+        (, bytes32 delegated,) = election.delegation(1, 1);
+        assertEq(f.bindingHash, delegated, "the frozen binding is the new delegation");
+
+        // the old (dead) key's proof is refused: its key is not the frozen one
+        ElectionStorage.PoPInput[] memory old = new ElectionStorage.PoPInput[](1);
+        bytes memory oldKey = compressed(evmPk(0));
+        old[0] = ElectionStorage.PoPInput(
+            1, oldKey, sign(evmPk(0), election.popDigest(rid, 1, keccak256(oldKey)))
+        );
+        vm.expectRevert(abi.encodeWithSelector(ElectionStorage.WrongEvmKey.selector, uint64(1)));
+        election.submitAssignmentPoPs(rid, old);
+
+        evmPkOf[1] = newEvm;
+        assertEq(_publishResult2(rid), VRC.PUB_PUBLISHED);
+        Member[] memory out = vr.output(rid).members;
+        assertEq(out[0].id, 1);
+        assertEq(out[0].generation, 1, "VR publishes the custody generation, not VR's staged g + 1");
+        assertEq(out[0].evmKeyHash, keccak256(r.evmKey));
+        assertEq(out[0].evmNodeWord, keccak256(bytes(r.evmNodeID)));
+
+        _ackNext(rid);
+        iv = vr.identity(1);
+        assertEq(iv.generation, 1, "VR's installed generation is custody's");
+        assertEq(iv.currentRef, _refOf(r), "the new binding is current");
+        assertEq(iv.stagedRef, bytes32(0), "and no longer staged");
+        assertEq(vr.committee()[0].evmKeyHash, keccak256(r.evmKey));
+        // custody's lot lookup at VR's generation finds the same bond, and the exposure names the new key at generation 1
+        uint256[] memory lotsAfter = custody.generationLots(1, iv.generation);
+        assertEq(lotsAfter.length, lotsBefore.length);
+        assertEq(lotsAfter[0], lotsBefore[0], "the bond stays in its lots");
+        (, uint64 eid, uint64 eg,,,, bytes32 ek,,,) =
+            custody.exposures(_eid(election.result(rid).assignmentID, 1));
+        assertEq(eid, 1);
+        assertEq(eg, 1);
+        assertEq(ek, keccak256(r.evmKey));
+        assertEq(vr.health(), VRC.HEALTHY);
+        _assertAllFacts();
+
+        // the installed identity stays electable at the same generation with its new key
+        bytes32 r2 = _elect2();
+        _ackNext(r2);
+        assertEq(vr.identity(1).generation, 1);
+        assertEq(vr.committee()[0].evmKeyHash, keccak256(r.evmKey));
+    }
+
+    /// @dev Delegation first: with only the new delegation (not yet staged in VR) the identity is not eligible, so the dead key is fenced
+    /// from the next snapshot; once the identical words are staged it is elected with the new key.
+    function test_delegationFirstFencesTheDeadKey() public {
+        Joiner memory j = _joinPos(1_000 * UCT);
+        evmPkOf[j.id] = j.evmPk;
+        uint256 newEvm = 0x9102;
+        Registration memory r = _rotatedEvm(0, newEvm);
+        _admitWords(1, ownerPk(0), newEvm, r);
+        bytes32 rid = _elect2();
+        (bool found,) = _frozenOf(rid, 1);
+        assertFalse(found, "delegated but not staged in VR: not eligible");
+        assertEq(election.frozenMembers(rid).length, N_GENESIS);
+        _ackNext(rid);
+
+        _stageWords(1, ownerPk(0), rootPk(0), newEvm, r);
+        evmPkOf[1] = newEvm;
+        bytes32 r2 = _elect2();
+        (found,) = _frozenOf(r2, 1);
+        assertTrue(found, "staged: elected with the new key");
+        _ackNext(r2);
+        assertEq(vr.identity(1).currentRef, _refOf(r));
+        assertEq(vr.identity(1).generation, 1);
+    }
+
+    /// @dev The stall this ordering avoids (regression): a VR stage alone leaves the old delegation aligned with VR's current binding, so
+    /// the identity is still elected with the old key, and only the old (dead) key can prove possession.
+    function test_aVRStageOnlyRotationStillElectsTheOldKey() public {
+        uint256 newEvm = 0x9103;
+        Registration memory r = _rotatedEvm(0, newEvm);
+        _stageWords(1, ownerPk(0), rootPk(0), newEvm, r);
+        bytes32 rid = _electFromStake();
+        (bool found, ElectionStorage.Frozen memory f) = _frozenOf(rid, 1);
+        assertTrue(found, "still eligible with the old delegation");
+        (, bytes32 delegated,) = election.delegation(1, 1);
+        assertEq(f.bindingHash, delegated);
+        ElectionStorage.PoPInput[] memory nw = new ElectionStorage.PoPInput[](1);
+        nw[0] = ElectionStorage.PoPInput(
+            1, r.evmKey, sign(newEvm, election.popDigest(rid, 1, keccak256(r.evmKey)))
+        );
+        vm.expectRevert(abi.encodeWithSelector(ElectionStorage.WrongEvmKey.selector, uint64(1)));
+        election.submitAssignmentPoPs(rid, nw);
+        assertEq(_publishResult(rid), VRC.PUB_PUBLISHED, "only the old key's proof publishes");
+    }
+
+    /// @dev A full exit and a re-bond with the same keys: custody opens generation 2, the same words are delegated at 2 (VR's current
+    /// binding is unchanged, so nothing is staged), the identity is elected at 2 and VR installs 2.
+    function test_aSameKeyRejoinAtTheNextGeneration() public {
+        Joiner memory j = _joinPos(1_000 * UCT);
+        evmPkOf[j.id] = j.evmPk;
+        bytes32 r1 = _elect2();
+        _ackNext(r1);
+        pushRecord(RecordKind.Closure, closureData(GENESIS_ASSIGNMENT, lastH, "genesis"));
+        _vrApplyAll();
+        vm.prank(vm.addr(j.ownerPk));
+        custody.requestRetirement(j.id);
+        bytes32 r2 = _elect2();
+        _ackNext(r2);
+        bytes32 a1 = election.result(r1).assignmentID;
+        pushRecord(RecordKind.Closure, closureData(a1, lastH, "r1"));
+        _vrApplyAll();
+        _anchorIfClosed(a1, "r1");
+        _advance(400, 400);
+        pushRecord(
+            RecordKind.HolderRetirement,
+            abi.encode(HolderRetirementData(0, j.id, 1, custody.exposureChain(j.id, 1)))
+        );
+        _vrApplyAll();
+        _advance(100_000, 100_000);
+        uint256[] memory lots = new uint256[](1);
+        lots[0] = lotOf(j.id);
+        custody.mature(lots);
+        assertEq(vr.identity(j.id).generation, 1);
+
+        bondFor(j.id, 1_000 * UCT);
+        assertEq(_custodyGeneration(j.id), 2, "the re-bond opens custody generation 2");
+        Registration memory same = Registration({
+            rootNodeID: string.concat("root-j", vm.toString(uint256(1))),
+            rootKey: compressed(j.rootPk),
+            evmNodeID: string.concat("evm-j", vm.toString(uint256(1))),
+            evmKey: compressed(j.evmPk),
+            payee: j.payee,
+            nonce: 0
+        });
+        assertEq(vr.identity(j.id).currentRef, _refOf(same), "VR's current binding is the same");
+        _admitWords(j.id, j.ownerPk, j.evmPk, same);
+        bytes32 r3 = _elect2();
+        (bool found, ElectionStorage.Frozen memory f) = _frozenOf(r3, j.id);
+        assertTrue(found, "the same keys rejoin");
+        assertEq(f.generation, 2);
+        Member[] memory out = vr.output(r3).members;
+        assertEq(out[out.length - 1].id, j.id);
+        assertEq(out[out.length - 1].generation, 2, "published at custody generation 2");
+        _ackNext(r3);
+        assertEq(vr.identity(j.id).generation, 2, "VR installs generation 2");
+        assertEq(custody.generationLots(j.id, 2).length, 1, "custody's lots of generation 2");
+        assertEq(vr.health(), VRC.HEALTHY);
+    }
+
+    /// @dev VR refuses a PoS output whose member generation is not custody's for that identity, even with a valid ref and a generation
+    /// above VR's (an invented future generation would otherwise be installed): the module faults instead of publishing.
+    function test_anInventedFutureGenerationIsRefused() public {
+        bytes32 rid = _electFromStake();
+        election.submitAssignmentPoPs(rid, _pops(rid, _allIdx()));
+        election.finalizeCandidate(rid);
+        // VR decodes the module's return data as is (the ABI envelope of the packed words)
+        (bool ok, bytes memory real) = ADAPTER.staticcall(abi.encodeCall(adapter.outputOf, (rid)));
+        assertTrue(ok);
+        (uint8 err, uint8 status, VRCodec.OutputHeader memory h, Member[] memory ms) =
+            VRCodec.decodeOutput(real);
+        assertEq(err, VRCodec.OK);
+        assertEq(status, VRC.STATUS_READY);
+        assertEq(ms[0].generation, 1);
+        assertEq(abi.encode(VRCodec.packOutput(h, ms)), real, "the codec round-trips the output");
+
+        uint256 snap = vm.snapshotState();
+        vm.mockCall(
+            ADAPTER, abi.encodeCall(adapter.outputOf, (rid)), abi.encode(VRCodec.packOutput(h, ms))
+        );
+        assertEq(vr.publish(rid), VRC.PUB_PUBLISHED, "the re-packed real output publishes");
+        vm.revertToState(snap);
+
+        ms[0].generation = 2; // the current ref, a generation above VR's 1, but custody's is 1
+        vm.mockCall(
+            ADAPTER, abi.encodeCall(adapter.outputOf, (rid)), abi.encode(VRCodec.packOutput(h, ms))
+        );
+        assertEq(vr.publish(rid), VRC.PUB_PRECONDITION_FAILED);
+        assertEq(vr.health(), VRC.FAULTED, "an invented generation is a module fault");
+        assertEq(_state(rid), VRC.OUT_RESERVED, "never published");
+    }
+
+    /// @dev A staged ref replaced after the snapshot froze it is not served: the frozen binding hash names the replaced words.
+    function test_aReplacedStagedRefIsNotServed() public {
+        uint256 newEvm = 0x9104;
+        Registration memory r = _rotatedEvm(0, newEvm);
+        _admitWords(1, ownerPk(0), newEvm, r);
+        _stageWords(1, ownerPk(0), rootPk(0), newEvm, r);
+        bytes32 rid = _electFromStake();
+        evmPkOf[1] = newEvm;
+        ElectionStorage.Frozen[] memory f = election.frozenMembers(rid);
+        ElectionStorage.PoPInput[] memory pops = new ElectionStorage.PoPInput[](f.length);
+        for (uint256 k; k < f.length; ++k) {
+            uint256 pk = evmPkOf[f[k].id] != 0 ? evmPkOf[f[k].id] : evmPk(f[k].id - 1);
+            bytes memory key = compressed(pk);
+            pops[k] = ElectionStorage.PoPInput(
+                f[k].id, key, sign(pk, election.popDigest(rid, f[k].id, keccak256(key)))
+            );
+        }
+        election.submitAssignmentPoPs(rid, pops);
+        election.finalizeCandidate(rid);
+        assertEq(VRCodec.wordAt(adapter.outputOf(rid), 0), VRC.STATUS_READY);
+        uint256 third = 0x9105;
+        _stageWords(1, ownerPk(0), rootPk(0), third, _rotatedEvm(0, third));
+        assertEq(
+            VRCodec.wordAt(adapter.outputOf(rid), 0),
+            VRC.STATUS_NOT_MINE,
+            "the frozen staged words were replaced: not served"
+        );
+        assertEq(vr.publish(rid), VRC.PUB_NOT_MINE);
+        assertEq(vr.health(), VRC.HEALTHY, "no fault: the adapter serves nothing");
     }
 }
