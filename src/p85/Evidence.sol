@@ -535,15 +535,29 @@ contract Evidence {
         uint256 weight = 0;
         bool charged = false;
         for (uint256 i = 0; i < count; ++i) {
-            (bytes memory key, uint64 w) = reg.sealMember(epoch, q.members[i]);
-            if (!KeyLib.verifyNative(KeyLib.toAddress(key), digest, q.signatures[i])) {
-                revert BadSignature();
-            }
+            (uint64 w, bool isCharged) =
+                _verifyMember(reg, epoch, q.members[i], digest, q.signatures[i], keyHash);
             weight += w;
-            if (keccak256(key) == keyHash) charged = true;
+            if (isCharged) charged = true;
         }
         if (!charged) revert KeyMismatch();
         if (weight < (uint256(pre.totalWeight) * 2) / 3 + 1) revert QuorumTooSmall();
+    }
+
+    /// @dev One subset member: its installed key must have produced `sig` over the seal digest (strict native rule). Returns its weight
+    /// and whether it holds the charged key. (A helper of its own keeps the quorum loop within the stack under every profile.)
+    function _verifyMember(
+        ISealHistory reg,
+        uint64 epoch,
+        uint8 index,
+        bytes32 digest,
+        bytes calldata sig,
+        bytes32 keyHash
+    ) private view returns (uint64 weight, bool charged) {
+        bytes memory key;
+        (key, weight) = reg.sealMember(epoch, index);
+        if (!KeyLib.verifyNative(KeyLib.toAddress(key), digest, sig)) revert BadSignature();
+        charged = keccak256(key) == keyHash;
     }
 
     function _verifyEvidence(VoteHeader calldata h, SignedVote calldata a, SignedVote calldata b)
