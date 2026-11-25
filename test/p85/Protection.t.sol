@@ -104,6 +104,7 @@ contract ProtectionTest is P85Flow {
         clock(150, 1_200);
         pushRecord(RecordKind.Closure, closureData(GENESIS_ASSIGNMENT, H_ROUND, "g"));
         applyAll();
+        anchorClosed(GENESIS_ASSIGNMENT, "g");
 
         requestRetirement(1); // identity 2 retires and is dropped by J2
         reserve(RES_J2, ASG_J2, allExcept(1), 2);
@@ -112,6 +113,7 @@ contract ProtectionTest is P85Flow {
         clock(170, 1_400);
         pushRecord(RecordKind.Closure, closureData(ASG_J, 130, "j"));
         applyAll();
+        anchorClosed(ASG_J, "j");
         retireRecordAt(gid(1), 180, 1_500);
 
         // retirement floor = 1,500 + 1; J's closure floor = 1,400 + 5,000 = 6,400 binds.

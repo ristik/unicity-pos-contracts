@@ -143,9 +143,11 @@ lotIDs)` per member, so candidate/exposure payee tampering changes the digest th
 | `registerEvmKey` | fixed `ElectionPolicy` | cross-role key uniqueness | none |
 | `applyRootRecords(max)` | anyone / hook | sequential indexes and predecessors; bounded prefix | none |
 | `submitEvidence` | anyone | S1 pair, historical attribution, inclusive cutoffs (`EvidenceLate`) | none (installs holds, exclusion) |
+| `submitPostTermEvidence` / `submitPostTermSeatEvidence` | anyone | #1297 post-term seal: installed consecutive epochs e, e+1 (`SuccessorUnknown`, `UnsupportedScheme`), `commitRound >= start[e+1]` (`NotPostTerm`), `Hash != R_H` (`FrozenRoot`), the closed and anchored custody term of e bound to e+1's activation (`EpochMismatch`, `TermNotClosed`, `TermNotAnchored`, `RootOnlyTerm`, `HandoffMismatch`), one verified quorum subset (`BadQuorum`, `BadSignature`, `QuorumTooSmall`, `KeyMismatch`), deadline `p <= p0 + suffixWindow OR t <= t0 + reportWindow` (`EvidenceLate`) | none (installs holds, exclusion) |
+| `anchorTerm(assignment, hRecordID, terminalRoot)` | anyone | closed and not yet anchored (`TermNotPending`), the Closure's key opens (`ClosureOpeningMismatch`), successor root epoch installed (`SuccessorNotInstalled`) | none (stores R_H, H RecordID, p0, t0; raises the term's lot floors from them) |
 | `settleEvidence` | anyone | exact next ascending lot prefix `NotNextLot`; `maxBatch` | principal to credits |
 | `applyPenalty` | fixed `Evidence` | `NotEvidence`, `LotNotInExposure`, `PenaltyAlreadyApplied`; custody recomputes budget, cap, remaining | principal falls by exactly the credits created |
-| `mature(lots)` | anyone | `RecordsPending`, `LotStillReferenced`, `RetirementNotImported`, `EvidenceHoldPending`, `RoundGateNotMet`, `EvidenceGateNotMet`, `TimeGateNotMet` | principal to withdrawal credit |
+| `mature(lots)` | anyone | `RecordsPending`, `LotStillReferenced`, `TermAnchorPending`, `RetirementNotImported`, `EvidenceHoldPending`, `RoundGateNotMet`, `EvidenceGateNotMet`, `TimeGateNotMet` | principal to withdrawal credit |
 | `claim(amount, to)` | creditor | `InsufficientCredit`, reentrancy guard, debit before transfer | balance and credit fall equally |
 | `admitDelegation` | anyone relaying owner + EVM proofs | see above | none |
 | `syncLiveIndex` | custody only | `NotCustody`, `IndexFull` | none |
@@ -162,8 +164,10 @@ key is cleared. The key tombstones and historical exposure keys are retained.
 
 Getters: `positions`, `lots`, `exposures`, `exposureLots`, `assignments`, `assignmentExposures`,
 `policyTerms`, `session`, `retirements`, `exposureChain`, `liveExposures`, `maxLiabilityAnchor`,
-`keyOwner`, `generationLots`, `credit`, `caseDebited`, `penaltyApplied`, and on `Evidence`:
-`caseInfo`, `pendingHolds`, `excluded`, `releaseState`, `offenceSeen`, `voteDigest`, `offenceIDOf`.
+`keyOwner`, `generationLots`, `credit`, `caseDebited`, `penaltyApplied`, `termAnchors`, `lotUnanchoredTerms`, and on `Evidence`:
+`caseInfo`, `pendingHolds`, `excluded`, `releaseState`, `offenceSeen`, `voteDigest`, `offenceIDOf`,
+`postTermOffenceID`, `postTermSealDigest`, `reportWindow`. The SealRegistry adds the read-only B1 views `sealEpoch(e)` and
+`sealMember(e, j)`.
 
 ## Lifecycle rules and integration limits
 
@@ -185,6 +189,30 @@ Getters: `positions`, `lots`, `exposures`, `exposureLots`, `assignments`, `assig
   ordinary; after it, rounds above `h` have no expiry until closure and
   `p_close + suffixWindow` (inclusive) afterwards. A `Reserved` (not yet acknowledged) assignment
   cannot be charged (`AssignmentNotActivated`); an aborted attempt is `NotAttributable`.
+* **Post-term seals (#1297).** A quorum of root epoch e that sealed commit epoch e at a commit round
+  `>= start[e+1]` over a root other than the term's authenticated handoff root R_H is charged, one
+  signer per submission, through the custody assignment of root epoch e. Every seal over R_H is exempt
+  (H's own late commit and honest suffix repeats cannot be told apart from backdated in-term seals).
+  Not attributable in this version, and refused: root-only terms (no custody assignment of epoch e, or
+  a successor activated by another H), scheme 1 epochs (the genesis committee), and native signatures
+  with recovery ID 2 or 3. The offence ID is typed by kind and bound to the deployment word, chain ID,
+  the Evidence address and the root N and G; the equivocation ID uses the same typed domain.
+* **Report anchors (#1297/#1298).** A Closure's application raises its lots' floors from the record's
+  anchors and leaves the term unanchored: its lots cannot mature (`TermAnchorPending`) and no post-term
+  report is admitted until anyone calls `anchorTerm` once the successor root epoch is installed. The
+  anchors are the authenticated progress p0 and UC time t0 of that call; the lots then raise their
+  holds and evidence windows from p0 and their time floor to `t0 + timeFloor`. A post-term report is
+  timely while `p <= p0 + suffixEvidenceWindow` or `t <= t0 + reportWindow` (inclusive); only both
+  expiring closes admission. Equivocation keeps its existing deadline. The anchoring is a separate
+  step because the record callbacks have no gas to spare (the K = 5 RecoveryAck callback had about 7k
+  below the 2.0 M stipend).
+* **Retirement report window (#1298).** `reportWindow` (W plus the reporting and inclusion margin) and
+  `settlementMargin` are immutables of the policy source; every snapshot must keep
+  `timeFloor >= reportWindow + settlementMargin`, at genesis and on every governance update.
+  Production: 648,000 + 43,200 = 691,200 s (`MAX_FLOOR`); resettable testnet: 1,800 + 1,800 = 3,600 s
+  (`P85_PROFILE`, `script/P85ReportProfile.sol`).
+* **Signatures.** Every evidence signature follows the upstream seal rule: exactly 65 bytes r||s||v,
+  `1 <= r < n`, `1 <= s <= n/2`, `v in {0, 1}` and one recovery with that parity.
 * **`d_j`.** The "inherited deadline" is carried by the permanent per-lot maxima over all closed
   obligations, so it is not stored separately.
 * **EVM-key relation.** Custody checks that a reserved EVM key hash is the identity's registered
@@ -201,7 +229,7 @@ Getters: `positions`, `lots`, `exposures`, `exposureLots`, `assignments`, `assig
 
 Bond unit and minimum 100 UCT (10^18 base units each); `V_max=128, L_max=8, R_max=4`, batches ≤ 32;
 penalty 1%, lifetime cap 5%, bounty 10% capped at 1 UCT; evidence window 1,000 rounds; holds 2,000
-rounds; UC floor 3,600 s. `PolicyBounds` enforces the economic/protection bounds.
+rounds; UC floor 3,600 s (testnet profile; production 691,200 s). `PolicyBounds` enforces the economic/protection bounds.
 `StakeCustody.initialize` also enforces
 `1 <= V_max <= 128`, `1 <= L_max <= 8`, `3 <= R_max <= 4` and `1 <= maxBatch <= 32`,
 including deployment through `PosFactory`. Alternative test genesis values must obey these limits.
@@ -241,6 +269,9 @@ in `mature` is kept and tested with a test-only unbounded policy.
 | `Protection.t.sol` | captured maxima across obligations, suffix windows, closure floors, exposure commitments recomputed independently |
 | `Lifecycle.t.sol` | register, bond, reserve, acknowledge, replace, retire, mature, claim with exact accounting after every call |
 | `Evidence.t.sol` | offence identity, attribution, cutoffs, holds, caps, bounty, exclusion |
+| `PostTermEvidence.t.sol` | #1297 post-term seals: the A*/A*-1 boundary, frozen-root exemption, quorum subset and threshold, strict signatures, lineage and Closure binding, root-only refusal, one case per signer, rotation, report deadline and anchoring fail-safe |
+| `PostTermCorpus.t.sol` | the Go-signed post-term corpus replayed end to end (weighted and 16-member committees) |
+| `RetirementWindow.t.sol` | #1298: request, rotation, prepared assignment, Free reuse and rapid rounds cannot release early; both report profiles; governance reductions refused |
 | `EvidenceDigest.t.sol` | Go-produced canonical CBOR/SHA-256 pairs, vote/seal separation, signature/domain/substitution refusals |
 | `PendingClosureSpec.t.sol` | Reserved-J staging, recovery materialization, original anchors and split/replay |
 | `XRepoRecords.t.sol`, `XRepoGenesis.t.sol` | exact shared lifecycle records and genesis plan; Retirement gap described above |

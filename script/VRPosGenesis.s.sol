@@ -8,6 +8,7 @@ import {VRC} from "../src/vr/VRConstants.sol";
 import {VRCodec} from "../src/vr/VRCodec.sol";
 import {IVR} from "../src/vr/VRTypes.sol";
 import {MockRootRecords} from "../test/p85/MockRootRecords.sol";
+import {P85ReportProfile} from "./P85ReportProfile.sol";
 import {PosFactory} from "../src/p85/PosFactory.sol";
 import {StakeCustody} from "../src/p85/StakeCustody.sol";
 import {CustodyGenesis} from "../src/p85/CustodyGenesis.sol";
@@ -201,9 +202,13 @@ contract VRPosGenesis is VRGenesis {
 
     function _config(string memory json, ValidatorRegistry.Genesis memory g, address multisig)
         internal
-        pure
+        view
         returns (PosFactory.Config memory c)
     {
+        // #1297/#1298: the retirement report profile named by P85_PROFILE (default testnet; P85ReportProfile).
+        uint64 timeFloor;
+        (timeFloor, c.reportWindow, c.settlementMargin) =
+            P85ReportProfile.named(vm.envOr("P85_PROFILE", string("testnet")));
         c.network = g.network;
         c.rootNetwork = uint64(vm.parseJsonUint(json, ".pos.rootNetwork"));
         c.rootGenesis = vm.parseJsonBytes32(json, ".pos.rootGenesis");
@@ -240,7 +245,7 @@ contract VRPosGenesis is VRGenesis {
             holdNormal: 2_000,
             holdSuffix: 2_000,
             holdRetirement: 2_000,
-            timeFloor: 3_600
+            timeFloor: timeFloor
         });
         c.rewardRate = uint128(vm.parseJsonUint(json, ".pos.rewardRate"));
         c.governanceAuthority = multisig;

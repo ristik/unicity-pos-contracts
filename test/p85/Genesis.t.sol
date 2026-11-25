@@ -52,7 +52,15 @@ contract Deployer {
 
     function policy(Policy calldata p) external returns (address) {
         nonce += 1;
-        return address(new FixedPolicy(p));
+        return address(new FixedPolicy(p, 1_800, 1_800));
+    }
+
+    function policyWith(Policy calldata p, uint64 reportWindow, uint64 settlementMargin)
+        external
+        returns (address)
+    {
+        nonce += 1;
+        return address(new FixedPolicy(p, reportWindow, settlementMargin));
     }
 }
 
@@ -214,6 +222,7 @@ contract GenesisTest is P85Base {
         Evidence fresh = new Evidence(address(this));
         Manifest memory m;
         m.evidence = address(fresh);
+        m.policySource = address(new FixedPolicy(_defaultPolicy(), 1_800, 1_800));
         m.rootNetwork = uint64(type(uint16).max) + 1;
         m.rootGenesis = keccak256("g");
         vm.expectRevert(Evidence.BadRootConfig.selector);
@@ -512,6 +521,8 @@ contract GenesisTest is P85Base {
                 firstRound: 1
             }),
             policy: _defaultPolicy(),
+            reportWindow: 1_800,
+            settlementMargin: 1_800,
             rewardRate: DEFAULT_REWARD_RATE,
             governanceAuthority: governanceAuthority,
             rewardFunding: 0,
@@ -628,7 +639,7 @@ contract GenesisTest is P85Base {
         );
         deployer.policy(p);
         p = _defaultPolicy();
-        p.timeFloor = 604_801;
+        p.timeFloor = 691_201;
         vm.expectRevert(
             abi.encodeWithSelector(PolicyBounds.PolicyOutOfBounds.selector, bytes32("timeFloor"))
         );
@@ -676,11 +687,56 @@ contract GenesisTest is P85Base {
         p.holdNormal = 400;
         p.holdSuffix = 10_001;
         p.holdRetirement = 10_001;
-        p.timeFloor = 604_800;
+        p.timeFloor = 691_200;
         FixedPolicy f = FixedPolicy(deployer.policy(p));
         assertEq(f.currentPolicyID(), 1);
-        assertEq(f.policyAt(1).timeFloor, 604_800);
+        assertEq(f.policyAt(1).timeFloor, 691_200);
         vm.expectRevert(FixedPolicy.UnknownPolicy.selector);
         f.policyAt(2);
+    }
+
+    // --- #1297/#1298: the report window and settlement margin ----------------------------------------
+
+    function _refusedWith(Policy memory p, uint64 w, uint64 m, bytes32 field) internal {
+        vm.expectRevert(abi.encodeWithSelector(PolicyBounds.PolicyOutOfBounds.selector, field));
+        deployer.policyWith(p, w, m);
+    }
+
+    function test_bothReportProfilesAreValidPolicies() public {
+        Policy memory p = _defaultPolicy();
+        p.timeFloor = 3_600;
+        FixedPolicy t = FixedPolicy(deployer.policyWith(p, 1_800, 1_800));
+        assertEq(t.reportWindow(), 1_800);
+        assertEq(t.settlementMargin(), 1_800);
+        p.timeFloor = 691_200;
+        FixedPolicy prod = FixedPolicy(deployer.policyWith(p, 648_000, 43_200));
+        assertEq(prod.reportWindow(), 648_000);
+        assertEq(prod.settlementMargin(), 43_200);
+        assertEq(prod.policy().timeFloor, PolicyBounds.MAX_FLOOR);
+    }
+
+    function test_theTimeFloorMustCoverTheReportWindowAndTheMargin() public {
+        Policy memory p = _defaultPolicy();
+        p.timeFloor = 3_600;
+        _refusedWith(p, 1_800, 1_801, "timeFloor<report+settlement");
+        _refusedWith(p, 1_801, 1_800, "timeFloor<report+settlement");
+        p.timeFloor = 691_199;
+        _refusedWith(p, 648_000, 43_200, "timeFloor<report+settlement");
+        p.timeFloor = 604_800; // the old 7-day ceiling cannot carry the production window
+        _refusedWith(p, 648_000, 43_200, "timeFloor<report+settlement");
+    }
+
+    function test_theReportWindowAndMarginAreBounded() public {
+        Policy memory p = _defaultPolicy();
+        p.timeFloor = 691_200;
+        _refusedWith(p, 1_799, 1_800, "reportWindow");
+        _refusedWith(p, 648_001, 1_800, "reportWindow");
+        _refusedWith(p, 1_800, 1_799, "settlementMargin");
+        _refusedWith(p, 1_800, 43_201, "settlementMargin");
+    }
+
+    function test_evidenceTakesTheReportWindowOfItsPolicySource() public view {
+        assertEq(evidence.reportWindow(), factory.POLICY().reportWindow());
+        assertEq(factory.POLICY().reportWindow(), 1_800);
     }
 }

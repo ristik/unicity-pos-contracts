@@ -196,50 +196,14 @@ contract StakeCustody is CustodyStorage {
         p.stagedRootKeyHash = keyHash;
     }
 
-    /// @notice The owner proposes a role tuple at the exact current role nonce. Every nominated
-    /// holder must accept; replacing the withdrawal authority also needs the current withdrawal
-    /// authority's consent, given by calling `acceptRoles` as that authority.
-    function proposeRoles(uint64 id, address newOwner, address newWithdrawal, uint64 nonce)
-        external
-        whenInitialized
-    {
-        Position storage p = _owned(id);
-        if (nonce != p.roleNonce) revert RoleNonceMismatch();
-        if (newOwner == address(0) || newWithdrawal == address(0)) revert ZeroAddress();
-        uint8 required = 0;
-        if (newOwner != p.owner) required |= ROLE_BIT_OWNER;
-        if (newWithdrawal != p.withdrawal) required |= ROLE_BIT_WITHDRAWAL | ROLE_BIT_CONSENT;
-        if (required == 0) revert NoRoleChange();
-        _pendingRoles[id] = PendingRoles(newOwner, newWithdrawal, nonce, required, 0);
-        emit RolesProposed(id, newOwner, newWithdrawal, nonce);
+    /// @notice Role changes (CustodyGenesis.proposeRoles / acceptRoles, run in this storage): the owner proposes a role tuple at the
+    /// exact current role nonce; every nominated holder and, for a withdrawal change, the current withdrawal authority accept it.
+    function proposeRoles(uint64, address, address, uint64) external {
+        _delegate();
     }
 
-    /// @notice A nominated holder accepts (or the current withdrawal authority consents); once
-    /// every required acceptance is in, the tuple installs atomically. Calldata binds both nominated
-    /// addresses, so replacing a pending proposal cannot redirect an already prepared acceptance.
-    /// Existing credits keep their creditor.
-    function acceptRoles(uint64 id, uint64 nonce, address newOwner, address newWithdrawal)
-        external
-        whenInitialized
-    {
-        Position storage p = positions[id];
-        PendingRoles storage r = _pendingRoles[id];
-        if (r.required == 0 || r.nonce != nonce) revert NoPendingRoles();
-        if (nonce != p.roleNonce) revert RoleNonceMismatch();
-        if (newOwner != r.newOwner || newWithdrawal != r.newWithdrawal) revert RoleTupleMismatch();
-        uint8 bits = 0;
-        if (msg.sender == r.newOwner) bits |= ROLE_BIT_OWNER;
-        if (msg.sender == r.newWithdrawal) bits |= ROLE_BIT_WITHDRAWAL;
-        if (msg.sender == p.withdrawal) bits |= ROLE_BIT_CONSENT;
-        bits &= r.required;
-        if (bits == 0) revert NotNominated();
-        r.given |= bits;
-        if (r.given != r.required) return;
-        p.owner = r.newOwner;
-        p.withdrawal = r.newWithdrawal;
-        p.roleNonce++;
-        emit RolesAccepted(id, r.newOwner, r.newWithdrawal, nonce);
-        delete _pendingRoles[id];
+    function acceptRoles(uint64, uint64, address, address) external {
+        _delegate();
     }
 
     /// @notice Request full-generation retirement. It stops new lots and future primary
@@ -252,7 +216,7 @@ contract StakeCustody is CustodyStorage {
         VRLiability.load().facts[id][p.generation].requested = true; // sticky (design 3.9.2)
         uint256[] storage ids = _generationLots[id][p.generation];
         for (uint256 i = 0; i < ids.length; ++i) {
-            Lot storage l = lots[ids[i]];
+            Lot storage l = _lots[ids[i]];
             if (l.category == CAT_FREE) _move(l, CAT_DRAINING);
         }
         emit RetirementRequested(id, p.generation);
@@ -275,6 +239,12 @@ contract StakeCustody is CustodyStorage {
     }
 
     function reserveCandidate(ReserveInput calldata) external returns (bytes32) {
+        _delegate();
+    }
+
+    /// @notice Capture a closed term's report anchors (#1297/#1298; CustodyGenesis.anchorTerm): permissionless, once the term's
+    /// successor root epoch is installed; the caller opens the applied Closure's key with its H RecordID and terminal root.
+    function anchorTerm(bytes32, bytes32, bytes32) external {
         _delegate();
     }
 
@@ -471,7 +441,8 @@ contract StakeCustody is CustodyStorage {
         s.state = SESSION_RECOVERED;
         if (pendingAssignment == s.assignmentID) {
             pendingAssignment = bytes32(0);
-            _closeActive(s.assignmentID, j.closureKey, j.hRound, j.pClose, j.tClose, j);
+            // J's lots counted the closed term when its Closure was staged
+            _closeActive(s.assignmentID, j.closureKey, j.hRound, j.pClose, j.tClose, j, false);
         }
         _unlockIncumbent(s.incumbentAssignmentID);
     }
@@ -501,9 +472,10 @@ contract StakeCustody is CustodyStorage {
             abi.encode(CLOSURE_DOMAIN, a.rootEpoch, d.hRecordID, d.hRound, d.terminalRoot)
         );
         if (a.state == ASSIGN_ACTIVE) {
-            _closeActive(d.assignmentID, key, d.hRound, pClose, tClose, a);
+            _closeActive(d.assignmentID, key, d.hRound, pClose, tClose, a, true);
         } else if (pendingAssignment == bytes32(0)) {
             pendingAssignment = d.assignmentID;
+            _countUnanchored(d.assignmentID, a);
             a.closureKey = key;
             a.hRound = d.hRound;
             a.pClose = pClose;
@@ -519,7 +491,8 @@ contract StakeCustody is CustodyStorage {
         uint64 hRound,
         uint64 pClose,
         uint64 tClose,
-        Assignment storage a
+        Assignment storage a,
+        bool count
     ) private {
         if (a.closed) {
             if (a.closureKey != key) revert ConflictingClosure();
@@ -546,7 +519,7 @@ contract StakeCustody is CustodyStorage {
             for (uint256 i = 0; i < seats.length; ++i) {
                 (uint64 id, uint64 generation, uint256 lotID) = _seatLot(seats[i]);
                 _raiseAnchor(id, generation, anchor);
-                _raiseFloors(lots[lotID], holdUntil, evidenceUntil, timeUntil);
+                _raiseFloors(_lots[lotID], holdUntil, evidenceUntil, timeUntil, count);
             }
             _releaseSlate(assignmentID, false);
         } else {
@@ -554,7 +527,7 @@ contract StakeCustody is CustodyStorage {
                 Exposure storage e = exposures[a.exposureIDs[i]];
                 _raiseAnchor(e.id, e.generation, anchor);
                 for (uint256 j = 0; j < e.lotIDs.length; ++j) {
-                    _raiseFloors(lots[e.lotIDs[j]], holdUntil, evidenceUntil, timeUntil);
+                    _raiseFloors(_lots[e.lotIDs[j]], holdUntil, evidenceUntil, timeUntil, count);
                 }
                 _releaseIfClear(e);
             }
@@ -574,10 +547,34 @@ contract StakeCustody is CustodyStorage {
         }
     }
 
-    function _raiseFloors(Lot storage l, uint64 hold, uint64 window, uint64 time) private {
+    /// @dev A closing term's floors from its record anchors; `count`: the term starts awaiting its report anchors here (`anchorTerm`,
+    /// #1297/#1298).
+    function _raiseFloors(Lot storage l, uint64 hold, uint64 window, uint64 time, bool count)
+        private
+    {
         if (hold > l.holdUntil) l.holdUntil = hold;
         if (window > l.evidenceUntil) l.evidenceUntil = window;
         if (time > l.timeUntil) l.timeUntil = time;
+        if (count) l.unanchoredTerms++;
+    }
+
+    /// @dev A staged Closure of the Reserved J: its lots await the term's report anchors from now (the RecoveryAck that closes J adds
+    /// no write per lot, inside the record callback's gas budget).
+    function _countUnanchored(bytes32 assignmentID, Assignment storage a) private {
+        if (_compact()) {
+            uint256[] storage seats = _seats[_source(assignmentID)];
+            for (uint256 i = 0; i < seats.length; ++i) {
+                (,, uint256 lotID) = _seatLot(seats[i]);
+                _lots[lotID].unanchoredTerms++;
+            }
+        } else {
+            for (uint256 i = 0; i < a.exposureIDs.length; ++i) {
+                uint256[] storage ids = exposures[a.exposureIDs[i]].lotIDs;
+                for (uint256 j = 0; j < ids.length; ++j) {
+                    _lots[ids[j]].unanchoredTerms++;
+                }
+            }
+        }
     }
 
     function _importRetirement(RetirementData memory d, uint64 pRet, uint64 tRet) private {
@@ -621,7 +618,7 @@ contract StakeCustody is CustodyStorage {
             assignmentID = exposures[exposureID].assignmentID;
         }
         penaltyApplied[caseID][lotID] = true;
-        Lot storage l = lots[lotID];
+        Lot storage l = _lots[lotID];
         Policy memory terms = policyTerms(assignmentID);
         uint256 budgetLeft = c.budget - caseDebited[caseID];
         uint256 capRoom = (uint256(l.initial) * l.capBps) / BPS - l.penalized;
@@ -675,10 +672,11 @@ contract StakeCustody is CustodyStorage {
     }
 
     function _matureLot(uint256 lotID, uint64 p, uint64 t) private {
-        Lot storage l = lots[lotID];
+        Lot storage l = _lots[lotID];
         if (l.id == 0) revert LotUnknown();
         if (l.category == CAT_RELEASED) revert LotAlreadyReleased();
         if (l.refCount != 0) revert LotStillReferenced();
+        if (l.unanchoredTerms != 0) revert TermAnchorPending();
         RetirementInfo storage info = retirements[l.id][l.generation];
         if (!info.imported) revert RetirementNotImported();
         if (IEvidence(evidence).pendingHolds(lotID) != 0) revert EvidenceHoldPending();
@@ -756,7 +754,7 @@ contract StakeCustody is CustodyStorage {
             VRLiability.Facts storage f = VRLiability.load().facts[id][generation];
             f.liveExposures--;
             f.lotReferences--;
-            _unreference(lots[lotID], positions[id]);
+            _unreference(_lots[lotID], positions[id]);
         }
     }
 
@@ -784,7 +782,7 @@ contract StakeCustody is CustodyStorage {
         _legacyLiveExposures[e.id][e.generation]--;
         Position storage p = positions[e.id];
         for (uint256 i = 0; i < e.lotIDs.length; ++i) {
-            _unreference(lots[e.lotIDs[i]], p);
+            _unreference(_lots[e.lotIDs[i]], p);
         }
         _writeFacts(e.id, e.generation);
     }
@@ -820,6 +818,49 @@ contract StakeCustody is CustodyStorage {
     {
         bytes32 source = _source(assignmentID);
         return _readSeat(assignmentID, source, _seats[source][ordinal]);
+    }
+
+    /// @notice A lot's fields (the unanchored-term count has its own getter, so this tuple is unchanged).
+    function lots(uint256 lotID)
+        external
+        view
+        returns (
+            uint64 id,
+            uint64 generation,
+            uint128 initial,
+            uint128 remaining,
+            uint128 penalized,
+            uint8 category,
+            uint16 capBps,
+            uint32 refCount,
+            uint64 holdRetirement,
+            uint64 timeFloor,
+            uint64 holdUntil,
+            uint64 evidenceUntil,
+            uint64 timeUntil
+        )
+    {
+        Lot storage l = _lots[lotID];
+        return (
+            l.id,
+            l.generation,
+            l.initial,
+            l.remaining,
+            l.penalized,
+            l.category,
+            l.capBps,
+            l.refCount,
+            l.holdRetirement,
+            l.timeFloor,
+            l.holdUntil,
+            l.evidenceUntil,
+            l.timeUntil
+        );
+    }
+
+    /// @notice Closed terms of the lot still awaiting their report anchors; the lot cannot mature until zero.
+    function lotUnanchoredTerms(uint256 lotID) external view returns (uint32) {
+        return _lots[lotID].unanchoredTerms;
     }
 
     function generationLots(uint64 id, uint64 generation) external view returns (uint256[] memory) {

@@ -640,6 +640,9 @@ contract PendingClosureSpecTest is P85Flow {
         vm.prank(vm.addr(ownerPk(0)));
         custody.requestRetirement(gid(0));
         applyAll();
+        anchorClosed(GENESIS_ASSIGNMENT, "genesis");
+        anchorClosed(ASG_J, "j");
+        anchorClosed(ASG_K, "k");
         clock(210, 1_600);
         pushRecord(
             RecordKind.Retirement,

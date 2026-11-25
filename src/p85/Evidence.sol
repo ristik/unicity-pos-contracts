@@ -6,7 +6,15 @@ pragma solidity 0.8.37;
 // forge-lint: disable-start(require-revert-in-loop, calls-loop)
 
 import {AssignmentSeat, Manifest, Policy} from "./P85Types.sol";
-import {IRootRecords, IStakeCustody, IElectionPolicy, CaseView} from "./IP85.sol";
+import {
+    IRootRecords,
+    IStakeCustody,
+    IElectionPolicy,
+    IPolicySource,
+    ISealHistory,
+    SealEpoch,
+    CaseView
+} from "./IP85.sol";
 import {KeyLib} from "./KeyLib.sol";
 import {RootVoteCbor} from "./RootVoteCbor.sol";
 
@@ -24,12 +32,25 @@ import {RootVoteCbor} from "./RootVoteCbor.sol";
 /// atomically; settlement debits ascending lots through StakeCustody and removes each hold once its
 /// work is done. Evidence protection is option A: the complete valid pair must execute as an
 /// ordinary EVM transaction by the inclusive cutoff.
+///
+/// The second offence (#1297) is a post-term seal: a quorum of ROOT epoch e's installed committee signed a native seal of commit epoch e
+/// at a commit round at or after the installed successor's start, over a root other than the authenticated handoff root R_H of e's
+/// applied Closure. Every seal over R_H is exempt (H's own late commit and the honest frozen-root suffix). One submission charges one
+/// signer of the verified quorum subset, through the custody term of epoch e. Root-only terms (no custody assignment for e, or a successor
+/// activated by another H) and scheme 1 epochs are not attributable in this version and fail closed.
 contract Evidence {
-    bytes32 internal constant OFFENCE_DOMAIN = keccak256("unicity.p85.offence");
+    /// @dev v2: typed by offence kind and bound to the deployment, chain, this contract and the root network and genesis (#1297).
+    bytes32 internal constant OFFENCE_DOMAIN = keccak256("unicity.p85.offence.v2");
     bytes32 internal constant CASE_DOMAIN = keccak256("unicity.p85.case");
 
     uint8 public constant DOMAIN_ROOT = 1;
     uint8 public constant DOMAIN_EVM = 2;
+    uint8 public constant KIND_EQUIVOCATION = 1;
+    uint8 public constant KIND_POST_TERM = 2;
+    /// @dev The B1 signing scheme of the domain-bound scheme 2 votes and seals.
+    uint64 internal constant SCHEME_2 = 2;
+    /// @dev The largest quorum subset one submission may carry (N_verify of the B1 registry).
+    uint256 public constant MAX_QUORUM = 16;
 
     error NotFactory();
     error AlreadyInitialized();
@@ -58,6 +79,16 @@ contract Evidence {
     error SealSignatureMissing();
     error SealSignatureForbidden();
     error EvmEvidenceUndefined();
+    error BadQuorum();
+    error QuorumTooSmall();
+    error SuccessorUnknown();
+    error UnsupportedScheme();
+    error NotPostTerm();
+    error TermNotClosed();
+    error TermNotAnchored();
+    error RootOnlyTerm();
+    error HandoffMismatch();
+    error FrozenRoot();
 
     event Initialized(bytes32 manifestHash);
     event EvidenceAccepted(
@@ -74,7 +105,7 @@ contract Evidence {
     /// @notice One signed ROOT vote statement (scheme 2): the typed fields of the vote besides the header's voting epoch and round.
     /// `timestamp` is the proposal time and is signed exactly when non-zero. A committing vote names the committed state hash and round and the
     /// native seal it signs (commit epoch and timestamp); a non-committing vote leaves all of those zero. `signature` is the vote signature
-    /// (64 bytes r||s, or 65 with v in {0, 1}, low s) over sha256(PV); `sealSignature` is the committing vote's signature over the native
+    /// (65 bytes r||s||v, v in {0, 1} the recovery parity, low s: KeyLib.verifyNative) over sha256(PV); `sealSignature` is the committing vote's signature over the native
     /// seal bytes and must be empty otherwise. Neither stands in for the other.
     struct SignedVote {
         uint64 parent;
@@ -93,6 +124,28 @@ contract Evidence {
     struct EvmVote {
         bytes32 payload;
         bytes signature;
+    }
+
+    /// @notice A native tag-39005 v1 seal of commit epoch `epoch` and its VoteInfo opening (#1297). The verifier rebuilds
+    /// VI = C([N, Dv, epoch, votingRound, parent, exec(, timestamp)]) under the installed N and Dv = "root-vote/" + hex(G), sets
+    /// PreviousHash = sha256(VI) and rebuilds the seal bytes C(39005([1, N, commitRound, epoch, commitTimestamp, PreviousHash, commitHash,
+    /// null])). The statement is a committing scheme 2 one: parent < votingRound and 0 < commitRound < votingRound.
+    struct PostTermSeal {
+        uint64 epoch;
+        uint64 votingRound;
+        uint64 parent;
+        bytes32 exec;
+        uint64 timestamp;
+        uint64 commitRound; // the seal's RootChainRoundNumber, compared with the successor's start
+        uint64 commitTimestamp;
+        bytes32 commitHash; // the seal's Hash
+    }
+
+    /// @notice A quorum subset of epoch `epoch`'s installed members: strictly increasing member indices (at most MAX_QUORUM) and one
+    /// signature each over sha256(seal bytes). Every signature must verify; a bad, unknown or repeated entry refuses the submission.
+    struct SealQuorum {
+        uint8[] members;
+        bytes[] signatures;
     }
 
     struct VoteHeader {
@@ -125,6 +178,8 @@ contract Evidence {
     /// @notice The root consensus' numeric network N and genesis identity G, pinned by the manifest: the signed vote domain derives from them.
     uint64 public rootNetwork;
     bytes32 public rootGenesis;
+    /// @notice The post-term report window (UC seconds), the policy source's deployment immutable (#1297).
+    uint64 public reportWindow;
 
     mapping(bytes32 => Case) internal _cases;
     mapping(bytes32 => bool) public offenceSeen;
@@ -161,6 +216,7 @@ contract Evidence {
         }
         rootNetwork = m.rootNetwork;
         rootGenesis = m.rootGenesis;
+        reportWindow = IPolicySource(m.policySource).reportWindow();
         emit Initialized(manifestHash_);
     }
 
@@ -271,11 +327,67 @@ contract Evidence {
         }
     }
 
-    /// @notice Canonical offence ID: independent of signatures and statement order.
-    function offenceIDOf(VoteHeader calldata h) public pure returns (bytes32) {
+    /// @notice Canonical equivocation offence ID: independent of signatures and statement order; typed by kind and bound to this
+    /// deployment, chain, contract and root network and genesis.
+    function offenceIDOf(VoteHeader calldata h) public view returns (bytes32) {
         return keccak256(
             abi.encode(
-                OFFENCE_DOMAIN, h.network, h.domain, keccak256(h.key), h.votingEpoch, h.votingRound
+                OFFENCE_DOMAIN,
+                KIND_EQUIVOCATION,
+                h.network,
+                block.chainid,
+                address(this),
+                rootNetwork,
+                rootGenesis,
+                h.domain,
+                keccak256(h.key),
+                h.votingEpoch,
+                h.votingRound
+            )
+        );
+    }
+
+    /// @notice Canonical post-term offence ID of one charged key: the native seal digest and the charged key hash under the typed,
+    /// deployment-bound domain. Reporter, signatures, quorum subset, seat ordinal and order are not part of it.
+    function postTermOffenceID(uint64 epoch, bytes32 sealDigest, bytes32 keyHash)
+        public
+        view
+        returns (bytes32)
+    {
+        return keccak256(
+            abi.encode(
+                OFFENCE_DOMAIN,
+                KIND_POST_TERM,
+                network,
+                block.chainid,
+                address(this),
+                rootNetwork,
+                rootGenesis,
+                DOMAIN_ROOT,
+                epoch,
+                sealDigest,
+                keyHash
+            )
+        );
+    }
+
+    /// @notice sha256 of the native seal bytes the post-term statement rebuilds (no PV signature or QC envelope is involved).
+    function postTermSealDigest(PostTermSeal calldata s) public view returns (bytes32) {
+        uint64 n = rootNetwork;
+        bytes32 vh = sha256(
+            RootVoteCbor.voteInfo(
+                n,
+                RootVoteCbor.voteDomain(rootGenesis),
+                s.epoch,
+                s.votingRound,
+                s.parent,
+                s.exec,
+                s.timestamp
+            )
+        );
+        return sha256(
+            RootVoteCbor.sealSigBytes(
+                n, s.commitRound, s.epoch, s.commitTimestamp, vh, s.commitHash
             )
         );
     }
@@ -289,14 +401,10 @@ contract Evidence {
         bytes32 exposureID
     ) external whenInitialized returns (bytes32 caseID) {
         _verifyEvidence(h, a, b);
-        // This lookup needs only the assignment, staking ID and historical root key.
-        // forge-lint: disable-start(unused-return)
-        (bytes32 assignmentID, uint64 id,,,, bytes32 rootKeyHash,,,,) =
-            custody.exposures(exposureID);
-        // forge-lint: disable-end(unused-return)
-        if (assignmentID == bytes32(0)) revert ExposureUnknown();
+        (bytes32 assignmentID, uint64 id, bytes32 rootKeyHash) = _exposure(exposureID);
+        _attributeVote(h, assignmentID, rootKeyHash);
         return
-            _admit(h, exposureID, assignmentID, id, rootKeyHash, custody.exposureLots(exposureID));
+            _admit(offenceIDOf(h), exposureID, assignmentID, id, custody.exposureLots(exposureID));
     }
 
     /// @notice Submit evidence by ordered seat locator and authenticate the claimed exposure ID.
@@ -309,14 +417,146 @@ contract Evidence {
         bytes32 exposureID
     ) external whenInitialized returns (bytes32 caseID) {
         _verifyEvidence(h, a, b);
+        AssignmentSeat memory m = _seat(assignmentID, ordinal, exposureID);
+        _attributeVote(h, assignmentID, m.binding.rootKeyHash);
+        caseID = _admitSeat(offenceIDOf(h), exposureID, assignmentID, ordinal, m);
+    }
+
+    /// @notice Admit a post-term seal offence (#1297) against the historical exposure of the charged key's epoch-e assignment
+    /// (legacy layout: every lot of the exposure).
+    function submitPostTermEvidence(
+        PostTermSeal calldata s,
+        SealQuorum calldata q,
+        bytes32 exposureID
+    ) external whenInitialized returns (bytes32 caseID) {
+        (bytes32 assignmentID, uint64 id, bytes32 rootKeyHash) = _exposure(exposureID);
+        bytes32 offenceID = _verifyPostTerm(s, q, assignmentID, rootKeyHash);
+        return _admit(offenceID, exposureID, assignmentID, id, custody.exposureLots(exposureID));
+    }
+
+    /// @notice Admit a post-term seal offence (#1297) by the exact seat of the charged key in its epoch-e assignment (compact layout:
+    /// the seat's lot).
+    function submitPostTermSeatEvidence(
+        PostTermSeal calldata s,
+        SealQuorum calldata q,
+        bytes32 assignmentID,
+        uint256 ordinal,
+        bytes32 exposureID
+    ) external whenInitialized returns (bytes32 caseID) {
+        AssignmentSeat memory m = _seat(assignmentID, ordinal, exposureID);
+        bytes32 offenceID = _verifyPostTerm(s, q, assignmentID, m.binding.rootKeyHash);
+        caseID = _admitSeat(offenceID, exposureID, assignmentID, ordinal, m);
+    }
+
+    function _exposure(bytes32 exposureID)
+        private
+        view
+        returns (bytes32 assignmentID, uint64 id, bytes32 rootKeyHash)
+    {
+        // This lookup needs only the assignment, staking ID and historical root key.
+        // forge-lint: disable-start(unused-return)
+        (assignmentID, id,,,, rootKeyHash,,,,) = custody.exposures(exposureID);
+        // forge-lint: disable-end(unused-return)
+        if (assignmentID == bytes32(0)) revert ExposureUnknown();
+    }
+
+    function _seat(bytes32 assignmentID, uint256 ordinal, bytes32 exposureID)
+        private
+        view
+        returns (AssignmentSeat memory m)
+    {
         if (ordinal >= custody.assignmentSeatCount(assignmentID)) revert ExposureUnknown();
-        AssignmentSeat memory m = custody.assignmentSeat(assignmentID, ordinal);
+        m = custody.assignmentSeat(assignmentID, ordinal);
         if (m.exposureID != exposureID) revert ExposureUnknown();
+    }
+
+    function _admitSeat(
+        bytes32 offenceID,
+        bytes32 exposureID,
+        bytes32 assignmentID,
+        uint256 ordinal,
+        AssignmentSeat memory m
+    ) private returns (bytes32 caseID) {
         uint256[] memory lotIDs = new uint256[](1);
         lotIDs[0] = m.lotID;
-        caseID = _admit(h, exposureID, assignmentID, m.binding.id, m.binding.rootKeyHash, lotIDs);
+        caseID = _admit(offenceID, exposureID, assignmentID, m.binding.id, lotIDs);
         _caseAssignments[caseID] = assignmentID;
         _caseOrdinals[caseID] = ordinal;
+    }
+
+    /// @dev The post-term statement (#1297), checked against installed and authenticated state only:
+    /// - the committing scheme 2 shape, and the native seal digest rebuilt under the installed N and G;
+    /// - installed consecutive epochs e and e+1 with end[e] == start[e+1], e signing with scheme 2;
+    /// - the offence: commitRound >= start[e+1] (equality counts) and Hash != R_H;
+    /// - attribution: the custody assignment of root epoch e, closed by its applied Closure whose H RecordID activated e+1 and whose
+    ///   ordered round precedes start[e+1], with its report anchors captured;
+    /// - the deadline: progress <= p0 + suffixEvidenceWindow OR UC time <= t0 + reportWindow (both inclusive);
+    /// - one verified quorum subset of e's members holding the charged key.
+    function _verifyPostTerm(
+        PostTermSeal calldata s,
+        SealQuorum calldata q,
+        bytes32 assignmentID,
+        bytes32 keyHash
+    ) private view returns (bytes32 offenceID) {
+        if (s.votingRound == 0 || s.parent >= s.votingRound) {
+            revert BadStatement();
+        }
+        if (s.commitRound == 0 || s.commitRound >= s.votingRound) revert BadStatement();
+        ISealHistory reg = ISealHistory(address(roots));
+        SealEpoch memory pre = reg.sealEpoch(s.epoch);
+        SealEpoch memory succ = reg.sealEpoch(s.epoch + 1);
+        if (!pre.present || !succ.present || !pre.hasEnd || pre.end != succ.start) {
+            revert SuccessorUnknown();
+        }
+        if (pre.signingScheme != SCHEME_2) revert UnsupportedScheme();
+        if (s.commitRound < succ.start) revert NotPostTerm();
+
+        Asg memory a = _assignment(assignmentID);
+        if (a.rootEpoch != s.epoch) revert EpochMismatch();
+        if (!a.closed) revert TermNotClosed();
+        (bytes32 terminalRoot, bytes32 hRecordID, uint64 p0, uint64 t0, bool anchored) =
+            custody.termAnchors(assignmentID);
+        if (!anchored) revert TermNotAnchored();
+        if (hRecordID != succ.activationCommitID) revert RootOnlyTerm();
+        if (a.hRound >= succ.start) revert HandoffMismatch();
+        if (s.commitHash == terminalRoot) revert FrozenRoot();
+        Policy memory terms = custody.policyTerms(assignmentID);
+        if (
+            roots.progress() > uint256(p0) + terms.suffixEvidenceWindow
+                && roots.ucTime() > uint256(t0) + reportWindow
+        ) revert EvidenceLate();
+
+        bytes32 digest = postTermSealDigest(s);
+        _verifyQuorum(reg, s.epoch, pre.totalWeight, digest, q, keyHash);
+        offenceID = postTermOffenceID(s.epoch, digest, keyHash);
+    }
+
+    /// @dev One strictly increasing subset of epoch e's member indices, every signature valid under the strict native rule, the checked
+    /// weight sum at least floor(2 * total / 3) + 1, and the charged key among the signers.
+    function _verifyQuorum(
+        ISealHistory reg,
+        uint64 epoch,
+        uint64 totalWeight,
+        bytes32 digest,
+        SealQuorum calldata q,
+        bytes32 keyHash
+    ) private view {
+        uint256 count = q.members.length;
+        if (count == 0 || count > MAX_QUORUM || q.signatures.length != count) revert BadQuorum();
+        uint256 weight = 0;
+        bool charged = false;
+        for (uint256 i = 0; i < count; ++i) {
+            if (i != 0 && q.members[i] <= q.members[i - 1]) revert BadQuorum();
+            // an index beyond the installed members reverts in the registry
+            (bytes memory key, uint64 w) = reg.sealMember(epoch, q.members[i]);
+            if (!KeyLib.verifyNative(KeyLib.toAddress(key), digest, q.signatures[i])) {
+                revert BadSignature();
+            }
+            weight += w;
+            if (keccak256(key) == keyHash) charged = true;
+        }
+        if (!charged) revert KeyMismatch();
+        if (weight < (uint256(totalWeight) * 2) / 3 + 1) revert QuorumTooSmall();
     }
 
     function _verifyEvidence(VoteHeader calldata h, SignedVote calldata a, SignedVote calldata b)
@@ -344,24 +584,29 @@ contract Evidence {
         revert EvmEvidenceUndefined();
     }
 
-    function _admit(
-        VoteHeader calldata h,
-        bytes32 exposureID,
-        bytes32 assignmentID,
-        uint64 identity,
-        bytes32 rootKeyHash,
-        uint256[] memory lotIDs
-    ) private returns (bytes32 caseID) {
-        bytes32 offenceID = offenceIDOf(h);
-        if (offenceSeen[offenceID]) revert DuplicateOffence();
+    /// @dev The equivocation's attribution and deadline: a non-aborted assignment of the voting epoch holding the exact key, timely.
+    function _attributeVote(VoteHeader calldata h, bytes32 assignmentID, bytes32 rootKeyHash)
+        private
+        view
+    {
+        if (offenceSeen[offenceIDOf(h)]) revert DuplicateOffence();
         Asg memory asg = _assignment(assignmentID);
         if (asg.state == 3) revert NotAttributable();
         // only the root domain is admitted (submitEvmEvidence is fail-closed)
         if (keccak256(h.key) != rootKeyHash) revert KeyMismatch();
         if (h.votingEpoch != asg.rootEpoch) revert EpochMismatch();
-        Policy memory terms = custody.policyTerms(assignmentID);
-        _requireTimely(h.votingRound, asg, terms);
+        _requireTimely(h.votingRound, asg, custody.policyTerms(assignmentID));
+    }
 
+    function _admit(
+        bytes32 offenceID,
+        bytes32 exposureID,
+        bytes32 assignmentID,
+        uint64 identity,
+        uint256[] memory lotIDs
+    ) private returns (bytes32 caseID) {
+        if (offenceSeen[offenceID]) revert DuplicateOffence();
+        Policy memory terms = custody.policyTerms(assignmentID);
         offenceSeen[offenceID] = true;
         caseID =
             keccak256(abi.encode(CASE_DOMAIN, network, block.chainid, address(this), offenceID));
@@ -491,6 +736,8 @@ contract Evidence {
     /// @notice Release status of a lot from authenticated state only: references, imported
     /// retirement, round/evidence/time gates and accepted-case holds. No off-chain receipt or
     /// clearance exists. The lot matures once every gate below is met and no hold is pending.
+    /// While a closed term of the lot awaits its report anchors (#1297/#1298) its time gate is not
+    /// determined yet and `timeUntil` reads as type(uint64).max.
     function releaseState(uint256 lotID)
         external
         view
@@ -526,6 +773,7 @@ contract Evidence {
         evidenceUntil = evidenceUntilLot;
         timeUntil = tRet + timeFloor;
         if (timeUntilLot > timeUntil) timeUntil = timeUntilLot;
+        if (custody.lotUnanchoredTerms(lotID) != 0) timeUntil = type(uint64).max;
         holds = _holds[lotID];
     }
 

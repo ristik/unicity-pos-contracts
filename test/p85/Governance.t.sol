@@ -102,18 +102,22 @@ contract GovernanceTest is P85Flow {
         Policy memory p = _defaultPolicy();
         uint128 overRate = gov.MAX_REWARD_RATE() + 1;
         vm.expectRevert(GovernanceParams.ZeroAddress.selector);
-        new GovernanceParams(p, 0, address(0), address(election), address(roots));
+        new GovernanceParams(p, 0, address(0), address(election), address(roots), 1_800, 1_800);
         vm.expectRevert(GovernanceParams.ZeroAddress.selector);
-        new GovernanceParams(p, 0, governanceAuthority, address(0), address(roots));
+        new GovernanceParams(p, 0, governanceAuthority, address(0), address(roots), 1_800, 1_800);
         vm.expectRevert(GovernanceParams.ZeroAddress.selector);
-        new GovernanceParams(p, 0, governanceAuthority, address(election), address(0));
+        new GovernanceParams(p, 0, governanceAuthority, address(election), address(0), 1_800, 1_800);
         vm.expectRevert(GovernanceParams.RewardRateOutOfBounds.selector);
-        new GovernanceParams(p, overRate, governanceAuthority, address(election), address(roots));
+        new GovernanceParams(
+            p, overRate, governanceAuthority, address(election), address(roots), 1_800, 1_800
+        );
         p.penaltyBps = 201;
         vm.expectRevert(
             abi.encodeWithSelector(PolicyBounds.PolicyOutOfBounds.selector, bytes32("penaltyBps"))
         );
-        new GovernanceParams(p, 0, governanceAuthority, address(election), address(roots));
+        new GovernanceParams(
+            p, 0, governanceAuthority, address(election), address(roots), 1_800, 1_800
+        );
     }
 
     // --- queue -----------------------------------------------------------------------------------

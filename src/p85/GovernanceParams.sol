@@ -71,6 +71,9 @@ contract GovernanceParams is IPolicySource, IGovernance {
     /// @dev The immutable rate bound: at most 10 UCT per 1,000 progress units (1 UCT = 10^18 base units).
     uint128 public constant MAX_REWARD_RATE = 10 ether;
 
+    /// @notice The post-term report window and its settlement margin (UC seconds, deployment immutables, IPolicySource).
+    uint64 public immutable reportWindow;
+    uint64 public immutable settlementMargin;
     address public immutable AUTHORITY;
     address public immutable ELECTION;
     IRootRecords public immutable ROOTS;
@@ -81,16 +84,22 @@ contract GovernanceParams is IPolicySource, IGovernance {
     Proposal private _pending;
 
     /// @param initial the genesis snapshot (policy ID 1, effective from progress 0).
+    /// @param reportWindow_ the post-term report window and @param settlementMargin_ its settlement margin (UC seconds, deployment
+    /// immutables): every snapshot, the genesis one included, must keep `timeFloor >= reportWindow_ + settlementMargin_`.
     constructor(
         Policy memory initial,
         uint128 initialRewardRate,
         address authority,
         address election,
-        address roots
+        address roots,
+        uint64 reportWindow_,
+        uint64 settlementMargin_
     ) {
         if (authority == address(0) || election == address(0) || roots == address(0)) {
             revert ZeroAddress();
         }
+        reportWindow = reportWindow_;
+        settlementMargin = settlementMargin_;
         _validate(initial, initialRewardRate);
         AUTHORITY = authority;
         ELECTION = election;
@@ -231,8 +240,8 @@ contract GovernanceParams is IPolicySource, IGovernance {
         s = _snapshots[policyID];
     }
 
-    function _validate(Policy memory p, uint128 rate) private pure {
-        PolicyBounds.validate(p);
+    function _validate(Policy memory p, uint128 rate) private view {
+        PolicyBounds.validate(p, reportWindow, settlementMargin);
         if (rate > MAX_REWARD_RATE) revert RewardRateOutOfBounds();
     }
 

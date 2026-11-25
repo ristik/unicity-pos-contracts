@@ -53,25 +53,25 @@ library KeyLib {
     uint256 internal constant N =
         0xFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFEBAAEDCE6AF48A03BBFD25E8CD0364141;
 
-    /// @notice True iff `signature` is a native consensus signature of `digest` by the key whose address is `expected` (from `toAddress`).
-    /// Native signatures are 64 bytes r||s, or 65 bytes r||s||v with v in {0, 1} (the roots' signer and verifier discard v and never match
-    /// the recovery parity), so the signer is recovered under both parities and either must equal `expected`. s must be in the lower half
-    /// order and r in [1, n-1]; any other shape or range is false. No signed-message prefix is applied.
+    /// @notice True iff `signature` is a native consensus signature of `digest` by the key whose address is `expected` (from `toAddress`),
+    /// under the upstream seal rule (bft-core b1ref/votesig) used for every P85 evidence statement: exactly 65 bytes r||s||v with
+    /// 1 <= r < n, 1 <= s <= n/2 and v in {0, 1}, and a single recovery with the given parity. No signed-message prefix is applied.
+    /// The native recovery IDs 2 and 3 (an ephemeral point whose x-coordinate is at least n, probability about 2^-128) are ineligible
+    /// here: such a signature is valid for the roots but is never evidence. A 64-byte signature or the opposite parity is false.
     function verifyNative(address expected, bytes32 digest, bytes calldata signature)
         internal
         pure
         returns (bool)
     {
-        if (expected == address(0) || (signature.length != 64 && signature.length != 65)) {
-            return false;
-        }
-        if (signature.length == 65 && uint8(signature[64]) > 1) return false;
+        if (expected == address(0) || signature.length != 65) return false;
+        uint8 v = uint8(signature[64]);
+        if (v > 1) return false;
         bytes32 r = bytes32(signature[0:32]);
         bytes32 s = bytes32(signature[32:64]);
         if (uint256(r) == 0 || uint256(r) >= N || uint256(s) == 0 || uint256(s) > HALF_N) {
             return false;
         }
-        return ecrecover(digest, 27, r, s) == expected || ecrecover(digest, 28, r, s) == expected;
+        return ecrecover(digest, 27 + v, r, s) == expected;
     }
 
     /// @notice The signer of a 65-byte low-s signature, or the zero address if malformed.

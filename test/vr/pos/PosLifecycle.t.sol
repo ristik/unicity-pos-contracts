@@ -259,6 +259,7 @@ contract PosLifecycleTest is PosBase {
         _assertFacts(j.id, 1);
         pushRecord(RecordKind.Closure, closureData(a1, lastH, "r1"));
         _vrApplyAll();
+        _anchorIfClosed(a1, "r1");
         assertEq(custody.liveExposures(j.id, 1), 0);
         _assertFacts(j.id, 1);
 

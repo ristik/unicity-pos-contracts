@@ -3,6 +3,7 @@ pragma solidity 0.8.37;
 
 import {Test} from "forge-std/Test.sol";
 import {P85Genesis} from "../../script/P85Genesis.s.sol";
+import {P85ReportProfile} from "../../script/P85ReportProfile.sol";
 
 /// @dev Exposes the genesis script's bound reader and its check.
 contract P85GenesisHarness is P85Genesis {
@@ -12,6 +13,14 @@ contract P85GenesisHarness is P85Genesis {
 
     function checked(uint256 num, uint256 den) external pure returns (uint64, uint64) {
         return _checkedBound(num, den);
+    }
+
+    function reportProfile() external view returns (uint64, uint64, uint64) {
+        return _reportProfile();
+    }
+
+    function profileOf(string calldata name) external pure returns (uint64, uint64, uint64) {
+        return P85ReportProfile.named(name);
     }
 }
 
@@ -59,5 +68,27 @@ contract GenesisScriptTest is Test {
 
     function test_aDenominatorBeyondUint64IsRefused() public {
         _refused(1, uint256(type(uint64).max) + 1);
+    }
+
+    // --- #1297/#1298: the retirement report profiles ---------------------------------------------------
+
+    function test_theDefaultReportProfileIsTheTestnetOne() public view {
+        (uint64 floor_, uint64 window, uint64 margin) = h.reportProfile();
+        assertEq(floor_, 3_600);
+        assertEq(window, 1_800);
+        assertEq(margin, 1_800);
+    }
+
+    function test_theProductionReportProfileIsEightDays() public view {
+        (uint64 floor_, uint64 window, uint64 margin) = h.profileOf("production");
+        assertEq(window, 7 days + 12 hours);
+        assertEq(margin, 12 hours);
+        assertEq(floor_, 8 days);
+        assertEq(floor_, window + margin);
+    }
+
+    function test_anUnknownReportProfileIsRefused() public {
+        vm.expectRevert(abi.encodeWithSelector(P85ReportProfile.UnknownProfile.selector, "mainnet"));
+        h.profileOf("mainnet");
     }
 }

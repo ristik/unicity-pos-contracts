@@ -391,6 +391,17 @@ abstract contract PosBase is P85Flow {
 
     uint64 internal lastH;
 
+    /// @dev Capture the report anchors of a term closed by `closureData(assignmentID, _, tag)` (#1297/#1298) once its Closure is applied.
+    function _anchorIfClosed(bytes32 assignmentID, bytes32 tag) internal {
+        (,,,,,,,,, bool closed,,,,,,) = custody.assignments(assignmentID);
+        (,,,, bool anchored) = custody.termAnchors(assignmentID);
+        if (closed && !anchored) {
+            custody.anchorTerm(
+                assignmentID, keccak256(abi.encode("H", tag)), keccak256(abi.encode("R_H", tag))
+            );
+        }
+    }
+
     function _ackNext(bytes32 rid) internal {
         _advance(10, 10);
         lastH = 150 + progress;

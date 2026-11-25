@@ -163,6 +163,7 @@ contract FuzzTest is P85Flow {
         uint64 anchor = pC > h - 1 ? pC : h - 1;
         vm.assume(pR >= anchor);
         retireRecordAt(gid(0), pR, tR);
+        anchorClosed(GENESIS_ASSIGNMENT, "genesis"); // at (pR, tR): the floors below already cover it
 
         uint64 roundUntil = pR + 2_000 > anchor + 2_000 ? pR + 2_000 : anchor + 2_000;
         uint64 timeUntil = tR + 3_600 > tC + 3_600 ? tR + 3_600 : tC + 3_600;
