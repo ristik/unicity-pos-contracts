@@ -208,6 +208,35 @@ abstract contract PostTermCorpusBase is P85Flow {
         assertGt(checked, n, "every signature was judged");
     }
 
+    /// The corpus' two `statement` refusals carry no Go digest (the generator rebuilds no seal bytes for them), but they are complete
+    /// seal statements: both are submitted here, as in the full replay below, and refused with this verifier's lineage errors.
+    function test_theTwoStatementRefusalsAreSubmittedWithTheirErrors() public {
+        if (_scenario() != 0) return; // weighted only
+        string[2] memory ids = ["no.statement.commit-epoch", "no.statement.commit-round-zero"];
+        bytes4[2] memory errs = [Evidence.SuccessorUnknown.selector, Evidence.NotPostTerm.selector];
+        uint256 n = _count();
+        uint256 submitted;
+        for (uint256 k; k < n; ++k) {
+            string memory id = vm.parseJsonString(_json, _s(k, "id"));
+            for (uint256 j; j < 2; ++j) {
+                if (keccak256(bytes(id)) != keccak256(bytes(ids[j]))) continue;
+                assertFalse(vm.parseJsonBool(_json, _s(k, "hasDigest")), id);
+                assertFalse(vm.parseJsonBool(_json, _s(k, "accept")), id);
+                Evidence.PostTermSeal memory s = _seal(k);
+                Evidence.SealQuorum memory q = _quorum(k);
+                bytes32 eid = _exposureOf(vm.parseJsonBytes(_json, _s(k, "chargedKey")));
+                vm.prank(reporter);
+                (bool ok, bytes memory ret) = address(evidence)
+                    .call(abi.encodeCall(Evidence.submitPostTermEvidence, (s, q, eid)));
+                assertFalse(ok, id);
+                assertEq(bytes4(ret), errs[j], id);
+                assertEq(_expected(k, id), errs[j], id);
+                ++submitted;
+            }
+        }
+        assertEq(submitted, 2, "both statement refusals are in the corpus and were submitted");
+    }
+
     function test_everySubmissionHasTheGoVerdictAndEachOffenceIsOneCase() public {
         uint256 n = _count();
         string[] memory seen = new string[](n);
