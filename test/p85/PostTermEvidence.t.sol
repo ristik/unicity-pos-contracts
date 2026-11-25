@@ -57,6 +57,7 @@ contract PostTermEvidenceTest is P85Flow {
         closeGenesisAt(150, 1_200);
     }
 
+    /// @dev A seal of epoch 1 with the PreviousHash an honest scheme 2 commit carries: sha256 of the VoteInfo of voting round c+1.
     function _seal(uint64 commitRound, bytes32 hash)
         internal
         pure
@@ -64,11 +65,28 @@ contract PostTermEvidenceTest is P85Flow {
     {
         s.epoch = 1;
         s.commitRound = commitRound;
-        s.votingRound = commitRound + 1;
-        s.parent = commitRound;
-        s.exec = hash;
         s.commitHash = hash;
         s.commitTimestamp = 1_700_000_123;
+        s.previousHash = _vh(1, commitRound + 1, commitRound, hash);
+    }
+
+    /// @dev sha256(VI) under this deployment's N and G.
+    function _vh(uint64 epoch, uint64 votingRound, uint64 parent, bytes32 exec)
+        internal
+        pure
+        returns (bytes32)
+    {
+        return sha256(
+            RootVoteCbor.voteInfo(
+                ROOT_NETWORK,
+                RootVoteCbor.voteDomain(ROOT_GENESIS),
+                epoch,
+                votingRound,
+                parent,
+                exec,
+                0
+            )
+        );
     }
 
     function _members(uint256 a, uint256 b, uint256 c) internal pure returns (uint8[] memory m) {
@@ -122,20 +140,15 @@ contract PostTermEvidenceTest is P85Flow {
         return evidence.settleEvidence(caseID, ids);
     }
 
-    /// @dev The seal digest rebuilt independently of the contract, under any network and genesis.
-    function _digestUnder(uint64 n, bytes32 g, Evidence.PostTermSeal memory s)
+    /// @dev The native seal digest rebuilt independently of the contract, under any network.
+    function _digestUnder(uint64 n, Evidence.PostTermSeal memory s)
         internal
         pure
         returns (bytes32)
     {
-        bytes32 vh = sha256(
-            RootVoteCbor.voteInfo(
-                n, RootVoteCbor.voteDomain(g), s.epoch, s.votingRound, s.parent, s.exec, s.timestamp
-            )
-        );
         return sha256(
             RootVoteCbor.sealSigBytes(
-                n, s.commitRound, s.epoch, s.commitTimestamp, vh, s.commitHash
+                n, s.commitRound, s.epoch, s.commitTimestamp, s.previousHash, s.commitHash
             )
         );
     }
@@ -166,21 +179,25 @@ contract PostTermEvidenceTest is P85Flow {
     function test_theRoundBelowTheStartIsNotPostTermEvenWithALateVotingRound() public {
         _history();
         Evidence.PostTermSeal memory s = _seal(A_STAR - 1, OTHER);
-        s.votingRound = A_STAR + 50; // the VoteInfo round is past A*, the committed round is not
-        s.parent = A_STAR - 1;
+        // the opened VoteInfo round is past A*, the committed round is not
+        s.previousHash = _vh(1, A_STAR + 50, A_STAR - 1, OTHER);
         _expectRefused(s, _quorum(s), 0, Evidence.NotPostTerm.selector);
     }
 
-    function test_theScheme2CommittingShapeIsRequired() public {
+    /// P2-1 (astra, option a): the colluding quorum chooses PreviousHash. A seal is chargeable from its signed fields alone, whatever that
+    /// word is: random bytes, or sha256 of a VoteInfo that names voting epoch e+1.
+    function test_aSealIsChargeableFromItsOwnFieldsWhateverItsPreviousHash() public {
         _history();
-        Evidence.PostTermSeal memory s = _seal(A_STAR, OTHER);
-        s.votingRound = A_STAR; // commitRound must be below the voting round
-        _expectRefused(s, _quorum(s), 0, Evidence.BadStatement.selector);
-        s = _seal(A_STAR, OTHER);
-        s.parent = s.votingRound; // parent below the voting round
-        _expectRefused(s, _quorum(s), 0, Evidence.BadStatement.selector);
-        s = _seal(0, OTHER);
-        _expectRefused(s, _quorum(s), 0, Evidence.BadStatement.selector);
+        Evidence.PostTermSeal memory s = _seal(A_STAR + 2, OTHER);
+        s.previousHash = keccak256("random bytes the quorum chose");
+        bytes32 c1 = _submit(s, _quorum(s), 0);
+        assertEq(evidence.caseInfo(c1).id, gid(0));
+        Evidence.PostTermSeal memory t = _seal(A_STAR + 3, OTHER);
+        t.previousHash = _vh(2, A_STAR + 4, A_STAR + 3, OTHER); // a VoteInfo of the successor's epoch
+        bytes32 c2 = _submit(t, _quorum(t), 1);
+        assertEq(evidence.caseInfo(c2).id, gid(1));
+        // the digest is exactly the native signing bytes'
+        assertEq(evidence.postTermSealDigest(t), _digestUnder(ROOT_NETWORK, t));
     }
 
     function test_aLoneSignerOrTwoOfFourAreBelowTheThreshold() public {
@@ -201,8 +218,16 @@ contract PostTermEvidenceTest is P85Flow {
         Evidence.PostTermSeal memory s = _seal(A_STAR, _rH());
         _expectRefused(s, _quorum(s), 0, Evidence.FrozenRoot.selector);
         s = _seal(A_STAR + 10_000, _rH());
-        s.exec = OTHER; // nothing about VI.exec turns a seal over R_H into a charge
-        _expectRefused(s, _quorum(s), 0, Evidence.FrozenRoot.selector);
+        // nothing about the opaque PreviousHash turns a seal over R_H into a charge: an honest repeat's, a random one, another VI's
+        bytes32[3] memory prev = [
+            _vh(1, A_STAR + 10_001, A_STAR + 10_000, _rH()),
+            keccak256("opaque"),
+            _vh(1, A_STAR + 10_001, A_STAR + 10_000, OTHER)
+        ];
+        for (uint256 i; i < prev.length; ++i) {
+            s.previousHash = prev[i];
+            _expectRefused(s, _quorum(s), 0, Evidence.FrozenRoot.selector);
+        }
     }
 
     // --- the installed lineage and the applied Closure -----------------------------------------------
@@ -273,23 +298,35 @@ contract PostTermEvidenceTest is P85Flow {
         evidence.submitPostTermEvidence(s, q, jExposure);
     }
 
-    function test_theWrongRootNetworkOrGenesisSignsAnotherStatement() public {
+    function test_theWrongRootNetworkSignsAnotherStatement() public {
         _history();
         Evidence.PostTermSeal memory s = _seal(A_STAR, OTHER);
-        assertEq(_digestUnder(ROOT_NETWORK, ROOT_GENESIS, s), evidence.postTermSealDigest(s));
-        uint8[] memory m = _members(0, 1, 2);
-        bytes32[2] memory wrong = [
-            _digestUnder(ROOT_NETWORK + 1, ROOT_GENESIS, s),
-            _digestUnder(ROOT_NETWORK, keccak256("other genesis"), s)
-        ];
-        for (uint256 w; w < 2; ++w) {
-            Evidence.SealQuorum memory q;
-            q.members = m;
-            q.signatures = new bytes[](3);
-            for (uint256 i; i < 3; ++i) {
-                q.signatures[i] = signNative(rootPk(i), wrong[w]);
-            }
-            _expectRefused(s, q, 0, Evidence.BadSignature.selector);
+        assertEq(_digestUnder(ROOT_NETWORK, s), evidence.postTermSealDigest(s));
+        bytes32 wrong = _digestUnder(ROOT_NETWORK + 1, s);
+        Evidence.SealQuorum memory q;
+        q.members = _members(0, 1, 2);
+        q.signatures = new bytes[](3);
+        for (uint256 i; i < 3; ++i) {
+            q.signatures[i] = signNative(rootPk(i), wrong);
+        }
+        _expectRefused(s, q, 0, Evidence.BadSignature.selector);
+    }
+
+    /// An old-generation root history with the same N (an earlier reset) signed this very seal with ITS keys. Genesis-specific
+    /// consensus keys (bft-core tooling) mean none of them is installed here: the seal verifies against no installed member and charges
+    /// nobody, whatever its PreviousHash.
+    function test_anOldGenerationSealWithTheSameNetworkIsRefused() public {
+        _history();
+        Evidence.PostTermSeal memory s = _seal(A_STAR, OTHER);
+        bytes32 d = evidence.postTermSealDigest(s);
+        Evidence.SealQuorum memory q;
+        q.members = _members(0, 1, 2);
+        q.signatures = new bytes[](3);
+        for (uint256 i; i < 3; ++i) {
+            q.signatures[i] = signNative(0x5000 + i, d); // the old generation's keys
+        }
+        for (uint256 c; c < N_GENESIS; ++c) {
+            _expectRefused(s, q, c, Evidence.BadSignature.selector);
         }
     }
 
@@ -400,7 +437,7 @@ contract PostTermEvidenceTest is P85Flow {
         bytes32 post = _submit(s, _quorum(s), 1);
         // the same key equivocates at the same voting epoch and round
         Evidence.VoteHeader memory h =
-            Evidence.VoteHeader(NETWORK, 1, compressed(rootPk(1)), 1, s.votingRound);
+            Evidence.VoteHeader(NETWORK, 1, compressed(rootPk(1)), 1, s.commitRound + 1);
         Evidence.SignedVote memory a = rootVote(h, keccak256("A"), rootPk(1));
         Evidence.SignedVote memory b = rootVote(h, keccak256("B"), rootPk(1));
         vm.prank(reporter);
@@ -500,6 +537,48 @@ contract PostTermEvidenceTest is P85Flow {
         clock(1_151, 500_000);
         Evidence.PostTermSeal memory s2 = _seal(A_STAR + 1, OTHER);
         _expectRefused(s2, _quorum(s2), 0, Evidence.EvidenceLate.selector);
+    }
+
+    /// The reporter's two-call path (astra): anchor the closed term (anyone, once its successor is installed), then report from the seal
+    /// alone. The retired lot is held past every floor, the case settles, and the lot exits exactly once.
+    function test_anchorThenReportHoldsMaturityUntilSettlementThenExitsOnce() public {
+        requestRetirement(0);
+        _installEpochs(_hID());
+        handoffExcluding(0);
+        closeGenesisUnanchoredAt(150, 1_200);
+        retireRecordAt(gid(0), 160, 1_210);
+        uint256 lot = lotOf(gid(0));
+        clock(1_100, 2_000);
+        vm.expectRevert(CustodyStorage.TermAnchorPending.selector);
+        matureOne(lot);
+        // call 1: the reporter anchors the term, opening the Closure with its own record words
+        bytes32 h = _hID();
+        bytes32 r = _rH();
+        vm.prank(reporter);
+        custody.anchorTerm(GENESIS_ASSIGNMENT, h, r);
+        // call 2: the report, from the seal's signed fields (an opaque PreviousHash)
+        Evidence.PostTermSeal memory s = _seal(A_STAR + 9, OTHER);
+        s.previousHash = keccak256("whatever the quorum signed");
+        bytes32 caseID = _submit(s, _quorum(s), 0);
+        // past every floor the hold still decides
+        clock(1_000_000, 10_000_000);
+        vm.expectRevert(CustodyStorage.EvidenceHoldPending.selector);
+        matureOne(lot);
+        uint256 debit = _settle(caseID, lot);
+        assertEq(debit, 10 * UCT);
+        assertEq(creditOf(reporter), 1 * UCT, "the bounty");
+        matureOne(lot);
+        address wd = vm.addr(wdPk(0));
+        assertEq(creditOf(wd), GENESIS_BOND - debit);
+        vm.expectRevert(CustodyStorage.LotAlreadyReleased.selector);
+        matureOne(lot);
+        vm.prank(wd);
+        custody.claim(GENESIS_BOND - debit, wd);
+        assertEq(wd.balance, GENESIS_BOND - debit);
+        vm.prank(wd);
+        vm.expectRevert(CustodyStorage.InsufficientCredit.selector);
+        custody.claim(1, wd);
+        assertConserved();
     }
 
     function test_aTimelyCaseSettledAfterTheTimeFloorStillHoldsAndThenReleasesOnce() public {

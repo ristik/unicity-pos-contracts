@@ -221,10 +221,8 @@ contract PosCompactSixteenTest is PosLimitBase {
         Evidence.PostTermSeal memory s;
         s.epoch = 1;
         s.commitRound = aStar;
-        s.votingRound = aStar + 1;
-        s.parent = aStar;
-        s.exec = keccak256("a state the genesis committee never handed over");
-        s.commitHash = s.exec;
+        s.previousHash = keccak256("an opaque word the quorum signed");
+        s.commitHash = keccak256("a state the genesis committee never handed over");
         bytes32 d = evidence.postTermSealDigest(s);
         Evidence.SealQuorum memory q;
         q.members = new uint8[](3);

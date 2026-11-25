@@ -20,8 +20,9 @@ contract PostTermSigHarness {
 /// converted by `script/post-term-corpus-convert.py` to `fixtures/post-term-corpus-v1.json`) replayed through the real modules: the
 /// scenario's committee is installed as epoch e and e+1 of the B1 history, four of its members are the genesis identities of the custody
 /// term of epoch e, and that term is closed with the corpus' Closure facts and anchored. Every submission's rebuilt digest is the Go one,
-/// every signature verdict of the strict native rule is the Go one, every accepted submission is admitted, every refused one reverts,
-/// and accepted submissions with the same offence label are one case.
+/// every signature verdict of the strict native rule is the Go one, every accepted submission is admitted, every refused one reverts
+/// with the error of its Go reason, and accepted submissions with the same offence label are one case. Each statement is the seal's
+/// signed fields with the opaque PreviousHash (no VoteInfo opening); the corpus' statement-shape cases test an opening and are skipped.
 abstract contract PostTermCorpusBase is P85Flow {
     string internal constant CORPUS = "/test/p85/fixtures/post-term-corpus-v1.json";
     string internal _json;
@@ -138,10 +139,7 @@ abstract contract PostTermCorpusBase is P85Flow {
 
     function _seal(uint256 k) internal view returns (Evidence.PostTermSeal memory s) {
         s.epoch = uint64(vm.parseJsonUint(_json, _s(k, "epoch")));
-        s.votingRound = uint64(vm.parseJsonUint(_json, _s(k, "votingRound")));
-        s.parent = uint64(vm.parseJsonUint(_json, _s(k, "parent")));
-        s.exec = vm.parseJsonBytes32(_json, _s(k, "exec"));
-        s.timestamp = uint64(vm.parseJsonUint(_json, _s(k, "timestamp")));
+        s.previousHash = vm.parseJsonBytes32(_json, _s(k, "previousHash"));
         s.commitRound = uint64(vm.parseJsonUint(_json, _s(k, "commitRound")));
         s.commitTimestamp = uint64(vm.parseJsonUint(_json, _s(k, "commitTimestamp")));
         s.commitHash = vm.parseJsonBytes32(_json, _s(k, "hash"));
@@ -154,6 +152,18 @@ abstract contract PostTermCorpusBase is P85Flow {
             q.members[i] = uint8(idx[i]);
         }
         q.signatures = vm.parseJsonBytesArray(_json, _s(k, "signatures"));
+    }
+
+    /// @dev The Go corpus' refusal reason as this verifier's error (P3-3).
+    function _selector(string memory reason) internal pure returns (bytes4) {
+        bytes32 r = keccak256(bytes(reason));
+        if (r == keccak256("not-post-term")) return Evidence.NotPostTerm.selector;
+        if (r == keccak256("exempt-terminal-root")) return Evidence.FrozenRoot.selector;
+        if (r == keccak256("below-threshold")) return Evidence.QuorumTooSmall.selector;
+        if (r == keccak256("charged-not-in-subset")) return Evidence.KeyMismatch.selector;
+        if (r == keccak256("signature")) return Evidence.BadSignature.selector;
+        if (r == keccak256("indices")) return Evidence.BadQuorum.selector;
+        revert(string.concat("no selector for reason ", reason));
     }
 
     function _exposureOf(bytes memory key) internal view returns (bytes32) {
@@ -169,7 +179,6 @@ abstract contract PostTermCorpusBase is P85Flow {
         uint256 n = _count();
         uint256 checked;
         for (uint256 k; k < n; ++k) {
-            if (!vm.parseJsonBool(_json, _s(k, "hasDigest"))) continue; // a statement of the wrong shape
             Evidence.PostTermSeal memory s = _seal(k);
             bytes32 d = vm.parseJsonBytes32(_json, _s(k, "digest"));
             string memory id = vm.parseJsonString(_json, _s(k, "id"));
@@ -198,9 +207,10 @@ abstract contract PostTermCorpusBase is P85Flow {
             bool accept = vm.parseJsonBool(_json, _s(k, "accept"));
             if (!accept) {
                 vm.prank(reporter);
-                (bool ok,) = address(evidence)
+                (bool ok, bytes memory ret) = address(evidence)
                     .call(abi.encodeCall(Evidence.submitPostTermEvidence, (s, q, eid)));
                 assertFalse(ok, id);
+                assertEq(bytes4(ret), _selector(vm.parseJsonString(_json, _s(k, "reason"))), id);
                 continue;
             }
             ++accepted;

@@ -35,7 +35,7 @@ import {RootVoteCbor} from "./RootVoteCbor.sol";
 ///
 /// The second offence (#1297) is a post-term seal: a quorum of ROOT epoch e's installed committee signed a native seal of commit epoch e
 /// at a commit round at or after the installed successor's start, over a root other than the authenticated handoff root R_H of e's
-/// applied Closure. Every seal over R_H is exempt (H's own late commit and the honest frozen-root suffix). One submission charges one
+/// applied Closure. The statement is the seal's signed fields with an opaque PreviousHash, so the seal alone suffices. Every seal over R_H is exempt (H's own late commit and the honest frozen-root suffix). One submission charges one
 /// signer of the verified quorum subset, through the custody term of epoch e. Root-only terms (no custody assignment for e, or a successor
 /// activated by another H) and scheme 1 epochs are not attributable in this version and fail closed.
 contract Evidence {
@@ -126,18 +126,17 @@ contract Evidence {
         bytes signature;
     }
 
-    /// @notice A native tag-39005 v1 seal of commit epoch `epoch` and its VoteInfo opening (#1297). The verifier rebuilds
-    /// VI = C([N, Dv, epoch, votingRound, parent, exec(, timestamp)]) under the installed N and Dv = "root-vote/" + hex(G), sets
-    /// PreviousHash = sha256(VI) and rebuilds the seal bytes C(39005([1, N, commitRound, epoch, commitTimestamp, PreviousHash, commitHash,
-    /// null])). The statement is a committing scheme 2 one: parent < votingRound and 0 < commitRound < votingRound.
+    /// @notice The signed fields of a native tag-39005 v1 seal of commit epoch `epoch` (#1297), as a seal consumer holds them. The
+    /// verifier rebuilds the exact signing bytes C(39005([1, N, commitRound, epoch, commitTimestamp, previousHash, commitHash, null])) under
+    /// the installed root network N. `previousHash` is an opaque signed word: the signers choose it and no seal consumer opens it, so a
+    /// report needs nothing beyond the seal itself (a VoteInfo opening is never required). The root genesis G does not enter the signed
+    /// bytes; it enters the deployment-bound offence ID, and the consensus keys of a root history are genesis-specific (bft-core tooling),
+    /// so a seal of another root history sharing N is signed by keys this registry never installed.
     struct PostTermSeal {
         uint64 epoch;
-        uint64 votingRound;
-        uint64 parent;
-        bytes32 exec;
-        uint64 timestamp;
         uint64 commitRound; // the seal's RootChainRoundNumber, compared with the successor's start
         uint64 commitTimestamp;
+        bytes32 previousHash;
         bytes32 commitHash; // the seal's Hash
     }
 
@@ -371,23 +370,11 @@ contract Evidence {
         );
     }
 
-    /// @notice sha256 of the native seal bytes the post-term statement rebuilds (no PV signature or QC envelope is involved).
+    /// @notice sha256 of the native seal signing bytes (Signatures null) under the installed N: what every seal signer signed.
     function postTermSealDigest(PostTermSeal calldata s) public view returns (bytes32) {
-        uint64 n = rootNetwork;
-        bytes32 vh = sha256(
-            RootVoteCbor.voteInfo(
-                n,
-                RootVoteCbor.voteDomain(rootGenesis),
-                s.epoch,
-                s.votingRound,
-                s.parent,
-                s.exec,
-                s.timestamp
-            )
-        );
         return sha256(
             RootVoteCbor.sealSigBytes(
-                n, s.commitRound, s.epoch, s.commitTimestamp, vh, s.commitHash
+                rootNetwork, s.commitRound, s.epoch, s.commitTimestamp, s.previousHash, s.commitHash
             )
         );
     }
@@ -485,7 +472,7 @@ contract Evidence {
     }
 
     /// @dev The post-term statement (#1297), checked against installed and authenticated state only:
-    /// - the committing scheme 2 shape, and the native seal digest rebuilt under the installed N and G;
+    /// - the native seal digest rebuilt under the installed N, PreviousHash taken as the opaque signed word;
     /// - installed consecutive epochs e and e+1 with end[e] == start[e+1], e signing with scheme 2;
     /// - the offence: commitRound >= start[e+1] (equality counts) and Hash != R_H;
     /// - attribution: the custody assignment of root epoch e, closed by its applied Closure whose H RecordID activated e+1 and whose
@@ -498,10 +485,6 @@ contract Evidence {
         bytes32 assignmentID,
         bytes32 keyHash
     ) private view returns (bytes32 offenceID) {
-        if (s.votingRound == 0 || s.parent >= s.votingRound) {
-            revert BadStatement();
-        }
-        if (s.commitRound == 0 || s.commitRound >= s.votingRound) revert BadStatement();
         ISealHistory reg = ISealHistory(address(roots));
         SealEpoch memory pre = reg.sealEpoch(s.epoch);
         SealEpoch memory succ = reg.sealEpoch(s.epoch + 1);
@@ -527,7 +510,7 @@ contract Evidence {
         ) revert EvidenceLate();
 
         bytes32 digest = postTermSealDigest(s);
-        _verifyQuorum(reg, s.epoch, pre.totalWeight, digest, q, keyHash);
+        _verifyQuorum(reg, s.epoch, pre, digest, q, keyHash);
         offenceID = postTermOffenceID(s.epoch, digest, keyHash);
     }
 
@@ -536,18 +519,22 @@ contract Evidence {
     function _verifyQuorum(
         ISealHistory reg,
         uint64 epoch,
-        uint64 totalWeight,
+        SealEpoch memory pre,
         bytes32 digest,
         SealQuorum calldata q,
         bytes32 keyHash
     ) private view {
         uint256 count = q.members.length;
         if (count == 0 || count > MAX_QUORUM || q.signatures.length != count) revert BadQuorum();
+        // the indices first: strictly increasing (no repeat) and installed
+        for (uint256 i = 0; i < count; ++i) {
+            if (q.members[i] >= pre.memberCount || (i != 0 && q.members[i] <= q.members[i - 1])) {
+                revert BadQuorum();
+            }
+        }
         uint256 weight = 0;
         bool charged = false;
         for (uint256 i = 0; i < count; ++i) {
-            if (i != 0 && q.members[i] <= q.members[i - 1]) revert BadQuorum();
-            // an index beyond the installed members reverts in the registry
             (bytes memory key, uint64 w) = reg.sealMember(epoch, q.members[i]);
             if (!KeyLib.verifyNative(KeyLib.toAddress(key), digest, q.signatures[i])) {
                 revert BadSignature();
@@ -556,7 +543,7 @@ contract Evidence {
             if (keccak256(key) == keyHash) charged = true;
         }
         if (!charged) revert KeyMismatch();
-        if (weight < (uint256(totalWeight) * 2) / 3 + 1) revert QuorumTooSmall();
+        if (weight < (uint256(pre.totalWeight) * 2) / 3 + 1) revert QuorumTooSmall();
     }
 
     function _verifyEvidence(VoteHeader calldata h, SignedVote calldata a, SignedVote calldata b)

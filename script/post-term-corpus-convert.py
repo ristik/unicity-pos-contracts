@@ -1,16 +1,16 @@
 #!/usr/bin/env python3
 """Convert bft-core's verbatim post-term seal corpus (s1ref/s1gen BuildPostTermCorpus, format p85-post-term-seal/1) into the
 forge-shaped file PostTermCorpus.t.sol reads: 0x-prefixed hex, JSON numbers that fit a uint64, the charged member's key resolved, and
-the one-epoch statement of the contracts' PostTermSeal. CI regenerates it and fails when the committed copy differs.
+the contracts' PostTermSeal: the native seal fields with PreviousHash as the opaque signed word (no VoteInfo opening). CI regenerates it
+and fails when the committed copy differs.
 
 Usage: post-term-corpus-convert.py <post-term-corpus-go-v1.json> <post-term-corpus-v1.json>
 """
 import json
 import sys
 
-# A statement type with one epoch field cannot express votingEpoch != commitEpoch (the corpus notes): this case is skipped, and
-# no.statement.voting-epoch is read as a statement of epoch e+1.
-SKIP = {"no.statement.commit-epoch"}
+# The statement-shape cases test a VoteInfo opening, which the opaque-PreviousHash verifier never takes; the Go generator rebuilds no
+# seal bytes for them (empty previousHash and digest), so they are not submissions of this verifier.
 
 
 def hx(s):
@@ -47,17 +47,14 @@ def convert(go):
         assert u(pre["end"]) == u(suc["start"]) == o["activationRound"]
         assert u(cl["closedEpoch"]) == o["epoch"] and u(suc["epoch"]) == o["epoch"] + 1
         for sub in sc["submissions"]:
-            if sub["id"] in SKIP:
+            if sub["previousHash"] == "":
+                assert sub["reason"] == "statement", sub["id"]
                 continue
             st = sub["statement"]
-            assert st["commitEpoch"] == st["votingEpoch"] or sub["id"] == "no.statement.voting-epoch", sub["id"]
             o["submissions"].append({
                 "id": sub["id"],
-                "epoch": u(st["votingEpoch"]),
-                "votingRound": u(st["votingRound"]),
-                "parent": u(st["parent"]),
-                "exec": hx(st["exec"]),
-                "timestamp": u(st["voteTimestamp"]),
+                "epoch": u(st["commitEpoch"]),
+                "previousHash": hx(sub["previousHash"]),
                 "commitRound": u(st["commitRound"]),
                 "commitTimestamp": u(st["commitTimestamp"]),
                 "hash": hx(st["hash"]),
@@ -65,9 +62,8 @@ def convert(go):
                 "signatures": [hx(x["signature"]) for x in sub["signatures"]],
                 "signatureValid": [bool(x["valid"]) for x in sub["signatures"]],
                 "chargedKey": hx(keys[sub["charged"]]),
-                # the Go generator rebuilds no digest for a statement of the wrong shape
-                "digest": hx(sub["digest"] or "00" * 32),
-                "hasDigest": sub["digest"] != "",
+                "digest": hx(sub["digest"]),
+                "reason": sub["reason"],
                 "accept": bool(sub["accept"]),
                 "offence": sub["offence"],
             })

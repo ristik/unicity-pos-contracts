@@ -191,12 +191,29 @@ Getters: `positions`, `lots`, `exposures`, `exposureLots`, `assignments`, `assig
   cannot be charged (`AssignmentNotActivated`); an aborted attempt is `NotAttributable`.
 * **Post-term seals (#1297).** A quorum of root epoch e that sealed commit epoch e at a commit round
   `>= start[e+1]` over a root other than the term's authenticated handoff root R_H is charged, one
-  signer per submission, through the custody assignment of root epoch e. Every seal over R_H is exempt
+  signer per submission, through the custody assignment of root epoch e. The statement is the seal's
+  own signed fields (`PostTermSeal`: epoch, commitRound, commitTimestamp, PreviousHash, Hash; N is the
+  installed one): PreviousHash is an opaque signed word, never opened, because the signers choose it
+  and no seal consumer checks it, so a reporter who holds any accepted seal can charge it. Every seal over R_H is exempt
   (H's own late commit and honest suffix repeats cannot be told apart from backdated in-term seals).
   Not attributable in this version, and refused: root-only terms (no custody assignment of epoch e, or
   a successor activated by another H), scheme 1 epochs (the genesis committee), and native signatures
   with recovery ID 2 or 3. The offence ID is typed by kind and bound to the deployment word, chain ID,
   the Evidence address and the root N and G; the equivocation ID uses the same typed domain.
+* **Genesis-specific consensus keys (requirement).** The native seal binds N but not the root genesis
+  G; G enters only the deployment-bound offence ID. Every validator must therefore use fresh,
+  genesis-specific root consensus keys for each independent root history sharing N, including later
+  enrollment and rotation (enforced by bft-core reset tooling against prior generation manifests).
+  An old-generation seal is then signed by keys this registry never installed and charges nobody.
+* **Reporter path: two calls.** (1) `StakeCustody.anchorTerm(assignment, hRecordID, terminalRoot)`,
+  with the words of the term's Closure record (`SealRegistry.recordAt`), once its successor root
+  epoch is installed; anyone may call it, and the first call starts both report clocks at the current
+  authenticated progress and UC time, so waiting never consumes the window. Skip it if
+  `termAnchors(assignment).anchored` is already true. (2) `Evidence.submitPostTermEvidence` (legacy
+  layout: the historical exposure) or `submitPostTermSeatEvidence` (compact layout: assignment and
+  seat ordinal) with the seal fields and a quorum subset of epoch e's installed member indices with
+  their 65-byte signatures. Exit tools call the same `anchorTerm` for every closed, unanchored term of
+  the lot before `mature`.
 * **Report anchors (#1297/#1298).** A Closure's application raises its lots' floors from the record's
   anchors and leaves the term unanchored: its lots cannot mature (`TermAnchorPending`) and no post-term
   report is admitted until anyone calls `anchorTerm` once the successor root epoch is installed. The
@@ -212,7 +229,12 @@ Getters: `positions`, `lots`, `exposures`, `exposureLots`, `assignments`, `assig
   Production: 648,000 + 43,200 = 691,200 s (`MAX_FLOOR`); resettable testnet: 1,800 + 1,800 = 3,600 s
   (`P85_PROFILE`, `script/P85ReportProfile.sol`).
 * **Signatures.** Every evidence signature follows the upstream seal rule: exactly 65 bytes r||s||v,
-  `1 <= r < n`, `1 <= s <= n/2`, `v in {0, 1}` and one recovery with that parity.
+  `1 <= r < n`, `1 <= s <= n/2`, `v in {0, 1}` and one recovery with that parity. The native recovery
+  IDs 2 and 3 (an ephemeral point with x >= n, probability about 2^-128; the native signer emits only
+  0 and 1) are ineligible as evidence, as are the 64-byte compact form and v = 27/28.
+* **Sizes after #1297.** `StakeCustody` sits within about 100 bytes of EIP-170; the next custody
+  change must move code into the delegated `CustodyGenesis` first (as `anchorTerm`, `proposeRoles` and
+  `acceptRoles` were).
 * **`d_j`.** The "inherited deadline" is carried by the permanent per-lot maxima over all closed
   obligations, so it is not stored separately.
 * **EVM-key relation.** Custody checks that a reserved EVM key hash is the identity's registered
