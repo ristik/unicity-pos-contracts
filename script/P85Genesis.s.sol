@@ -161,6 +161,10 @@ contract P85Genesis is Script {
         vm.serializeAddress(d, "custody", address(factory.CUSTODY()));
         vm.serializeAddress(d, "genesisImpl", genesisImpl);
         vm.serializeAddress(d, "election", address(factory.ELECTION()));
+        // the publication implementation the election's constructor creates and delegatecalls (PoPs, finalization): part of the alloc
+        address publicationImpl = factory.ELECTION().PUBLICATION_IMPL();
+        vm.serializeAddress(d, "electionPublication", publicationImpl);
+        vm.serializeBytes32(d, "electionPublicationCodeHash", publicationImpl.codehash);
         vm.serializeAddress(d, "evidence", address(factory.EVIDENCE()));
         vm.serializeAddress(d, "selection", address(factory.ELECTION().selection()));
         vm.serializeAddress(d, "reader", address(factory.ELECTION().reader()));

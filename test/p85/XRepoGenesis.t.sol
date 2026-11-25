@@ -4,6 +4,7 @@ pragma solidity 0.8.37;
 import {Test} from "forge-std/Test.sol";
 import {P85Genesis} from "../../script/P85Genesis.s.sol";
 import {StakeCustody} from "../../src/p85/StakeCustody.sol";
+import {ElectionPolicy} from "../../src/p85/ElectionPolicy.sol";
 
 /// @notice The cross-repository genesis vector, contracts half. `fixtures/xrepo-genesis-input.json` is the file bft-core's
 /// `ubft pos-relayer genesis --out-contracts` writes for a committed plan over the FULL shard configuration (bft-core
@@ -52,6 +53,11 @@ contract XRepoGenesisTest is Test {
             vm.parseJsonBytes32(dep, ".policyCodeHash"),
             vm.parseJsonAddress(dep, ".policy").codehash
         );
+        // the election's publication implementation (PoPs, finalization) is recorded, so script/p85-genesis.sh allocates it
+        address publication = vm.parseJsonAddress(dep, ".electionPublication");
+        assertEq(publication, ElectionPolicy(vm.parseJsonAddress(dep, ".election")).PUBLICATION_IMPL());
+        assertTrue(publication.code.length != 0);
+        assertEq(vm.parseJsonBytes32(dep, ".electionPublicationCodeHash"), publication.codehash);
         StakeCustody custody = StakeCustody(vm.parseJsonAddress(dep, ".custody"));
         bytes32 assignment = vm.parseJsonBytes32(json, ".assignmentId");
         assertTrue(assignment != bytes32(0), "the file names an assignment");
