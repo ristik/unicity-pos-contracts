@@ -442,7 +442,7 @@ contract ElectionTest is P85Flow {
     function test_aMinimumBondAboveTheUnitExcludesAnIdentityBelowIt() public {
         manualMinBond = uint128(300 * UCT); // B_min three units; the 1,000 UCT genesis lots are far above
         _deployManual(
-            address(new FixedPolicy(_defaultPolicy())),
+            address(new FixedPolicy(_defaultPolicy(), 1_800, 1_800)),
             Limits({vMax: 128, lMax: 8, rMax: 4, maxBatch: 32})
         );
         // a joiner holding 250 UCT: weight two, below B_min
@@ -503,7 +503,7 @@ contract ElectionTest is P85Flow {
 
     function test_aFullReferenceTableIsAnOrderedNoCandidateNotARevert() public {
         _deployManual(
-            address(new FixedPolicy(_defaultPolicy())),
+            address(new FixedPolicy(_defaultPolicy(), 1_800, 1_800)),
             Limits({vMax: 128, lMax: 8, rMax: 3, maxBatch: 32})
         );
         reserve(keccak256("hand"), keccak256("hand/asg"), allMembers(), 7); // refCount 2 of 3

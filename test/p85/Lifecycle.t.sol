@@ -72,6 +72,8 @@ contract LifecycleTest is P85Flow {
         pushRecord(RecordKind.Closure, closureData(GENESIS_ASSIGNMENT, H_ROUND, "g"));
         pushRecord(RecordKind.Closure, closureData(ASG_J, 130, "j"));
         applyAll();
+        anchorClosed(GENESIS_ASSIGNMENT, "g");
+        anchorClosed(ASG_J, "j");
         _exact();
         assertEq(lotv(lot).refCount, 0);
         assertEq(lotv(lot).category, 3, "unreferenced and retiring: draining");

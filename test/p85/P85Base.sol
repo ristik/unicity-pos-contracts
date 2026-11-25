@@ -59,6 +59,15 @@ abstract contract P85Base is Test {
         return DEFAULT_REWARD_RATE;
     }
 
+    /// @dev The resettable-testnet profile of #1298 (UC seconds); the default policy's 3,600 s floor covers both.
+    function _reportWindow() internal view virtual returns (uint64) {
+        return 1_800;
+    }
+
+    function _settlementMargin() internal view virtual returns (uint64) {
+        return 1_800;
+    }
+
     function _rewardFunding() internal view virtual returns (uint256) {
         return REWARD_FUNDING;
     }
@@ -188,6 +197,8 @@ abstract contract P85Base is Test {
                 firstRound: 1
             }),
             policy: policy,
+            reportWindow: _reportWindow(),
+            settlementMargin: _settlementMargin(),
             rewardRate: _rewardRate(),
             governanceAuthority: governanceAuthority,
             rewardFunding: _rewardFunding(),
@@ -341,10 +352,10 @@ abstract contract P85Base is Test {
         v.exec = exec;
     }
 
-    /// @dev A native consensus signature: r||s (64 bytes, low s), as the roots' signer writes it.
+    /// @dev A native consensus signature: r||s||v (65 bytes, low s, v in {0, 1} the recovery parity), as the roots' signer writes it.
     function signNative(uint256 pk, bytes32 digest) internal pure returns (bytes memory) {
-        (, bytes32 r, bytes32 s) = vm.sign(pk, digest);
-        return abi.encodePacked(r, s);
+        (uint8 v, bytes32 r, bytes32 s) = vm.sign(pk, digest);
+        return abi.encodePacked(r, s, v - 27);
     }
 
     /// @dev StakingID of genesis identity i (assigned in manifest order from 1).

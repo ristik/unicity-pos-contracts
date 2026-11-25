@@ -197,4 +197,56 @@ contract PosCompactSixteenTest is PosLimitBase {
         assertEq(m.exposureID, _eid(GENESIS_ASSIGNMENT, gid(0)));
         assertEq(m.memberDigest, vr.committee()[0].exposureDigest);
     }
+
+    /// #1297 in the compact layout: a post-term seal of the genesis term charges exactly the historical seat's lot.
+    function test_postTermSealEvidenceChargesTheExactHistoricalSeatLot() public {
+        bytes32 r = _elect2();
+        _ackNext(r);
+        uint64 aStar = lastH + 11; // J's first round
+        bytes32 tag = "g";
+        bytes32 hID = keccak256(abi.encode("H", tag));
+        bytes[] memory keys = new bytes[](N_GENESIS);
+        uint64[] memory weights = new uint64[](N_GENESIS);
+        for (uint256 i; i < N_GENESIS; ++i) {
+            keys[i] = compressed(rootPk(i));
+            weights[i] = 10;
+        }
+        roots.setStrictEpochs(true);
+        roots.installEpoch(1, 1, true, aStar, 2, bytes32(0), keys, weights);
+        roots.installEpoch(2, aStar, false, 0, 2, hID, keys, weights);
+        pushRecord(RecordKind.Closure, closureData(GENESIS_ASSIGNMENT, lastH, tag));
+        _vrApplyAll();
+        custody.anchorTerm(GENESIS_ASSIGNMENT, hID, keccak256(abi.encode("R_H", tag)));
+
+        Evidence.PostTermSeal memory s;
+        s.epoch = 1;
+        s.commitRound = aStar;
+        s.previousHash = keccak256("an opaque word the quorum signed");
+        s.commitHash = keccak256("a state the genesis committee never handed over");
+        bytes32 d = evidence.postTermSealDigest(s);
+        Evidence.SealQuorum memory q;
+        q.members = new uint8[](3);
+        q.signatures = new bytes[](3);
+        for (uint256 i; i < 3; ++i) {
+            q.members[i] = uint8(i);
+            q.signatures[i] = signNative(rootPk(i), d);
+        }
+        AssignmentSeat memory member = custody.assignmentSeat(GENESIS_ASSIGNMENT, 1);
+        assertEq(member.binding.rootKeyHash, keccak256(compressed(rootPk(1))));
+        vm.expectRevert(Evidence.ExposureUnknown.selector);
+        evidence.submitPostTermSeatEvidence(s, q, GENESIS_ASSIGNMENT, 2, member.exposureID);
+        vm.prank(reporter);
+        bytes32 caseID =
+            evidence.submitPostTermSeatEvidence(s, q, GENESIS_ASSIGNMENT, 1, member.exposureID);
+        assertEq(evidence.pendingHolds(member.lotID), 1);
+        assertEq(evidence.caseInfo(caseID).lotCount, 1);
+        (bytes32 asgID, uint256 ordinal) = evidence.caseLocation(caseID);
+        assertEq(asgID, GENESIS_ASSIGNMENT);
+        assertEq(ordinal, 1);
+        uint256[] memory ids = new uint256[](1);
+        ids[0] = member.lotID;
+        assertEq(evidence.settleEvidence(caseID, ids), 10 * UCT);
+        assertEq(evidence.pendingHolds(member.lotID), 0);
+        assertConserved();
+    }
 }

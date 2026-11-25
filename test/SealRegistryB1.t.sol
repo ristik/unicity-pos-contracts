@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: UNLICENSED
 pragma solidity 0.8.37;
 
+import {SealEpoch} from "../src/p85/IP85.sol";
 import {SealRegistry} from "../src/SealRegistry.sol";
 import {
     B1Entry,
@@ -195,6 +196,50 @@ contract SealRegistryB1Test is SealRegistryB1Helpers {
         assertEq(b1Word("b1.originReady"), 1);
         assertEq(uintWord("origin.rootEpoch"), 2);
         assertEq(uintWord("clock.rootRound"), 6);
+    }
+
+    /// The read-only P85 view (#1297) returns the stored words verbatim: an installed epoch's interval, scheme, activation and committee,
+    /// and its members' 33-byte keys and weights; an epoch that is not installed reads as absent; a member out of range is refused.
+    function test_theSealHistoryViewReadsTheInstalledEpochs() public {
+        SealRegistry reg = SealRegistry(A_SR);
+        SealEpoch memory g = reg.sealEpoch(ROOT_EPOCH);
+        assertTrue(g.present);
+        assertFalse(g.hasEnd);
+        assertFalse(reg.sealEpoch(2).present);
+        step(ackAt(7, 2, 3));
+        B1Entry memory e2 = entry(2, 6, 7, 3);
+        B1Entry memory e3 = entry(3, 7, 0, 3);
+        g = reg.sealEpoch(ROOT_EPOCH);
+        assertTrue(g.hasEnd);
+        assertEq(g.end, 6, "the former tip closes where its successor starts");
+        assertEq(g.start, GENESIS_START);
+        assertEq(g.signingScheme, 1);
+        assertEq(g.activationCommitID, bytes32(0));
+        _sameEpoch(reg.sealEpoch(2), e2);
+        _sameEpoch(reg.sealEpoch(3), e3);
+        for (uint256 j; j < e3.members.length; ++j) {
+            (bytes memory key, uint64 weight) = reg.sealMember(3, j);
+            assertEq(key.length, 33);
+            assertEq(bytes32(key), e3.members[j].key[0]);
+            assertEq(key[32], e3.members[j].key[1][0]);
+            assertEq(weight, e3.members[j].weight);
+        }
+        vm.expectRevert(SealRegistry.SealMemberOutOfRange.selector);
+        reg.sealMember(3, e3.members.length);
+        vm.expectRevert(SealRegistry.SealMemberOutOfRange.selector);
+        reg.sealMember(4, 0);
+        assertFalse(reg.sealEpoch(4).present);
+    }
+
+    function _sameEpoch(SealEpoch memory v, B1Entry memory en) internal pure {
+        assertTrue(v.present);
+        assertEq(v.start, en.start);
+        assertEq(v.hasEnd, en.hasEnd);
+        assertEq(v.end, en.end);
+        assertEq(v.signingScheme, en.signingScheme);
+        assertEq(v.activationCommitID, en.activationCommitID);
+        assertEq(v.memberCount, en.members.length);
+        assertEq(v.totalWeight, totalWeight(en.members));
     }
 
     function test_twoEpochsInOneBlockAreBothInstalled() public {

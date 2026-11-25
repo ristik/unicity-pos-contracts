@@ -63,6 +63,7 @@ contract PosCatchUpTest is PosBase {
     bytes[] internal dData;
     uint256 internal dHead;
     uint256[] internal released;
+    bytes32[] internal closedTerms; // the assignments whose Closure was projected
 
     function _project(RecordKind kind, bytes memory data) internal {
         if (atLimit) {
@@ -201,7 +202,11 @@ contract PosCatchUpTest is PosBase {
                 assertTrue(vr.retired(0, jx.id, jxGen), "VR marked the retirement");
                 _assertFacts(jx.id, jxGen);
                 ++retirementsImported;
-                // maturity and claim free the live index slot (and, for a rebond, allow the next generation)
+                // anyone anchors the closed terms (#1297/#1298); maturity and claim then free the live index slot (and, for a rebond,
+                // allow the next generation)
+                for (uint256 k; k < closedTerms.length; ++k) {
+                    _anchorIfClosed(closedTerms[k], "closure");
+                }
                 _advance(100_000, 100_000);
                 uint256[] memory lots = custody.generationLots(jx.id, jxGen);
                 custody.mature(lots);
@@ -314,6 +319,7 @@ contract PosCatchUpTest is PosBase {
                 );
                 // the incumbent assignment closes (the roots project its Closure from the retained bundle)
                 _project(RecordKind.Closure, closureData(incumbent, 150 + progress, "closure"));
+                closedTerms.push(incumbent);
                 incumbent = election.result(open).assignmentID;
             } else if (
                 vr.openOutput() == bytes32(0) && vr.recordCursor() < imported + 0

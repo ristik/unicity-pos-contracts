@@ -144,6 +144,10 @@ abstract contract CustodyStorage is ReentrancyGuard {
     error InsufficientCredit();
     error TransferFailed();
     error EmptyBatch();
+    error TermAnchorPending();
+    error TermNotPending();
+    error SuccessorNotInstalled();
+    error ClosureOpeningMismatch();
 
     // --- events -------------------------------------------------------------------------------
     event Initialized(bytes32 manifestHash);
@@ -161,6 +165,7 @@ abstract contract CustodyStorage is ReentrancyGuard {
         bytes32 indexed assignmentID, uint64 pClose, uint64 tClose, uint64 anchor
     );
     event RetirementImported(uint64 indexed id, uint64 generation, uint64 pRet, uint64 tRet);
+    event TermAnchored(bytes32 indexed assignmentID, uint64 p0, uint64 t0);
     event PenaltyApplied(
         bytes32 indexed caseID,
         uint256 indexed lotID,
@@ -195,6 +200,9 @@ abstract contract CustodyStorage is ReentrancyGuard {
         uint64 holdUntil;
         uint64 evidenceUntil;
         uint64 timeUntil;
+        // #1297/#1298: closed terms of this lot whose report anchors are not captured yet (`anchorTerm`); the lot cannot mature
+        // while any is. Packed into the word of evidenceUntil and timeUntil, which every closure writes anyway.
+        uint32 unanchoredTerms;
     }
 
     struct Session {
@@ -252,7 +260,7 @@ abstract contract CustodyStorage is ReentrancyGuard {
     mapping(address => uint64) public registerNonce;
     mapping(bytes32 => KeyRecord) internal _keys;
     mapping(uint64 => mapping(uint64 => uint256[])) internal _generationLots;
-    mapping(uint256 => Lot) public lots;
+    mapping(uint256 => Lot) internal _lots;
     mapping(uint64 => mapping(uint64 => RetirementInfo)) public retirements;
     mapping(uint64 => mapping(uint64 => bytes32)) internal _legacyExposureChain;
     mapping(uint64 => mapping(uint64 => uint64)) internal _legacyMaxLiabilityAnchor;
@@ -287,6 +295,19 @@ abstract contract CustodyStorage is ReentrancyGuard {
     mapping(uint64 => mapping(uint64 => uint64)) internal _latestBinding;
     mapping(bytes32 => uint256[]) internal _seats;
     mapping(bytes32 => SlateState) internal _slateState;
+
+    /// @dev #1297/#1298: a closed term's report anchors. `terminalRoot` (R_H) and `hRecordID` open the applied Closure's closure key;
+    /// `p0`/`t0` are the authenticated progress and UC time captured once the Closure, its attribution and the installed successor root
+    /// epoch are jointly usable (`anchored`). Appended last: no existing slot moves.
+    struct TermAnchor {
+        bytes32 terminalRoot;
+        bytes32 hRecordID;
+        uint64 p0;
+        uint64 t0;
+        bool anchored;
+    }
+
+    mapping(bytes32 => TermAnchor) public termAnchors;
 
     function _compact() internal view returns (bool) {
         return limits.lMax == 1 && limits.vMax > 8 && deploymentDomain != address(this);
@@ -355,7 +376,7 @@ abstract contract CustodyStorage is ReentrancyGuard {
     }
 
     function _referenceSeat(uint64 id, uint64 generation, uint256 lotID, bytes32 eid) internal {
-        Lot storage l = lots[lotID];
+        Lot storage l = _lots[lotID];
         if (l.refCount >= limits.rMax) revert ReferenceCapacity();
         l.refCount++;
         if (l.category == CAT_FREE) _move(l, CAT_ENCUMBERED);
@@ -414,7 +435,7 @@ abstract contract CustodyStorage is ReentrancyGuard {
         Position storage p = positions[id];
         if (amount > type(uint128).max) revert AmountTooLarge();
         lotID = ++nextLotID;
-        Lot storage l = lots[lotID];
+        Lot storage l = _lots[lotID];
         l.id = id;
         l.generation = p.generation;
         // forge-lint: disable-next-line(unsafe-typecast)
@@ -462,7 +483,7 @@ abstract contract CustodyStorage is ReentrancyGuard {
         e.rawWeight = rawWeight;
         e.operatorPayee = operatorPayee;
         for (uint256 i = 0; i < lotIDs.length; ++i) {
-            Lot storage l = lots[lotIDs[i]];
+            Lot storage l = _lots[lotIDs[i]];
             if (l.refCount >= limits.rMax) revert ReferenceCapacity();
             l.refCount++;
             // An unreferenced lot is never draining here: a retiring identity cannot be reserved and
@@ -487,7 +508,7 @@ abstract contract CustodyStorage is ReentrancyGuard {
         uint256[] storage ids = _generationLots[id][generation];
         uint32 refs = 0;
         for (uint256 i = 0; i < ids.length; ++i) {
-            refs += lots[ids[i]].refCount;
+            refs += _lots[ids[i]].refCount;
         }
         f.lotReferences = refs;
         f.maxLiabilityAnchor = _legacyMaxLiabilityAnchor[id][generation];

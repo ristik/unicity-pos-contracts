@@ -27,7 +27,7 @@ _pendingRoles slot=23 offset=0 bytes=32
 registerNonce slot=24 offset=0 bytes=32
 _keys slot=25 offset=0 bytes=32
 _generationLots slot=26 offset=0 bytes=32
-lots slot=27 offset=0 bytes=32
+_lots slot=27 offset=0 bytes=32
 retirements slot=28 offset=0 bytes=32
 _legacyExposureChain slot=29 offset=0 bytes=32
 _legacyMaxLiabilityAnchor slot=30 offset=0 bytes=32
@@ -46,3 +46,4 @@ _bindings slot=42 offset=0 bytes=32
 _latestBinding slot=43 offset=0 bytes=32
 _seats slot=44 offset=0 bytes=32
 _slateState slot=45 offset=0 bytes=32
+termAnchors slot=46 offset=0 bytes=32

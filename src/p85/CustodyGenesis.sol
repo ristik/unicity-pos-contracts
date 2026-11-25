@@ -25,7 +25,14 @@ import {
     SeatBinding,
     AssignmentSeat
 } from "./P85Types.sol";
-import {IRootRecords, IPolicySource, IEvidence, IElectionPolicy, CaseView} from "./IP85.sol";
+import {
+    IRootRecords,
+    ISealHistory,
+    IPolicySource,
+    IEvidence,
+    IElectionPolicy,
+    CaseView
+} from "./IP85.sol";
 import {KeyLib} from "./KeyLib.sol";
 import {Quantize} from "./Quantize.sol";
 import {VRC} from "../vr/VRConstants.sol";
@@ -235,7 +242,7 @@ contract CustodyGenesis is CustodyStorage {
             _slateState[in_.incumbentAssignmentID].locks++;
             for (uint256 i = 0; i < seats.length; ++i) {
                 (,, uint256 lotID) = _seatLot(seats[i]);
-                if (lots[lotID].refCount >= limits.rMax) revert ReferenceCapacity();
+                if (_lots[lotID].refCount >= limits.rMax) revert ReferenceCapacity();
             }
         } else {
             bytes32[] storage ids = incumbent.exposureIDs;
@@ -243,11 +250,118 @@ contract CustodyGenesis is CustodyStorage {
                 Exposure storage inc = exposures[ids[i]];
                 inc.sessionLocks++;
                 for (uint256 j = 0; j < inc.lotIDs.length; ++j) {
-                    if (lots[inc.lotIDs[j]].refCount >= limits.rMax) revert ReferenceCapacity();
+                    if (_lots[inc.lotIDs[j]].refCount >= limits.rMax) revert ReferenceCapacity();
                 }
             }
         }
         emit CandidateReserved(in_.resultID, in_.resultID, exposureDigest);
+    }
+
+    /// @notice The owner proposes a role tuple at the exact current role nonce. Every nominated
+    /// holder must accept; replacing the withdrawal authority also needs the current withdrawal
+    /// authority's consent, given by calling `acceptRoles` as that authority.
+    function proposeRoles(uint64 id, address newOwner, address newWithdrawal, uint64 nonce)
+        external
+    {
+        if (!initialized) revert NotInitialized();
+        Position storage p = positions[id];
+        if (p.owner == address(0)) revert UnknownIdentity();
+        if (p.owner != msg.sender) revert NotOwner();
+        if (nonce != p.roleNonce) revert RoleNonceMismatch();
+        if (newOwner == address(0) || newWithdrawal == address(0)) revert ZeroAddress();
+        uint8 required = 0;
+        if (newOwner != p.owner) required |= ROLE_BIT_OWNER;
+        if (newWithdrawal != p.withdrawal) required |= ROLE_BIT_WITHDRAWAL | ROLE_BIT_CONSENT;
+        if (required == 0) revert NoRoleChange();
+        _pendingRoles[id] = PendingRoles(newOwner, newWithdrawal, nonce, required, 0);
+        emit RolesProposed(id, newOwner, newWithdrawal, nonce);
+    }
+
+    /// @notice A nominated holder accepts (or the current withdrawal authority consents); once
+    /// every required acceptance is in, the tuple installs atomically. Calldata binds both nominated
+    /// addresses, so replacing a pending proposal cannot redirect an already prepared acceptance.
+    /// Existing credits keep their creditor.
+    function acceptRoles(uint64 id, uint64 nonce, address newOwner, address newWithdrawal)
+        external
+    {
+        if (!initialized) revert NotInitialized();
+        Position storage p = positions[id];
+        PendingRoles storage r = _pendingRoles[id];
+        if (r.required == 0 || r.nonce != nonce) revert NoPendingRoles();
+        if (nonce != p.roleNonce) revert RoleNonceMismatch();
+        if (newOwner != r.newOwner || newWithdrawal != r.newWithdrawal) revert RoleTupleMismatch();
+        uint8 bits = 0;
+        if (msg.sender == r.newOwner) bits |= ROLE_BIT_OWNER;
+        if (msg.sender == r.newWithdrawal) bits |= ROLE_BIT_WITHDRAWAL;
+        if (msg.sender == p.withdrawal) bits |= ROLE_BIT_CONSENT;
+        bits &= r.required;
+        if (bits == 0) revert NotNominated();
+        r.given |= bits;
+        if (r.given != r.required) return;
+        p.owner = r.newOwner;
+        p.withdrawal = r.newWithdrawal;
+        p.roleNonce++;
+        emit RolesAccepted(id, r.newOwner, r.newWithdrawal, nonce);
+        delete _pendingRoles[id];
+    }
+
+    /// @notice Capture the report anchors of a closed term (#1297/#1298), in custody's storage. Permissionless and once per term: the
+    /// term's Closure must be applied (the caller opens its closure key with the H RecordID and terminal root R_H, which are stored for
+    /// post-term evidence) and its successor root epoch installed in the B1 history. The anchors p0 and t0 are the authenticated progress
+    /// and UC time of this call, never earlier than the moment the Closure, its attribution and the successor became jointly usable; every
+    /// lot of the term then raises its floors from them (holds and evidence windows from p0, the time floor from t0) and stops waiting.
+    /// Until then the term's lots cannot mature and no post-term report against the term is admitted.
+    function anchorTerm(bytes32 assignmentID, bytes32 hRecordID, bytes32 terminalRoot) external {
+        if (!initialized) revert NotInitialized();
+        Assignment storage a = assignments[assignmentID];
+        TermAnchor storage term = termAnchors[assignmentID];
+        if (!a.closed || term.anchored) revert TermNotPending();
+        if (
+            a.closureKey
+                != keccak256(
+                    abi.encode(CLOSURE_DOMAIN, a.rootEpoch, hRecordID, a.hRound, terminalRoot)
+                )
+        ) revert ClosureOpeningMismatch();
+        if (!ISealHistory(roots).sealEpoch(a.rootEpoch + 1).present) {
+            revert SuccessorNotInstalled();
+        }
+        uint64 p0 = IRootRecords(roots).progress();
+        uint64 t0 = IRootRecords(roots).ucTime();
+        term.terminalRoot = terminalRoot;
+        term.hRecordID = hRecordID;
+        term.p0 = p0;
+        term.t0 = t0;
+        term.anchored = true;
+        Policy memory terms = IPolicySource(policySource).policyAt(a.policyID);
+        uint64 hold = terms.holdNormal > terms.holdSuffix ? terms.holdNormal : terms.holdSuffix;
+        uint64 window = terms.evidenceWindow > terms.suffixEvidenceWindow
+            ? terms.evidenceWindow
+            : terms.suffixEvidenceWindow;
+        uint64 holdUntil = p0 + hold;
+        uint64 evidenceUntil = p0 + window;
+        uint64 timeUntil = t0 + terms.timeFloor;
+        if (_compact()) {
+            uint256[] storage seats = _seats[_source(assignmentID)];
+            for (uint256 i = 0; i < seats.length; ++i) {
+                (,, uint256 lotID) = _seatLot(seats[i]);
+                _anchorLot(_lots[lotID], holdUntil, evidenceUntil, timeUntil);
+            }
+        } else {
+            for (uint256 i = 0; i < a.exposureIDs.length; ++i) {
+                uint256[] storage ids = exposures[a.exposureIDs[i]].lotIDs;
+                for (uint256 j = 0; j < ids.length; ++j) {
+                    _anchorLot(_lots[ids[j]], holdUntil, evidenceUntil, timeUntil);
+                }
+            }
+        }
+        emit TermAnchored(assignmentID, p0, t0);
+    }
+
+    function _anchorLot(Lot storage l, uint64 hold, uint64 window, uint64 time) private {
+        if (hold > l.holdUntil) l.holdUntil = hold;
+        if (window > l.evidenceUntil) l.evidenceUntil = window;
+        if (time > l.timeUntil) l.timeUntil = time;
+        l.unanchoredTerms--;
     }
 
     function _reserveCompact(ReserveInput calldata in_) private {
@@ -289,7 +403,7 @@ contract CustodyGenesis is CustodyStorage {
             uint256 lotID = m.lotIDs[j];
             if (lotID <= previousLot) revert LotSetMismatch();
             previousLot = lotID;
-            Lot storage l = lots[lotID];
+            Lot storage l = _lots[lotID];
             if (l.id != m.id || l.generation != p.generation || l.category == CAT_RELEASED) {
                 revert LotNotEligible();
             }

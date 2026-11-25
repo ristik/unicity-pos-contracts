@@ -45,6 +45,8 @@ abstract contract HookStateBase is P85Flow {
         + address(evidence).code.length;
         touched += address(election.reader()).code.length
         + address(election.selection()).code.length;
+        // custody delegates its genesis and anchor steps to its fixed implementation (GENESIS_IMPL): the hook runs it too
+        touched += custody.GENESIS_IMPL().code.length;
         assertGt(touched, 0);
         address mock = address(roots);
         vm.store(address(custody), bytes32(ROOTS_SLOT), bytes32(uint256(uint160(REGISTRY))));
@@ -88,6 +90,7 @@ abstract contract HookStateBase is P85Flow {
         vm.serializeAddress(m, "reader", address(election.reader()));
         vm.serializeAddress(m, "selection", address(election.selection()));
         vm.serializeAddress(m, "policySource", address(election.policySource()));
+        vm.serializeAddress(m, "genesisImpl", custody.GENESIS_IMPL());
         vm.serializeAddress(m, "registry", REGISTRY);
         vm.serializeBytes32(m, "rolesNote", bytes32(0));
         vm.serializeUint(m, "recordCount", n);
@@ -142,7 +145,7 @@ contract HookStateElectTest is HookStateBase {
     address internal constant SYS = address(0xff00000000000000000000000000000000000001);
     /// @dev The identity of the root origin the ureth test world carries (`RootInputV2::origin_identity`); the Rust test asserts it.
     bytes32 internal constant ORIGIN =
-        0xb1a70288ef0aefa92b9d12c38fcef6957ca94ddb29eee251d2afa7da67ac5b04;
+        0xf9c1e7d92bbda451c4716cc97982621031eca19ef01413487e758d829fc3f2c7;
 
     function _electionParams() internal pure override returns (ElectionParams memory) {
         return ElectionParams({

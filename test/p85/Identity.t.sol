@@ -182,7 +182,7 @@ contract IdentityTest is P85Base {
         // vMax = 5: four genesis identities plus one more fit; the next first bond does not.
         roots = new MockRootRecordsHolder().roots();
         _deployManual(
-            address(new FixedPolicy(_defaultPolicy())),
+            address(new FixedPolicy(_defaultPolicy(), 1_800, 1_800)),
             Limits({vMax: 5, lMax: 8, rMax: 4, maxBatch: 32})
         );
         uint64 fifth = register(0x9001, 0x9101, vm.addr(0x9201));

@@ -464,6 +464,16 @@ contract InvariantHandler is P85Flow {
             }
             done += step;
         }
+        // anyone anchors every closed term (#1297/#1298; the mock reports every successor epoch installed)
+        for (uint256 t; t < assignmentList.length; ++t) {
+            bytes32 a = assignmentList[t];
+            (,,,, bool anchored) = custody.termAnchors(a);
+            if (!asg(a).closed || anchored) continue;
+            bytes32 tag = bytes32(uint256(uint160(uint256(a))));
+            custody.anchorTerm(
+                a, keccak256(abi.encode("H", tag)), keccak256(abi.encode("R_H", tag))
+            );
+        }
     }
 
     // --- evidence -------------------------------------------------------------------------------------
@@ -543,10 +553,13 @@ contract InvariantHandler is P85Flow {
             uint256 remaining = l.remaining;
             uint32 holds = evidence.pendingHolds(lots[i]);
             (bool imported,,) = custody.retirements(id, l.generation);
+            uint32 unanchored = custody.lotUnanchoredTerms(lots[i]);
             try custody.mature(one) {
                 ghostMatured += remaining;
                 ghostMatureCalls++;
-                if (holds != 0 || l.refCount != 0 || !imported) badMaturity = true;
+                if (holds != 0 || l.refCount != 0 || !imported || unanchored != 0) {
+                    badMaturity = true;
+                }
             } catch {}
         }
     }

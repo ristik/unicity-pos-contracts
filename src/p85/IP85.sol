@@ -36,12 +36,40 @@ interface IRootRecords {
     function ucTime() external view returns (uint64);
 }
 
+/// @notice One installed B1 epoch of the SealRegistry's permanent history, as the authenticated system writer stored it (the paired Go
+/// node and the execution client verified its UTB lineage before the write). `present` is false for an epoch that is not installed, and
+/// every other field is then zero. `end` is the successor's start once the successor is installed (`hasEnd`).
+struct SealEpoch {
+    bool present;
+    uint64 start;
+    bool hasEnd;
+    uint64 end;
+    uint64 signingScheme;
+    bytes32 activationCommitID; // the H RecordID of the handoff that activated this epoch (zero for the genesis entry)
+    uint64 memberCount;
+    uint64 totalWeight;
+}
+
+/// @notice The bounded read-only view of the installed B1 history (SealRegistry). The ordinary B1 verifier (0x0100) is unchanged.
+interface ISealHistory {
+    function sealEpoch(uint64 epoch) external view returns (SealEpoch memory);
+    /// @notice Member `index` of an installed epoch, in the stored order: its 33-byte compressed key and weight. Reverts out of range.
+    function sealMember(uint64 epoch, uint256 index)
+        external
+        view
+        returns (bytes memory key, uint64 weight);
+}
+
 /// @notice Source of immutable policy snapshots. `currentPolicyID` names the snapshot in force;
 /// a snapshot never changes, so an obligation that captured an ID keeps its terms forever.
+/// `reportWindow` (the wallet window W plus a reporting and inclusion margin) and `settlementMargin` are UC-second deployment
+/// immutables: every snapshot the source accepts has `timeFloor >= reportWindow + settlementMargin`.
 interface IPolicySource {
     function policy() external view returns (Policy memory);
     function currentPolicyID() external view returns (uint32);
     function policyAt(uint32 policyID) external view returns (Policy memory);
+    function reportWindow() external view returns (uint64);
+    function settlementMargin() external view returns (uint64);
 }
 
 interface IStakeCustody {
@@ -101,6 +129,13 @@ interface IStakeCustody {
             bytes32 keyDigest,
             uint32 policyID
         );
+    /// @notice A closed term's report anchors (#1297/#1298, `anchorTerm`): the applied Closure's terminal root R_H and H RecordID and
+    /// the authenticated progress and UC time captured once the Closure, its attribution and the installed successor root epoch were
+    /// jointly usable (`anchored`).
+    function termAnchors(bytes32 assignmentID)
+        external
+        view
+        returns (bytes32 terminalRoot, bytes32 hRecordID, uint64 p0, uint64 t0, bool anchored);
     function assignmentExposures(bytes32 assignmentID) external view returns (bytes32[] memory);
     function policyTerms(bytes32 assignmentID) external view returns (Policy memory);
     function lots(uint256 lotID)
@@ -121,6 +156,7 @@ interface IStakeCustody {
             uint64 evidenceUntil,
             uint64 timeUntil
         );
+    function lotUnanchoredTerms(uint256 lotID) external view returns (uint32);
     function retirements(uint64 id, uint64 generation)
         external
         view

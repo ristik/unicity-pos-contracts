@@ -28,7 +28,7 @@ import {
     ImportedUsableMismatch
 } from "./B1Layout.sol";
 
-import {IRootRecords} from "./p85/IP85.sol";
+import {IRootRecords, ISealHistory, SealEpoch} from "./p85/IP85.sol";
 import {RootRecord, RecordKind} from "./p85/P85Types.sol";
 
 /// @title SealRegistry, profile sealRegistry/v2
@@ -58,7 +58,7 @@ import {RootRecord, RecordKind} from "./p85/P85Types.sol";
 /// block, that open runs first and finalize after the forced prefix exactly once each, the post-block
 /// phase check, g_sys accounting, the header extraData check, rejection of any other transaction from
 /// a_sys, and that the calldata is a faithful projection of the authenticated rootInput.
-contract SealRegistry is IRootRecords {
+contract SealRegistry is IRootRecords, ISealHistory {
     /// @notice a_sys, the only caller of open and finalize (§2.1).
     address internal constant A_SYS = 0xff00000000000000000000000000000000000001;
 
@@ -189,6 +189,8 @@ contract SealRegistry is IRootRecords {
     error RecordDuplicateKey();
     /// recordAt outside the imported count.
     error RecordIndexOutOfRange();
+    /// sealMember of an epoch that is not installed, or beyond its member count.
+    error SealMemberOutOfRange();
     /// O10: a null block hash is not encoded as the zero word.
     error NonCanonicalNullBlockHash();
     /// F2: no open round to finalize.
@@ -574,6 +576,39 @@ contract SealRegistry is IRootRecords {
     function ucTime() external view returns (uint64) {
         // forge-lint: disable-next-line(unsafe-typecast)
         return uint64(_load(SLOT_RECORDS_UC_TIME));
+    }
+
+    /// @notice The installed B1 facts of `epoch` (P85 post-term evidence, #1297): the words the system writer stored, read back
+    /// verbatim. An epoch that is not installed reads as `present == false` with every field zero. Read-only and bounded.
+    function sealEpoch(uint64 epoch) external view returns (SealEpoch memory v) {
+        if (_load(B1Layout.entrySlot(epoch, 0)) != 1) return v;
+        v.present = true;
+        // forge-lint: disable-start(unsafe-typecast)
+        v.start = uint64(_load(B1Layout.entrySlot(epoch, 4)));
+        v.end = uint64(_load(B1Layout.entrySlot(epoch, 5)));
+        v.hasEnd = _load(B1Layout.entrySlot(epoch, 6)) == 1;
+        v.signingScheme = uint64(_load(B1Layout.entrySlot(epoch, 7)));
+        v.activationCommitID = bytes32(_load(B1Layout.entrySlot(epoch, 3)));
+        v.memberCount = uint64(_load(B1Layout.entrySlot(epoch, 9)));
+        v.totalWeight = uint64(_load(B1Layout.entrySlot(epoch, 10)));
+        // forge-lint: disable-end(unsafe-typecast)
+    }
+
+    /// @notice Member `index` of the installed epoch `epoch`: its 33-byte compressed key (the two stored key words) and its weight.
+    function sealMember(uint64 epoch, uint256 index)
+        external
+        view
+        returns (bytes memory key, uint64 weight)
+    {
+        if (
+            _load(B1Layout.entrySlot(epoch, 0)) != 1 || index >= _load(B1Layout.entrySlot(epoch, 9))
+        ) revert SealMemberOutOfRange();
+        key = abi.encodePacked(
+            bytes32(_load(B1Layout.memberSlot(epoch, index, 5))),
+            bytes1(bytes32(_load(B1Layout.memberSlot(epoch, index, 6))))
+        );
+        // forge-lint: disable-next-line(unsafe-typecast)
+        weight = uint64(_load(B1Layout.memberSlot(epoch, index, 7)));
     }
 
     /// @notice Reproducible, domain-separated hash for the acknowledgement projection carried in

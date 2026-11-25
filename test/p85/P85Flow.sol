@@ -59,10 +59,23 @@ abstract contract P85Flow is P85Base {
         applyAll();
     }
 
+    /// @dev G's Closure at (p, t), applied, and its report anchors captured at the same clock (#1297/#1298).
     function closeGenesisAt(uint64 p, uint64 t) internal {
+        closeGenesisUnanchoredAt(p, t);
+        anchorClosed(GENESIS_ASSIGNMENT, "genesis");
+    }
+
+    function closeGenesisUnanchoredAt(uint64 p, uint64 t) internal {
         clock(p, t);
         pushRecord(RecordKind.Closure, closureData(GENESIS_ASSIGNMENT, H_ROUND, "genesis"));
         applyAll();
+    }
+
+    /// @dev Capture the report anchors of a term closed by `closureData(assignmentID, _, tag)` at the current clock.
+    function anchorClosed(bytes32 assignmentID, bytes32 tag) internal {
+        custody.anchorTerm(
+            assignmentID, keccak256(abi.encode("H", tag)), keccak256(abi.encode("R_H", tag))
+        );
     }
 
     function retireRecordAt(uint64 id, uint64 p, uint64 t) internal {
