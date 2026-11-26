@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 pragma solidity 0.8.37;
 
+import {Vm} from "forge-std/Vm.sol";
 import {PosLimitBase} from "./PosLimit.t.sol";
 import {VRC} from "../../../src/vr/VRConstants.sol";
 import {CustodyStorage} from "../../../src/p85/CustodyStorage.sol";
@@ -8,6 +9,7 @@ import {Evidence} from "../../../src/p85/Evidence.sol";
 import {
     AssignmentSeat,
     Limits,
+    OutputRejectedData,
     RecordKind,
     RecoveryAckData,
     ReserveInput,
@@ -83,6 +85,60 @@ contract PosCompactSixteenTest is PosLimitBase {
         assertEq(vr.health(), VRC.HEALTHY);
         vm.expectRevert(ElectionStorage.IndexFull.selector);
         this.joinExtra();
+    }
+
+    /// @dev bft-core#1303 review P3-1: the worst-case park. A published 16-seat result expires with every bit clear, so `parkExpired`
+    /// walks 16 frozen members against 16 incumbents and parks every joiner. The cold two-record segment (OutputRejected, SessionClosed)
+    /// fits the stipend VR gives it (2 x the per-record stipend), and the park is not skipped.
+    function test_aSixteenSeatExpiryParksWithinTheRecordStipend() public {
+        _atTheLimit();
+        bytes32 incumbent = custody.lastAckedAssignment();
+        _advance(300, 200);
+        assertEq(_vrElect(ORIGIN), VRC.ELECT_RESERVED);
+        bytes32 r = vr.openOutput();
+        bytes32 next = election.result(r).assignmentID;
+        assertEq(custody.assignmentSeatCount(next), 16);
+        election.submitAssignmentPoPs(r, _popsFor2(r));
+        election.finalizeCandidate(r);
+        assertEq(vr.publish(r), VRC.PUB_PUBLISHED);
+        _advance(10, 10);
+        uint64 from = roots.recordCount();
+        uint64 p = progress;
+        pushRecord(RecordKind.OutputRejected, abi.encode(OutputRejectedData(r, 1, 0, 0)));
+        _closedRecord(r);
+        _coolAll();
+        vm.recordLogs();
+        vm.prank(VR_ADDR);
+        uint256 g = gasleft();
+        (bool ok,) = address(adapter).call{gas: 2 * _recordCap()}(
+            abi.encodeCall(adapter.onRecords, (from, 2))
+        );
+        uint256 used = g - gasleft();
+        emit log_named_uint("16 seats, cold Expired + SessionClosed onRecords callback", used);
+        assertTrue(ok);
+        assertLe(used, 2 * _recordStipend(), "within the two-record stipend");
+        Vm.Log[] memory logs = vm.getRecordedLogs();
+        for (uint256 i; i < logs.length; ++i) {
+            assertTrue(
+                logs[i].topics[0] != keccak256("ParkSkipped(bytes32)"), "the park is not skipped"
+            );
+        }
+        uint256 joiners;
+        for (uint256 i; i < 16; ++i) {
+            uint64 id = custody.assignmentSeat(next, i).binding.id;
+            bool kept;
+            for (uint256 k; k < 16; ++k) {
+                if (custody.assignmentSeat(incumbent, k).binding.id == id) kept = true;
+            }
+            if (kept) {
+                assertEq(election.parkedUntil(id), 0, "an incumbent is never parked");
+            } else {
+                ++joiners;
+                assertEq(election.parkedUntil(id), p + 2 * VRC.LIFETIME, "a joiner is parked");
+            }
+        }
+        assertGt(joiners, 0);
+        assertEq(custody.recordCursor(), roots.recordCount(), "the records reached custody");
     }
 
     function test_savedClosureRecoveryAtSixteenWithFullIndex() public {

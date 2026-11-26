@@ -324,6 +324,32 @@ contract PosParkTest is PosBase {
         assertGt(election.parkedUntil(j.id), 0);
     }
 
+    /// @dev review P3-1: a park call that fails is reported (`ParkSkipped`), leaves the identity unparked, and does not hold the records
+    /// back from custody or fault the module.
+    function test_aFailedParkIsReportedAndTheRecordsStillReachCustody() public {
+        Joiner memory j = _join();
+        bytes32 r1 = _electFromStake();
+        assertEq(_publishResult2(r1), VRC.PUB_PUBLISHED);
+        vm.mockCallRevert(
+            address(election), abi.encodeWithSelector(election.parkExpired.selector), "boom"
+        );
+        vm.recordLogs();
+        _expire(r1, 0);
+        vm.clearMockedCalls();
+        Vm.Log[] memory logs = vm.getRecordedLogs();
+        uint256 skipped;
+        for (uint256 i; i < logs.length; ++i) {
+            if (
+                logs[i].emitter == ADAPTER && logs[i].topics[0] == keccak256("ParkSkipped(bytes32)")
+                    && logs[i].topics[1] == r1
+            ) ++skipped;
+        }
+        assertEq(skipped, 1, "the skip is reported once");
+        assertEq(election.parkedUntil(j.id), 0, "skipped: not parked");
+        assertEq(custody.recordCursor(), roots.recordCount());
+        assertEq(vr.health(), VRC.HEALTHY);
+    }
+
     function test_onlyTheAdapterParks() public {
         _join();
         bytes32 r1 = _electFromStake();

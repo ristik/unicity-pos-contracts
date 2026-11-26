@@ -77,6 +77,10 @@ contract PosElectionAdapter is IElectionModule, IPosAdapter {
     ElectionPolicy public immutable ELECTION;
     IPosCustody public immutable CUSTODY;
 
+    /// @dev The park of an Expired result failed (bft-core#1303 review P3-1): VR never redelivers a segment, so the result stays unparked.
+    /// Parking only delays future eligibility, so the records still reach custody; the event makes the skip visible.
+    event ParkSkipped(bytes32 indexed resultID);
+
     error NotVR();
     error NotElection();
     error BadArgument();
@@ -291,8 +295,8 @@ contract PosElectionAdapter is IElectionModule, IPosAdapter {
     /// **Parking (design 3.7.4 on the PoS stack, #1303).** First, every Expired `OutputRejected` of VR's own segment `[fromIndex, end)` is
     /// handed to `ElectionPolicy.parkExpired` with its ordered ready bitmap and record progress. The segment is VR's, never custody's
     /// cursor: custody's `applyRootRecords` is permissionless, so a custody that was front-run past the record still parks. P85 applies
-    /// each result once and ignores foreign ones. Parking only delays future eligibility, so a failed call is contained here and the
-    /// records still reach custody.
+    /// each result once and ignores foreign ones. Parking only delays future eligibility, so a failed call is contained here (and
+    /// reported as `ParkSkipped`) and the records still reach custody.
     function onRecords(uint64 fromIndex, uint32 count) external onlyVR {
         uint64 end = fromIndex + count;
         IVRRecordSource seal = IVRRecordSource(VRC.SEAL_REGISTRY);
@@ -302,10 +306,11 @@ contract PosElectionAdapter is IElectionModule, IPosAdapter {
                 r.kind != VRC.REC_OUTPUT_REJECTED || !VRCodec.recordWellFormed(r.kind, r.data)
                     || VRCodec.wordAt(r.data, 1) != VRC.REJ_EXPIRED
             ) continue;
-            try ELECTION.parkExpired(
-                bytes32(VRCodec.wordAt(r.data, 0)), uint16(VRCodec.wordAt(r.data, 3)), r.progress
-            ) {}
-                catch {}
+            bytes32 rid = bytes32(VRCodec.wordAt(r.data, 0));
+            try ELECTION.parkExpired(rid, uint16(VRCodec.wordAt(r.data, 3)), r.progress) {}
+            catch {
+                emit ParkSkipped(rid);
+            }
         }
         uint64 cursor = CUSTODY.recordCursor();
         if (cursor >= end) return;
