@@ -29,6 +29,7 @@ import {Continuity} from "./Continuity.sol";
 import {Selection} from "./Selection.sol";
 import {SelectionEngine} from "./SelectionEngine.sol";
 import {EligibilityReader} from "./EligibilityReader.sol";
+import {VRC} from "../vr/VRConstants.sol";
 
 /// @dev The one VR view the eligibility check reads (`ValidatorRegistry.bindingOf`).
 interface IVRBinding {
@@ -76,6 +77,9 @@ abstract contract ElectionStorage {
     bytes32 internal constant CONTRACTS_DOMAIN = keccak256("unicity.p85.contracts");
     /// @dev The profile's fixed privileged caller (ureth `SYSTEM_CALLER`), the address the mandatory hook calls from.
     address internal constant SYSTEM_CALLER = address(0xff00000000000000000000000000000000000001);
+    /// @dev #1303 (design 3.7.4 on the PoS stack): a parked identity is not eligible for this many root-progress rounds after the expiry
+    /// record that parked it. Fixed, never escalated, and no owner override: eligibility resumes when it ends.
+    uint64 internal constant PARK_PERIOD = 2 * VRC.LIFETIME;
 
     error NotFactory();
     error AlreadyInitialized();
@@ -128,6 +132,7 @@ abstract contract ElectionStorage {
     event PoPAccepted(bytes32 indexed resultID, uint64 indexed id, bytes32 signatureHash);
     event CandidatePublished(bytes32 indexed resultID, bytes32 primaryHash);
     event CoverageLostFor(bytes32 indexed resultID, uint64 indexed id);
+    event Parked(bytes32 indexed resultID, uint64 indexed id, uint64 until);
 
     /// @dev Why an election produced no candidate. 1-4 are Selection.Reason; the others are the election's own.
     enum Reason {
@@ -274,6 +279,12 @@ abstract contract ElectionStorage {
     /// generation). `_eligible` skips an identity whose delegation is not its VR binding, so a misaligned identity is never selected and
     /// cannot hold up rotations. Appended last: no slot moves.
     address internal registry;
+    /// @dev #1303 (design 3.7.4 on the PoS stack): the root progress until which an identity is not eligible, written by `parkExpired` from an
+    /// ordered Expired OutputRejected of one of this module's results. Future eligibility only: frozen results, exposures, retirement and
+    /// claims are untouched. Appended last: no slot moves.
+    mapping(uint64 => uint64) public parkedUntil;
+    /// @dev The results whose Expired rejection has been applied: each is applied once, however often its record is delivered.
+    mapping(bytes32 => bool) internal _parkedFor;
 
     /// @param factory_ the deployment factory that will initialize this module, fixed at construction. The module is deployed first so
     /// the factory's own creation code stays small; only that factory can initialize it, and it can do so once.
@@ -626,7 +637,7 @@ contract ElectionPolicy is ElectionStorage {
     {
         if (msg.sender != address(this)) revert NotSelf();
         Continuity.Member[] memory o = reader.committed(predecessor);
-        (Cand[] memory c, bytes32 digest) = _eligible(_snapshotSeed(origin, p, t, predecessor));
+        (Cand[] memory c, bytes32 digest) = _eligible(_snapshotSeed(origin, p, t, predecessor), p);
         Selection.Entry[] memory e = new Selection.Entry[](c.length);
         for (uint256 i = 0; i < c.length; ++i) {
             e[i] = Selection.Entry(c[i].id, c[i].binding, c[i].weight);
@@ -817,13 +828,19 @@ contract ElectionPolicy is ElectionStorage {
     /// @dev The snapshot's eligible identities, ascending by StakingID. Primary eligibility (design v5 section 5): no earlier
     /// retirement request or exclusion (the reader's position checks), a delegated binding of the open generation whose root key is the
     /// identity's current or staged root key (checked here, against this contract's staged bindings), whose EVM key custody registered,
-    /// and principal of at least B_min with a positive assigned weight (the reader's weight checks).
-    function _eligible(bytes32 seed) private view returns (Cand[] memory out, bytes32 digest) {
+    /// and principal of at least B_min with a positive assigned weight (the reader's weight checks). An identity parked past `p` (#1303) is
+    /// skipped.
+    function _eligible(bytes32 seed, uint64 p)
+        private
+        view
+        returns (Cand[] memory out, bytes32 digest)
+    {
         EligibilityReader.Pos[] memory ps = reader.positions(_index);
         Cand[] memory tmp = new Cand[](ps.length);
         EligibilityReader.Delegated[] memory dl = new EligibilityReader.Delegated[](ps.length);
         uint256 n = 0;
         for (uint256 i = 0; i < ps.length; ++i) {
+            if (parkedUntil[ps[i].id] > p) continue;
             Staged storage s = _staged[ps[i].id][ps[i].generation];
             if (s.bindingHash == bytes32(0)) continue;
             bytes32 rk = s.rootKeyHash;
@@ -942,8 +959,12 @@ contract ElectionPolicy is ElectionStorage {
         return abi.decode(_publicationStep(), (bool));
     }
 
+    function parkExpired(bytes32, uint16, uint64) external {
+        _publicationStep();
+    }
+
     function _publicationStep() private returns (bytes memory) {
-        // The four selector-specific entry points forward only to the fixed publication implementation.
+        // The five selector-specific entry points forward only to the fixed publication implementation.
         if (PUBLICATION_IMPL.codehash != PUBLICATION_CODE_HASH) revert ManifestMismatch();
         // forge-lint: disable-next-line(controlled-delegatecall)
         (bool ok, bytes memory ret) = PUBLICATION_IMPL.delegatecall(msg.data);
@@ -1145,6 +1166,35 @@ contract ElectionPublication is ElectionStorage {
             _checkMember(resultID, i, f[i]);
         }
         return _publications[resultID].lost;
+    }
+
+    /// @notice The hook caller (the PosElectionAdapter) only: an ordered Expired OutputRejected of `resultID` at root progress `p`, with the
+    /// ready bitmap the root ordered (design 3.7.4 on the PoS stack, #1303). Applied once per result, in any state, so a custody cursor
+    /// that already moved past the record changes nothing. The members of the committed predecessor (the incumbents) are never parked. Of
+    /// the others, a published result parks those whose bit is clear (bit i is the i-th frozen member), an unpublished one those without a
+    /// stored assignment PoP. Parking only delays future eligibility, by `PARK_PERIOD` from `p`. A foreign or unknown result changes nothing.
+    function parkExpired(bytes32 resultID, uint16 readyBitmap, uint64 p) external whenInitialized {
+        if (msg.sender != hookCaller) revert NotSystem();
+        Result storage r = _results[resultID];
+        if (r.assignmentID == bytes32(0) || _parkedFor[resultID]) return;
+        _parkedFor[resultID] = true;
+        bool published = _publications[resultID].published;
+        Frozen[] memory f = frozenMembers(resultID);
+        Continuity.Member[] memory o = reader.committed(r.predecessor);
+        uint64 until = p + PARK_PERIOD;
+        for (uint256 i = 0; i < f.length; ++i) {
+            uint64 id = f[i].id;
+            bool incumbent = false;
+            for (uint256 k = 0; k < o.length; ++k) {
+                if (o[k].id == id) incumbent = true;
+            }
+            if (incumbent) continue;
+            if (published ? (readyBitmap >> i) & 1 != 0 : _popHashes[resultID][id] != bytes32(0)) {
+                continue;
+            }
+            if (parkedUntil[id] < until) parkedUntil[id] = until;
+            emit Parked(resultID, id, until);
+        }
     }
 
     function _checkMember(bytes32 resultID, uint256 index, Frozen memory m) private {
