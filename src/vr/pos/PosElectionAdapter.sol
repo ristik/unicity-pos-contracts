@@ -34,8 +34,9 @@ interface IPosCustody is IStakeCustody {
 /// **Liability holder.** The holder is custody itself (holder 0 of the generation): it writes the generic facts (design 3.9.2) in its own
 /// storage in the same function as every liability mutation, so the adapter has nothing to mirror.
 ///
-/// **Alignment (testnet prototype).** A member word is VR's binding word and the custody generation is the member generation: the prototype
-/// requires an identity's VR binding (words, generation) to equal its P85 delegation. A result whose member does not match VR's current or
+/// **Alignment (testnet prototype).** A member word is VR's binding word and the custody generation (the bond cycle) is the member
+/// generation (#1286): the prototype requires an identity's VR binding words (current, or nonzero staged) to equal its P85 delegation; VR's
+/// own binding-version counter is not compared. A result whose member does not match VR's current or
 /// staged binding is never served (NotMine) and expires, so a misaligned identity cannot Fault the registry. Carry-over (native) boundaries
 /// break custody's liability continuity; the adapter is then Faulted by its own records, which is the prototype's stated limit.
 ///
@@ -46,9 +47,9 @@ interface IPosCustody is IStakeCustody {
 /// Acknowledged. The committed outcome is the same (a committed H always wins); only the intermediate VR state depends on who imported
 /// first (both orders are tested: PosLifecycle).
 ///
-/// **Eligibility (astra, #92).** `ElectionPolicy` skips an identity whose delegation is not its VR binding (words and generation), so a
-/// misaligned identity is never selected; at publication the adapter compares VR's complete candidate binding (generation, node words,
-/// keys, payee) with the frozen binding hash and takes the words from VR, so a later `admitDelegation` cannot make an aligned frozen
+/// **Eligibility (astra, #92, #1286).** `ElectionPolicy` skips an identity whose delegation is not its VR binding words, so a
+/// misaligned identity is never selected; at publication the adapter compares VR's complete candidate binding (node words, keys, payee)
+/// under the frozen custody generation with the frozen binding hash, takes the words from VR and outputs the frozen custody generation, so a later `admitDelegation` cannot make an aligned frozen
 /// snapshot unservable and a staged VR binding replaced at the same generation is not served.
 ///
 /// **Measured limit (sol and astra, #92).** The PoS-capable VR build (callback caps 5.0 / 1.5 / 2.5 M) carries the P85 election, publication
@@ -223,6 +224,8 @@ contract PosElectionAdapter is IElectionModule, IPosAdapter {
             b = IVR(VR).bindingOf(f.id, true);
             if (!_matches(b, f)) return m;
         }
+        // #1286: the member generation is the frozen seat's custody generation, never VR's binding-version word
+        b.generation = f.generation;
         b.weight = seat.weight;
         b.rawWeight = seat.rawWeight;
         b.exposureDigest = seat.memberDigest;
@@ -230,8 +233,8 @@ contract PosElectionAdapter is IElectionModule, IPosAdapter {
     }
 
     /// @dev One frozen member as VR's member words: the quantized and raw weights and the exposure's frozen key hashes and operator payee
-    /// (custody), the generation, and the node words of the VR binding those frozen keys, payee and generation identify (current, or
-    /// staged at g + 1). VR is the authority for the words, so a later `admitDelegation` cannot make an aligned frozen member
+    /// (custody), the frozen custody generation, and the node words of the VR binding those frozen keys and payee identify under that
+    /// generation (current, or nonzero staged). VR is the authority for the words, so a later `admitDelegation` cannot make an aligned frozen member
     /// unservable. A member VR does not hold as frozen is returned with id 0 (the caller serves nothing).
     function _member(ElectionStorage.Frozen memory f, bytes32 exposureId)
         internal
@@ -259,15 +262,15 @@ contract PosElectionAdapter is IElectionModule, IPosAdapter {
             md != bytes32(0) ? md : keccak256(abi.encode(CUSTODY.exposureLots(exposureId)));
     }
 
-    /// @dev The candidate VR binding is the one P85 froze: the same generation, and the complete binding (node words, keys, payee) hashes to
-    /// the frozen `bindingHash` (ElectionPolicy's formula). So a staged VR binding replaced at the same prospective generation, with other
-    /// node words and the same keys and payee, is not served.
+    /// @dev The candidate VR binding is the one P85 froze: a binding is present (VR's version word is nonzero; #1286: it is not compared
+    /// with the custody generation), and the complete binding (node words, keys, payee) under the frozen custody generation hashes to the
+    /// frozen `bindingHash` (ElectionPolicy's formula). So a staged VR binding replaced with other node words, keys or payee is not served.
     function _matches(Member memory b, ElectionStorage.Frozen memory f)
         private
         pure
         returns (bool)
     {
-        if (b.generation == 0 || b.generation != f.generation) return false;
+        if (b.generation == 0) return false;
         return keccak256(
             abi.encode(
             BINDING_DOMAIN,

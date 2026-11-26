@@ -402,21 +402,34 @@ contract ValidatorRegistryPos is VRSharedPos {
 
     /// @dev VR's validation of an output's member set (design sections 3.1 and 3.5.4): known identities whose words are exactly their
     /// current binding (generation g) or their staged binding (generation g + 1); positive raw weights quantized by the shared rule; and,
-    /// for module outputs, the committee limits (in range or strictly toward it) and the O -> S continuity budget.
+    /// for module outputs, the committee limits (in range or strictly toward it) and the O -> S continuity budget. PoS build (#1286): an
+    /// output of the P85 adapter names VR's exact current or nonzero staged binding at the custody generation (`_posCustody`).
     function _validMembers(Member[] memory ms, bool moduleOutput) private view returns (bool) {
         VRLayout.VRStorage storage $ = VRLayout.load();
         uint256 n = ms.length;
         if (n == 0 || n > VRC.MAX_COMMITTEE) return false;
         uint256[] memory raw = new uint256[](n);
+        address custody = _posCustody();
         for (uint256 i = 0; i < n; ++i) {
             Member memory m = ms[i];
             if (i > 0 && ms[i - 1].id >= m.id) return false;
             VRLayout.Identity storage idn = $.identities[m.id];
             if (idn.generation == 0 || m.rawWeight == 0) return false;
             bytes32 ref = _ref(m.rootNodeWord, m.rootKeyHash, m.evmNodeWord, m.evmKeyHash, m.payee);
-            bool current = m.generation == idn.generation && ref == idn.currentRef;
-            bool staged =
-                idn.stagedRef != 0 && m.generation == idn.generation + 1 && ref == idn.stagedRef;
+            bool current;
+            bool staged;
+            if (custody == address(0)) {
+                current = m.generation == idn.generation && ref == idn.currentRef;
+                staged = idn.stagedRef != 0 && m.generation == idn.generation + 1
+                    && ref == idn.stagedRef;
+            } else {
+                current = ref == idn.currentRef;
+                staged = idn.stagedRef != 0 && ref == idn.stagedRef;
+                if (
+                    m.generation < idn.generation
+                        || m.generation != _custodyGeneration(custody, m.id)
+                ) return false;
+            }
             if (!current && !staged) return false;
             raw[i] = m.rawWeight;
         }
@@ -434,6 +447,30 @@ contract ValidatorRegistryPos is VRSharedPos {
         if (_limitDistance(n) != 0 && _limitDistance(n) >= _limitDistance(o)) return false;
         (uint8 failed,) = Continuity.check(_committeeCont(), _membersCont(ms), _contParams());
         return failed == 0;
+    }
+
+    /// @dev The PoS adapter's moduleTag and custody's `positions(uint64)` (its fifth word is the bond-cycle generation).
+    bytes32 private constant POS_MODULE_TAG = keccak256("unicity.vr.pos-p85.v1");
+    bytes4 private constant POSITIONS = bytes4(keccak256("positions(uint64)"));
+
+    /// @dev PoS build (#1286): custody, when the active module is the P85 adapter and holder 0 is its liability holder; zero otherwise
+    /// (the PoA rule applies).
+    function _posCustody() private view returns (address) {
+        VRLayout.VRStorage storage $ = VRLayout.load();
+        if ($.module.moduleTag != POS_MODULE_TAG || $.status.holderCount == 0) return address(0);
+        VRLayout.Holder storage h = $.holders[0];
+        if (h.module != $.activeModule) return address(0);
+        return h.holder;
+    }
+
+    /// @dev Custody's generation of `id` (zero, so no member matches, when custody's code is not the pinned holder code or the read fails).
+    function _custodyGeneration(address custody, uint64 id) private view returns (uint256 g) {
+        if (custody.codehash != VRLayout.load().holders[0].holderCodeHash) return 0;
+        (bool ok, bytes memory r) = custody.staticcall(abi.encodeWithSelector(POSITIONS, id));
+        if (!ok || r.length != 288) return 0;
+        assembly ("memory-safe") {
+            g := mload(add(r, 160))
+        }
     }
 
     function _limitDistance(uint256 n) private view returns (uint256) {
