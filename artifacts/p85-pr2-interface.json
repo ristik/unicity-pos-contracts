@@ -46,6 +46,7 @@
       "Initialized(bytes32)": "0xdc73717d728bcfa015e8117438a65319aa06e979ca324afa6e1ea645c28ea15d",
       "LiveIndexChanged(uint64,bool)": "0xd29e08e8c314b5b10192fe139818d4104746e677dc1b942dbecc4b7f6702c318",
       "NoCandidate(bytes32,uint64,ElectionStorage.Reason,bytes32)": "0xbac438525d27366f10d1385a235002ed617f96bf3c362f8a27e135fe694e6f24",
+      "Parked(bytes32,uint64,uint64)": "0x8b03a43e4507a657f930be2b3a3f2bffb49e9d3aff228a67195e6fe79dfa38bb",
       "PoPAccepted(bytes32,uint64,bytes32)": "0x7c943eaffa0d6585118fc2b54776c982f688f490a002c248faba0535355cdce9",
       "ResultResolved(bytes32,uint8)": "0x6c84c70d32c46bb8d0566ad3e6dfb68e8c982ac6661d722a9ce1cec8f56ba9a1"
     },
@@ -80,6 +81,8 @@
       "network()": "6739afca",
       "openResult()": "5552dcb8",
       "params()": "cff0ab96",
+      "parkExpired(bytes32,uint16,uint64)": "0b029278",
+      "parkedUntil(uint64)": "cb22f153",
       "policySource()": "b5e5f633",
       "popDigest(bytes32,uint64,bytes32)": "d9d6b15a",
       "popHash(bytes32,uint64)": "79da3463",
