@@ -8,7 +8,7 @@ pragma solidity 0.8.37;
 import {AssignmentSeat} from "../../p85/P85Types.sol";
 import {VRC} from "../VRConstants.sol";
 import {VRCodec} from "../VRCodec.sol";
-import {Member, IVR, IElectionModule} from "../VRTypes.sol";
+import {Member, IVR, IElectionModule, IVRRecordSource, VRRecord} from "../VRTypes.sol";
 import {ElectionPolicy, ElectionStorage} from "../../p85/ElectionPolicy.sol";
 import {IStakeCustody, IPosAdapter} from "../../p85/IP85.sol";
 
@@ -27,7 +27,7 @@ interface IPosCustody is IStakeCustody {
 /// |---|---|
 /// | `elect` | maps P85's outcome; Reserved returns P85's own result id with `ready = false` |
 /// | `outputOf` | Pending until P85 publishes (`finalizeCandidate`), NotMine for a foreign or lost result, Ready for a published, not lost, Reserved result: `frozenMembers`, custody's exposures and the frozen node words, with custody's exposure digest per member |
-/// | `onRecords` | `custody.applyRootRecords(n)` (custody pulls from the SealRegistry itself) |
+/// | `onRecords` | parks the non-provers of an Expired `OutputRejected` in VR's own segment (`ElectionPolicy.parkExpired`, #1303), then `custody.applyRootRecords(n)` (custody pulls from the SealRegistry itself) |
 /// | `onResolved`, `onGovernance` | no-ops: the economic policy stays in `GovernanceParams` under the multisig |
 /// | `outputLost` | `ElectionPolicy` only, at the one place its `lost` bit is first set: `VR.invalidate(resultID, LOST)`, no try/catch |
 ///
@@ -287,8 +287,26 @@ contract PosElectionAdapter is IElectionModule, IPosAdapter {
 
     /// @notice Root records (design 3.8): custody pulls them from the SealRegistry itself, from its own cursor, up to the end of this
     /// segment (a custody that is ahead has nothing to do; one that is behind catches up, within its batch limit).
+    ///
+    /// **Parking (design 3.7.4 on the PoS stack, #1303).** First, every Expired `OutputRejected` of VR's own segment `[fromIndex, end)` is
+    /// handed to `ElectionPolicy.parkExpired` with its ordered ready bitmap and record progress. The segment is VR's, never custody's
+    /// cursor: custody's `applyRootRecords` is permissionless, so a custody that was front-run past the record still parks. P85 applies
+    /// each result once and ignores foreign ones. Parking only delays future eligibility, so a failed call is contained here and the
+    /// records still reach custody.
     function onRecords(uint64 fromIndex, uint32 count) external onlyVR {
         uint64 end = fromIndex + count;
+        IVRRecordSource seal = IVRRecordSource(VRC.SEAL_REGISTRY);
+        for (uint64 i = fromIndex; i < end; ++i) {
+            VRRecord memory r = seal.recordAt(i);
+            if (
+                r.kind != VRC.REC_OUTPUT_REJECTED || !VRCodec.recordWellFormed(r.kind, r.data)
+                    || VRCodec.wordAt(r.data, 1) != VRC.REJ_EXPIRED
+            ) continue;
+            try ELECTION.parkExpired(
+                bytes32(VRCodec.wordAt(r.data, 0)), uint16(VRCodec.wordAt(r.data, 3)), r.progress
+            ) {}
+                catch {}
+        }
         uint64 cursor = CUSTODY.recordCursor();
         if (cursor >= end) return;
         (,,, uint32 maxBatch) = CUSTODY.limits();

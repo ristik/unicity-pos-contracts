@@ -244,7 +244,9 @@ contract ElectionGasTest is P85Flow {
     }
 
     function test_measureV32L4C10() public {
-        _measureElection(32, 4, 10, 9_100_000); // VT-04: the holder facts (design 3.9.2) add about 1% per reserved exposure
+        // VT-04: the holder facts (design 3.9.2) add about 1% per reserved exposure; bft-core#1303: the park check reads one cold
+        // parkedUntil word per indexed identity (about 2,100 gas each, 67 k at V = 32)
+        _measureElection(32, 4, 10, 9_200_000);
     }
 
     /// @dev The heavy scenario: the raw total is above B, so every trial is quantized and judged by a full measurement.
