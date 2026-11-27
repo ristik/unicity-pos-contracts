@@ -21,6 +21,8 @@ jobs:
         run: forge fmt --check
       - name: PoS-capable VR build is generated
         run: python3 script/gen-vr-pos-build.py --check
+      - name: ERC20 NB2 specializations match their native sources
+        run: python3 script/nb2-erc20/generate.py --check
       - name: VR suite against the PoS-capable build
         run: VR_BUILD=pos forge test --match-path "test/vr/*" --no-match-path "test/vr/pos/*"
       - name: forge build
