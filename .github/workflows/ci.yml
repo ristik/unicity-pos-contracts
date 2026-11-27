@@ -67,7 +67,14 @@ jobs:
           git -C "$RUNNER_TEMP/bft-core" fetch --quiet --depth 1 https://github.com/ristik/bft-core.git 8c1b6ca9ff18648f98f3df588e70d70285e6adc6
           bash script/nb2/stage-flat-vectors.sh "$RUNNER_TEMP/bft-core"
       - name: forge test
-        run: forge test -vvv
+        run: forge test --no-match-path "test/p85/PublicationFixture.t.sol" -vvv
+      - name: The P85 publication fixture matches its focused build
+        # The fixture commits to the deployed test graph's bytecode. Use the same compiler inputs
+        # for regeneration and replay, with a cache separate from the full build.
+        env:
+          FOUNDRY_OUT: out-p85-publication
+          FOUNDRY_CACHE_PATH: cache-p85-publication
+        run: forge test --match-path "test/p85/PublicationFixture.t.sol" -vvv
       - name: The VR hook fixture is the generator's output
         # test/vr/fixtures/vr-hook.json (copied into ureth's crates/unicity/execution/testdata) is regenerated from a clean raw
         # directory: the dumps of VRHookState.t.sol folded by tools/vr_hook_state.py. Any change to VR, the facets, PoA, the
