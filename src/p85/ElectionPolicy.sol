@@ -285,6 +285,8 @@ abstract contract ElectionStorage {
     mapping(uint64 => uint64) public parkedUntil;
     /// @dev The results whose Expired rejection has been applied: each is applied once, however often its record is delivered.
     mapping(bytes32 => bool) internal _parkedFor;
+    /// @dev #1319: the results whose certified PoPMissed record has been applied (once per result, independent of `_parkedFor`). Appended last.
+    mapping(bytes32 => bool) internal _missedFor;
 
     /// @param factory_ the deployment factory that will initialize this module, fixed at construction. The module is deployed first so
     /// the factory's own creation code stays small; only that factory can initialize it, and it can do so once.
@@ -963,6 +965,10 @@ contract ElectionPolicy is ElectionStorage {
         _publicationStep();
     }
 
+    function parkMissed(bytes32, uint16, uint64) external {
+        _publicationStep();
+    }
+
     function _publicationStep() private returns (bytes memory) {
         // The five selector-specific entry points forward only to the fixed publication implementation.
         if (PUBLICATION_IMPL.codehash != PUBLICATION_CODE_HASH) revert ManifestMismatch();
@@ -1192,6 +1198,24 @@ contract ElectionPublication is ElectionStorage {
             if (published ? (readyBitmap >> i) & 1 != 0 : _popHashes[resultID][id] != bytes32(0)) {
                 continue;
             }
+            if (parkedUntil[id] < until) parkedUntil[id] = until;
+            emit Parked(resultID, id, until);
+        }
+    }
+
+    /// @notice The hook caller only: a root-certified PoPMissed record of `resultID` at root progress `p` (bft-core#1319). Bit i of
+    /// `missedBitmap` is the i-th frozen member, parked for `PARK_PERIOD` from `p`, incumbents included. Applied once per result, independent
+    /// of `parkExpired`. Bits at or beyond the frozen length are ignored; a foreign or unknown result changes nothing. Only `_eligible` reads
+    /// the park: signing, stake, exit and claim rights are untouched.
+    function parkMissed(bytes32 resultID, uint16 missedBitmap, uint64 p) external whenInitialized {
+        if (msg.sender != hookCaller) revert NotSystem();
+        if (_results[resultID].assignmentID == bytes32(0) || _missedFor[resultID]) return;
+        _missedFor[resultID] = true;
+        Frozen[] memory f = frozenMembers(resultID);
+        uint64 until = p + PARK_PERIOD;
+        for (uint256 i = 0; i < f.length; ++i) {
+            if ((missedBitmap >> i) & 1 == 0) continue;
+            uint64 id = f[i].id;
             if (parkedUntil[id] < until) parkedUntil[id] = until;
             emit Parked(resultID, id, until);
         }

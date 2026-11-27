@@ -865,6 +865,33 @@ contract RootRecordsImportTest is SealRegistryBase {
         assertTrue(
             _importsRaw(8, _holder(7, type(uint64).max, type(uint64).max)), "HolderRetirement"
         );
+        assertTrue(_importsRaw(9, abi.encode(keccak256("r"), type(uint64).max, 1)), "PoPMissed");
+        assertTrue(_importsRaw(9, abi.encode(keccak256("r"), uint64(0), 0xffff)), "PoPMissed full");
+    }
+
+    /// @dev #1319 kind 9: nonzero result, a uint64 deadline, a nonzero 16-bit bitmap, exactly three words; no dedup key.
+    function test_aPoPMissedRecordIsValidatedAndNotDeduplicated() public {
+        bytes32 r = keccak256("r");
+        bytes[6] memory bad = [
+            abi.encode(bytes32(0), uint64(5), uint256(1)), // zero result
+            abi.encode(r, uint64(5), uint256(0)), // zero bitmap
+            abi.encode(r, uint64(5), uint256(0x10000)), // bitmap above 16 bits
+            abi.encode(r, uint256(1) << 64, uint256(1)), // deadline above 64 bits
+            abi.encodePacked(abi.encode(r, uint64(5), uint256(1)), uint256(0)), // four words
+            abi.encodePacked(r, uint64(5)) // short
+        ];
+        for (uint256 i; i < bad.length; ++i) {
+            assertFalse(_importsRaw(9, bad[i]), string.concat("case ", vm.toString(i)));
+        }
+        OpenArgs memory a = opened();
+        SealRegistry.ImportedRecord[] memory es = new SealRegistry.ImportedRecord[](2);
+        bytes memory d = abi.encode(r, uint64(5), uint256(3));
+        RootRecord memory r0 = rec(0, bytes32(0), RecordKind.PoPMissed, 5, 1_005, d);
+        RootRecord memory r1 = rec(1, r0.recordID, RecordKind.PoPMissed, 5, 1_005, d);
+        es[0] = SealRegistry.ImportedRecord(r0, 0);
+        es[1] = SealRegistry.ImportedRecord(r1, 0);
+        importOk(a.n, 5, 1_005, 2, r1.recordID, es);
+        assertEq(reg.recordAt(1).data, d, "the identical record is accepted twice");
     }
 
     /// @dev Each cross-field rule of schema v1 section 7, refused alone.
@@ -897,7 +924,8 @@ contract RootRecordsImportTest is SealRegistryBase {
         for (uint256 i; i < bad.length; ++i) {
             assertFalse(_importsRaw(kinds[i], bad[i]), string.concat("case ", vm.toString(i)));
         }
-        assertFalse(_importsRaw(9, abi.encode(r)), "kind 9");
+        assertFalse(_importsRaw(9, abi.encode(r)), "kind 9 of one word");
+        assertFalse(_importsRaw(10, abi.encode(r, uint64(5), uint256(1))), "kind 10");
     }
 
     function test_aHolderRetirementKeyIsFixedByTheFirstRecord() public {
@@ -971,7 +999,7 @@ contract RootRecordsImportTest is SealRegistryBase {
             ++n;
             if (ok) ++accepted;
         }
-        assertEq(n, 25);
-        assertEq(accepted, 8);
+        assertEq(n, 32);
+        assertEq(accepted, 10);
     }
 }

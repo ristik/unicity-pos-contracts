@@ -281,7 +281,7 @@ contract VRVectorsTest is Test {
             assertEq(h.record(kind, d), vm.parseJsonBool(json, _p(i, ".expect.ok")), name);
             ++n;
         }
-        assertEq(n, 25, "record.decode vector count");
+        assertEq(n, 32, "record.decode vector count");
     }
 
     // ---- change.payload, change.canonicality, change.queue ----

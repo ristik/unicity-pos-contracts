@@ -117,7 +117,7 @@ jq -n \
 				prefix: ($prefixes[5]),
 				formula: "keccak256(abi.encode(F(\"records.retirement.v2\"), uint256(holder), uint64(id), uint64(generation))) = first index + 1 (record kind 8, validator-registry schema v1)"
 			},
-			kinds: "1 SessionClosed, 2 Ack, 3 RecoveryAck, 4 Closure, 5 Retirement, 6 Boundary, 7 OutputRejected, 8 HolderRetirement (P85Types.RecordKind)",
+			kinds: "1 SessionClosed, 2 Ack, 3 RecoveryAck, 4 Closure, 5 Retirement, 6 Boundary, 7 OutputRejected, 8 HolderRetirement, 9 PoPMissed (P85Types.RecordKind)",
 			maxImport: 32
 		},
 		genesisStorage: [
