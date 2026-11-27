@@ -30,6 +30,7 @@ additional_compiler_profiles = [{ name = "p85", optimizer_runs = 1 }]
 compilation_restrictions = [
     { paths = "src/p85/**", optimizer_runs = 1 },
     { paths = "src/nb2/verifier/**", optimizer_runs = 1 },
+    { paths = "src/nb2/prototype/**", optimizer_runs = 1 },
 ]
 
 # The runtime bytecode is protocol surface: its keccak256 is the registryCodeHash the genesis record
