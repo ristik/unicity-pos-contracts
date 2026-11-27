@@ -26,7 +26,7 @@ The native hash comparison rebuilds both checkouts on the same production
 target before reading their artifacts.
 
 The binary proof fixtures come from the ERC20 vectors at bft-core
-`332f4d32f754afb3af5aaeee4256df267031d8e5`. Run the Go oracle with
+`59bf2c203c693d37fc4ac74986e681309c29ec8c`. Run the Go oracle with
 `NB2_ERC20_VECTORS` pointing to the JSON output path and
 `go test ./nb2ref -run '^TestERC20FlatReturnVectors$' -count=1`.
 Decode the first asset's Gamma, Evidence, Verdict, Packet, Complete and
