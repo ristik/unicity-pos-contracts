@@ -4,7 +4,7 @@ pragma solidity 0.8.37;
 import {PosBase} from "./PosBase.sol";
 import {VRC} from "../../../src/vr/VRConstants.sol";
 import {Member} from "../../../src/vr/VRTypes.sol";
-import {ElectionPolicy} from "../../../src/p85/ElectionPolicy.sol";
+import {ElectionPolicy, ElectionStorage} from "../../../src/p85/ElectionPolicy.sol";
 import {
     ElectionParams,
     RecordKind,
@@ -56,9 +56,9 @@ contract PosSixteenTest is PosBase {
         _advance(300, 200);
         vm.prank(ADAPTER);
         uint256 g = gasleft();
-        ElectionPolicy.Outcome o = election.elect(ORIGIN);
+        ElectionStorage.Outcome o = election.elect(ORIGIN);
         lastElectGas = g - gasleft();
-        assertEq(uint8(o), uint8(ElectionPolicy.Outcome.Reserved));
+        assertEq(uint8(o), uint8(ElectionStorage.Outcome.Reserved));
         rid = election.openResult();
     }
 
@@ -67,13 +67,13 @@ contract PosSixteenTest is PosBase {
         election.finalizeCandidate(rid);
     }
 
-    function _popsFor(bytes32 rid) internal returns (ElectionPolicy.PoPInput[] memory pops) {
-        ElectionPolicy.Frozen[] memory f = election.frozenMembers(rid);
-        pops = new ElectionPolicy.PoPInput[](f.length);
+    function _popsFor(bytes32 rid) internal returns (ElectionStorage.PoPInput[] memory pops) {
+        ElectionStorage.Frozen[] memory f = election.frozenMembers(rid);
+        pops = new ElectionStorage.PoPInput[](f.length);
         for (uint256 k; k < f.length; ++k) {
             uint256 pk = f[k].id <= N_GENESIS ? evmPk(f[k].id - 1) : evmPkOf[f[k].id];
             bytes memory key = compressed(pk);
-            pops[k] = ElectionPolicy.PoPInput(
+            pops[k] = ElectionStorage.PoPInput(
                 f[k].id, key, sign(pk, election.popDigest(rid, f[k].id, keccak256(key)))
             );
         }

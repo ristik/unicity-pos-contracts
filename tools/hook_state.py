@@ -49,7 +49,7 @@ def main(raw, dest):
         meta = json.loads(meta_path.read_text())
         pre = {norm(k): v for k, v in json.loads((raw / f"{name}.pre.json").read_text()).items()}
         post = {norm(k): v for k, v in json.loads((raw / f"{name}.post.json").read_text()).items()}
-        modules = {m: norm(meta[m]) for m in ("custody", "election", "evidence", "reader", "selection", "policySource") if m in meta}
+        modules = {m: norm(meta[m]) for m in ("custody", "election", "evidence", "reader", "selection", "policySource", "genesisImpl") if m in meta}
         extra_path = raw / f"{name}.extra.json"
         extra = json.loads(extra_path.read_text()) if extra_path.exists() else None
         records = [meta["records"][f"r{i}"] for i in range(meta["recordCount"])]

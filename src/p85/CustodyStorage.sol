@@ -21,11 +21,14 @@ import {
     RetirementData,
     Position,
     Exposure,
-    Assignment
+    Assignment,
+    SeatBinding,
+    AssignmentSeat
 } from "./P85Types.sol";
 import {IRootRecords, IPolicySource, IEvidence, IElectionPolicy, CaseView} from "./IP85.sol";
 import {KeyLib} from "./KeyLib.sol";
 import {Quantize} from "./Quantize.sol";
+import {VRC} from "../vr/VRConstants.sol";
 import {VRLiability} from "../vr/VRLiability.sol";
 
 /// @title CustodyStorage
@@ -59,6 +62,7 @@ abstract contract CustodyStorage is ReentrancyGuard {
 
     bytes32 internal constant POP_REGISTER = keccak256("unicity.p85.pop.register");
     bytes32 internal constant POP_ROOT_KEY = keccak256("unicity.p85.pop.proposeRootKey");
+    bytes32 internal constant BINDING_DOMAIN = keccak256("unicity.p85.delegation-binding");
     bytes32 internal constant EXPOSURE_DOMAIN = keccak256("unicity.p85.exposure");
     /// @dev The profile cap B on a committee's total committed weight.
     uint256 internal constant WEIGHT_CAP_B = Quantize.WEIGHT_CAP_B;
@@ -140,6 +144,10 @@ abstract contract CustodyStorage is ReentrancyGuard {
     error InsufficientCredit();
     error TransferFailed();
     error EmptyBatch();
+    error TermAnchorPending();
+    error TermNotPending();
+    error SuccessorNotInstalled();
+    error ClosureOpeningMismatch();
 
     // --- events -------------------------------------------------------------------------------
     event Initialized(bytes32 manifestHash);
@@ -157,6 +165,7 @@ abstract contract CustodyStorage is ReentrancyGuard {
         bytes32 indexed assignmentID, uint64 pClose, uint64 tClose, uint64 anchor
     );
     event RetirementImported(uint64 indexed id, uint64 generation, uint64 pRet, uint64 tRet);
+    event TermAnchored(bytes32 indexed assignmentID, uint64 p0, uint64 t0);
     event PenaltyApplied(
         bytes32 indexed caseID,
         uint256 indexed lotID,
@@ -191,6 +200,9 @@ abstract contract CustodyStorage is ReentrancyGuard {
         uint64 holdUntil;
         uint64 evidenceUntil;
         uint64 timeUntil;
+        // #1297/#1298: closed terms of this lot whose report anchors are not captured yet (`anchorTerm`); the lot cannot mature
+        // while any is. Packed into the word of evidenceUntil and timeUntil, which every closure writes anyway.
+        uint32 unanchoredTerms;
     }
 
     struct Session {
@@ -248,11 +260,11 @@ abstract contract CustodyStorage is ReentrancyGuard {
     mapping(address => uint64) public registerNonce;
     mapping(bytes32 => KeyRecord) internal _keys;
     mapping(uint64 => mapping(uint64 => uint256[])) internal _generationLots;
-    mapping(uint256 => Lot) public lots;
+    mapping(uint256 => Lot) internal _lots;
     mapping(uint64 => mapping(uint64 => RetirementInfo)) public retirements;
-    mapping(uint64 => mapping(uint64 => bytes32)) public exposureChain;
-    mapping(uint64 => mapping(uint64 => uint64)) public maxLiabilityAnchor;
-    mapping(uint64 => mapping(uint64 => uint32)) public liveExposures;
+    mapping(uint64 => mapping(uint64 => bytes32)) internal _legacyExposureChain;
+    mapping(uint64 => mapping(uint64 => uint64)) internal _legacyMaxLiabilityAnchor;
+    mapping(uint64 => mapping(uint64 => uint32)) internal _legacyLiveExposures;
     mapping(bytes32 => Assignment) public assignments;
     mapping(bytes32 => Exposure) public exposures;
     mapping(bytes32 => mapping(uint256 => bool)) internal _exposureHasLot;
@@ -270,6 +282,135 @@ abstract contract CustodyStorage is ReentrancyGuard {
     /// (VT-04): a genesis exposure on a VR generation carries the VR genesis seat's digest, a recovery copy keeps its incumbent's. Zero: the
     /// keccak of the exposure's lot list (the plain P85 formula). Appended last: no slot moves.
     mapping(bytes32 => bytes32) public exposureMemberDigest;
+
+    struct SlateState {
+        bytes32 source;
+        uint32 locks;
+        bool released;
+    }
+
+    // Appended after the proof-facing assignment and session slots.
+    uint64 internal _nextBinding;
+    mapping(uint64 => SeatBinding) internal _bindings;
+    mapping(uint64 => mapping(uint64 => uint64)) internal _latestBinding;
+    mapping(bytes32 => uint256[]) internal _seats;
+    mapping(bytes32 => SlateState) internal _slateState;
+
+    /// @dev #1297/#1298: a closed term's report anchors. `terminalRoot` (R_H) and `hRecordID` open the applied Closure's closure key;
+    /// `p0`/`t0` are the authenticated progress and UC time captured once the Closure, its attribution and the installed successor root
+    /// epoch are jointly usable (`anchored`). Appended last: no existing slot moves.
+    struct TermAnchor {
+        bytes32 terminalRoot;
+        bytes32 hRecordID;
+        uint64 p0;
+        uint64 t0;
+        bool anchored;
+    }
+
+    mapping(bytes32 => TermAnchor) public termAnchors;
+
+    function _compact() internal view returns (bool) {
+        return limits.lMax == 1 && limits.vMax > 8 && deploymentDomain != address(this);
+    }
+
+    function _source(bytes32 assignmentID) internal view returns (bytes32 source) {
+        source = _slateState[assignmentID].source;
+        if (source == bytes32(0)) source = assignmentID;
+    }
+
+    function _recordBinding(SeatBinding memory b) internal returns (uint64 handle) {
+        handle = ++_nextBinding;
+        _bindings[handle] = b;
+        _latestBinding[b.id][b.generation] = handle;
+    }
+
+    function _exposureID(bytes32 assignmentID, uint64 id) internal view returns (bytes32) {
+        return keccak256(
+            abi.encode(EXPOSURE_DOMAIN, network, block.chainid, deploymentDomain, assignmentID, id)
+        );
+    }
+
+    function _packSeat(uint64 id, uint64 handle, uint64 q, uint64 x)
+        internal
+        pure
+        returns (uint256)
+    {
+        return uint256(id) | (uint256(handle) << 64) | (uint256(q) << 128) | (uint256(x) << 192);
+    }
+
+    function _seatLot(uint256 word)
+        internal
+        view
+        returns (uint64 id, uint64 generation, uint256 lotID)
+    {
+        // The first two packed fields are the id and binding handle.
+        // forge-lint: disable-start(unsafe-typecast)
+        id = uint64(word);
+        generation = _bindings[uint64(word >> 64)].generation;
+        // forge-lint: disable-end(unsafe-typecast)
+        lotID = _generationLots[id][generation][0];
+    }
+
+    function _readSeat(bytes32 assignmentID, bytes32 source, uint256 word)
+        internal
+        view
+        returns (AssignmentSeat memory m)
+    {
+        // The packed seat fields occupy successive 64-bit words.
+        // forge-lint: disable-start(unsafe-typecast)
+        m.binding = _bindings[uint64(word >> 64)];
+        m.weight = uint64(word >> 128);
+        m.rawWeight = uint64(word >> 192);
+        uint64 id = uint64(word);
+        // forge-lint: disable-end(unsafe-typecast)
+        assert(m.binding.id == id);
+        m.lotID = _generationLots[id][m.binding.generation][0];
+        m.exposureID = _exposureID(assignmentID, id);
+        if (source == genesisAssignmentID) {
+            m.memberDigest = _exposureID(VRC.GENESIS_RESULT, id);
+        } else {
+            // ABI encoding of a single dynamic uint256[] with one element.
+            m.memberDigest = keccak256(abi.encode(uint256(32), uint256(1), m.lotID));
+        }
+        m.bindingHash = keccak256(abi.encode(BINDING_DOMAIN, m.binding));
+    }
+
+    function _referenceSeat(uint64 id, uint64 generation, uint256 lotID, bytes32 eid) internal {
+        Lot storage l = _lots[lotID];
+        if (l.refCount >= limits.rMax) revert ReferenceCapacity();
+        l.refCount++;
+        if (l.category == CAT_FREE) _move(l, CAT_ENCUMBERED);
+        VRLiability.Facts storage f = VRLiability.load().facts[id][generation];
+        f.liveExposures++;
+        f.lotReferences++;
+        f.refDigest = keccak256(abi.encode(CHAIN_DOMAIN, f.refDigest, eid));
+    }
+
+    function _foldCompact(bytes32 assignmentID, bool referenceSeats) internal {
+        bytes32 source = _source(assignmentID);
+        uint256[] storage seats = _seats[source];
+        bytes32 exposureDigest = EXPOSURE_DIGEST_DOMAIN;
+        bytes32 keyDigest = KEY_DIGEST_DOMAIN;
+        for (uint256 i = 0; i < seats.length; ++i) {
+            AssignmentSeat memory m = _readSeat(assignmentID, source, seats[i]);
+            SeatBinding memory b = m.binding;
+            if (referenceSeats) _referenceSeat(b.id, b.generation, m.lotID, m.exposureID);
+            exposureDigest = keccak256(
+                abi.encode(
+                    exposureDigest,
+                    m.exposureID,
+                    b.id,
+                    m.weight,
+                    m.rawWeight,
+                    b.payee,
+                    m.memberDigest
+                )
+            );
+            keyDigest = keccak256(abi.encode(keyDigest, b.id, b.rootKeyHash, b.evmKeyHash));
+        }
+        assignments[assignmentID].exposureDigest = exposureDigest;
+        assignments[assignmentID].keyDigest = keyDigest;
+    }
 
     /// @param factory_ the deployment factory that will initialize this module, fixed at construction. The module is deployed first so
     /// the factory's own creation code stays small; only that factory can initialize it, and it can do so once.
@@ -294,7 +435,7 @@ abstract contract CustodyStorage is ReentrancyGuard {
         Position storage p = positions[id];
         if (amount > type(uint128).max) revert AmountTooLarge();
         lotID = ++nextLotID;
-        Lot storage l = lots[lotID];
+        Lot storage l = _lots[lotID];
         l.id = id;
         l.generation = p.generation;
         // forge-lint: disable-next-line(unsafe-typecast)
@@ -342,7 +483,7 @@ abstract contract CustodyStorage is ReentrancyGuard {
         e.rawWeight = rawWeight;
         e.operatorPayee = operatorPayee;
         for (uint256 i = 0; i < lotIDs.length; ++i) {
-            Lot storage l = lots[lotIDs[i]];
+            Lot storage l = _lots[lotIDs[i]];
             if (l.refCount >= limits.rMax) revert ReferenceCapacity();
             l.refCount++;
             // An unreferenced lot is never draining here: a retiring identity cannot be reserved and
@@ -351,9 +492,9 @@ abstract contract CustodyStorage is ReentrancyGuard {
             e.lotIDs.push(lotIDs[i]);
             _exposureHasLot[exposureID][lotIDs[i]] = true;
         }
-        liveExposures[id][generation]++;
-        exposureChain[id][generation] =
-            keccak256(abi.encode(CHAIN_DOMAIN, exposureChain[id][generation], exposureID));
+        _legacyLiveExposures[id][generation]++;
+        _legacyExposureChain[id][generation] =
+            keccak256(abi.encode(CHAIN_DOMAIN, _legacyExposureChain[id][generation], exposureID));
         _writeFacts(id, generation);
     }
 
@@ -363,15 +504,15 @@ abstract contract CustodyStorage is ReentrancyGuard {
     /// most lMax (8).
     function _writeFacts(uint64 id, uint64 generation) internal {
         VRLiability.Facts storage f = VRLiability.load().facts[id][generation];
-        f.liveExposures = liveExposures[id][generation];
+        f.liveExposures = _legacyLiveExposures[id][generation];
         uint256[] storage ids = _generationLots[id][generation];
         uint32 refs = 0;
         for (uint256 i = 0; i < ids.length; ++i) {
-            refs += lots[ids[i]].refCount;
+            refs += _lots[ids[i]].refCount;
         }
         f.lotReferences = refs;
-        f.maxLiabilityAnchor = maxLiabilityAnchor[id][generation];
-        f.refDigest = exposureChain[id][generation];
+        f.maxLiabilityAnchor = _legacyMaxLiabilityAnchor[id][generation];
+        f.refDigest = _legacyExposureChain[id][generation];
     }
 
     function _digestExposures(bytes32[] storage ids) internal view returns (bytes32 digest) {

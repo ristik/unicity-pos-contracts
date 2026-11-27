@@ -45,6 +45,10 @@ contract PosFactory {
         GenesisAssignment genesis;
         ElectionParams electionParams;
         Policy policy;
+        // #1297/#1298 deployment immutables (UC seconds): the post-term report window (W plus the reporting and inclusion margin) and the
+        // settlement margin. Production 648,000 and 43,200; resettable testnet 1,800 and 1,800. The policy's timeFloor covers both.
+        uint64 reportWindow;
+        uint64 settlementMargin;
         uint128 rewardRate; // the genesis operator reward rate, base units per 1,000 progress units (T8)
         address governanceAuthority; // the fixed development authority that may queue and cancel a policy proposal (T8)
         uint256 rewardFunding; // the initial reward pool funding, sent with the factory's value in addition to the bonds (T8)
@@ -70,7 +74,13 @@ contract PosFactory {
 
     constructor(Config memory c) payable {
         POLICY = new GovernanceParams(
-            c.policy, c.rewardRate, c.governanceAuthority, c.election, c.roots
+            c.policy,
+            c.rewardRate,
+            c.governanceAuthority,
+            c.election,
+            c.roots,
+            c.reportWindow,
+            c.settlementMargin
         );
         CUSTODY = StakeCustody(c.custody);
         ELECTION = ElectionPolicy(c.election);
@@ -122,7 +132,13 @@ contract PosFactory {
             total += g.bond;
             weight += g.bond / c.bondUnit;
             CUSTODY.seedGenesis{value: g.bond}(
-                g.owner, g.withdrawal, g.rootKey, g.evmKey, g.operatorPayee
+                g.owner,
+                g.withdrawal,
+                g.rootKey,
+                g.evmKey,
+                g.operatorPayee,
+                g.rootNodeID,
+                g.evmNodeID
             );
         }
         if (total + c.rewardFunding != msg.value) revert GenesisValueMismatch();

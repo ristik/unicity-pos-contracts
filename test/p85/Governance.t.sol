@@ -2,7 +2,7 @@
 pragma solidity 0.8.37;
 
 import {P85Flow} from "./P85Flow.sol";
-import {ElectionPolicy} from "../../src/p85/ElectionPolicy.sol";
+import {ElectionPolicy, ElectionStorage} from "../../src/p85/ElectionPolicy.sol";
 import {GovernanceParams} from "../../src/p85/GovernanceParams.sol";
 import {PolicyBounds} from "../../src/p85/PolicyBounds.sol";
 import {IGovernance, GovernanceSnapshot, IStakeCustody} from "../../src/p85/IP85.sol";
@@ -36,7 +36,7 @@ contract GovernanceTest is P85Flow {
         });
     }
 
-    function _elect() internal returns (ElectionPolicy.Outcome) {
+    function _elect() internal returns (ElectionStorage.Outcome) {
         vm.prank(SYS);
         return election.elect(ORIGIN);
     }
@@ -102,18 +102,22 @@ contract GovernanceTest is P85Flow {
         Policy memory p = _defaultPolicy();
         uint128 overRate = gov.MAX_REWARD_RATE() + 1;
         vm.expectRevert(GovernanceParams.ZeroAddress.selector);
-        new GovernanceParams(p, 0, address(0), address(election), address(roots));
+        new GovernanceParams(p, 0, address(0), address(election), address(roots), 1_800, 1_800);
         vm.expectRevert(GovernanceParams.ZeroAddress.selector);
-        new GovernanceParams(p, 0, governanceAuthority, address(0), address(roots));
+        new GovernanceParams(p, 0, governanceAuthority, address(0), address(roots), 1_800, 1_800);
         vm.expectRevert(GovernanceParams.ZeroAddress.selector);
-        new GovernanceParams(p, 0, governanceAuthority, address(election), address(0));
+        new GovernanceParams(p, 0, governanceAuthority, address(election), address(0), 1_800, 1_800);
         vm.expectRevert(GovernanceParams.RewardRateOutOfBounds.selector);
-        new GovernanceParams(p, overRate, governanceAuthority, address(election), address(roots));
+        new GovernanceParams(
+            p, overRate, governanceAuthority, address(election), address(roots), 1_800, 1_800
+        );
         p.penaltyBps = 201;
         vm.expectRevert(
             abi.encodeWithSelector(PolicyBounds.PolicyOutOfBounds.selector, bytes32("penaltyBps"))
         );
-        new GovernanceParams(p, 0, governanceAuthority, address(election), address(roots));
+        new GovernanceParams(
+            p, 0, governanceAuthority, address(election), address(roots), 1_800, 1_800
+        );
     }
 
     // --- queue -----------------------------------------------------------------------------------
@@ -273,7 +277,7 @@ contract GovernanceTest is P85Flow {
         vm.prank(governanceAuthority);
         gov.cancel(n);
         clock(CAD_P, CAD_T);
-        assertEq(uint8(_elect()), uint8(ElectionPolicy.Outcome.Reserved));
+        assertEq(uint8(_elect()), uint8(ElectionStorage.Outcome.Reserved));
         assertEq(gov.currentPolicyID(), 1, "a cancelled proposal never activates");
     }
 
@@ -295,7 +299,7 @@ contract GovernanceTest is P85Flow {
         clock(CAD_P, CAD_T);
         vm.expectEmit(true, true, false, false, address(gov));
         emit GovernanceParams.Activated(2, n, bytes32(0), CAD_P);
-        assertEq(uint8(_elect()), uint8(ElectionPolicy.Outcome.Reserved));
+        assertEq(uint8(_elect()), uint8(ElectionStorage.Outcome.Reserved));
 
         assertEq(gov.currentPolicyID(), 2);
         _same(gov.policy(), _proposal());
@@ -325,10 +329,10 @@ contract GovernanceTest is P85Flow {
         _schedule(_proposal(), 1 ether);
         uint256 snap = vm.snapshotState();
         clock(CAD_P - 1, CAD_T);
-        assertEq(uint8(_elect()), uint8(ElectionPolicy.Outcome.NotDue));
+        assertEq(uint8(_elect()), uint8(ElectionStorage.Outcome.NotDue));
         vm.revertToState(snap);
         clock(CAD_P, CAD_T - 1);
-        assertEq(uint8(_elect()), uint8(ElectionPolicy.Outcome.NotDue));
+        assertEq(uint8(_elect()), uint8(ElectionStorage.Outcome.NotDue));
         assertEq(gov.currentPolicyID(), 1);
         assertEq(uint8(gov.pending().state), uint8(GovernanceParams.State.Scheduled));
         clock(CAD_P, CAD_T);
@@ -339,19 +343,19 @@ contract GovernanceTest is P85Flow {
     function test_aQueuedButUnexecutedProposalIsNotActivated() public {
         _queue(_proposal(), 1 ether);
         clock(CAD_P, CAD_T);
-        assertEq(uint8(_elect()), uint8(ElectionPolicy.Outcome.Reserved));
+        assertEq(uint8(_elect()), uint8(ElectionStorage.Outcome.Reserved));
         assertEq(gov.currentPolicyID(), 1);
         assertEq(uint8(gov.pending().state), uint8(GovernanceParams.State.Queued));
     }
 
     function test_nothingActivatesWhileAnElectionIsUnresolved() public {
         clock(CAD_P, CAD_T);
-        assertEq(uint8(_elect()), uint8(ElectionPolicy.Outcome.Reserved));
+        assertEq(uint8(_elect()), uint8(ElectionStorage.Outcome.Reserved));
         uint64 n = _queue(_proposal(), 1 ether);
         clock(CAD_P + 2_000, CAD_T + 3_600);
         gov.execute(n);
         clock(3 * CAD_P, 3 * CAD_T);
-        assertEq(uint8(_elect()), uint8(ElectionPolicy.Outcome.Disabled));
+        assertEq(uint8(_elect()), uint8(ElectionStorage.Outcome.Disabled));
         assertEq(gov.currentPolicyID(), 1, "an unresolved result blocks the boundary");
         assertEq(uint8(gov.pending().state), uint8(GovernanceParams.State.Scheduled));
     }
@@ -360,7 +364,7 @@ contract GovernanceTest is P85Flow {
         _schedule(_proposal(), 1 ether);
         clock(CAD_P, CAD_T);
         roots.push(RecordKind.SessionClosed, hex"");
-        assertEq(uint8(_elect()), uint8(ElectionPolicy.Outcome.Disabled));
+        assertEq(uint8(_elect()), uint8(ElectionStorage.Outcome.Disabled));
         assertEq(gov.currentPolicyID(), 1);
     }
 
@@ -371,7 +375,7 @@ contract GovernanceTest is P85Flow {
         requestRetirement(2);
         _schedule(_proposal(), 1 ether);
         clock(CAD_P, CAD_T);
-        assertEq(uint8(_elect()), uint8(ElectionPolicy.Outcome.NoCandidateRecorded));
+        assertEq(uint8(_elect()), uint8(ElectionStorage.Outcome.NoCandidateRecorded));
         assertEq(gov.currentPolicyID(), 2, "the due boundary activated under the old threshold");
         assertEq(election.openResult(), bytes32(0));
         // the next attempt (the cadence runs from the attempt) captures only the new id
@@ -384,7 +388,7 @@ contract GovernanceTest is P85Flow {
         vm.mockCallRevert(
             address(gov), abi.encodeCall(IGovernance.activateDue, (CAD_P, CAD_T)), "refused"
         );
-        assertEq(uint8(_elect()), uint8(ElectionPolicy.Outcome.Reserved));
+        assertEq(uint8(_elect()), uint8(ElectionStorage.Outcome.Reserved));
         vm.clearMockedCalls();
         assertEq(gov.currentPolicyID(), 1);
         assertEq(election.result(election.openResult()).policyID, 1);

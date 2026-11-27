@@ -159,7 +159,8 @@ enum RecordKind {
     // validator-registry generations (bft-core docs/design/validator-registry/schema-v1.md section 7)
     Boundary,
     OutputRejected,
-    HolderRetirement
+    HolderRetirement,
+    PoPMissed // #1319: a root-certified handoff-PoP miss (kind 9)
 }
 
 /// @notice One authenticated root control record as projected by the SealRegistry. `progress` and
@@ -239,6 +240,14 @@ struct HolderRetirementData {
     bytes32 refDigest;
 }
 
+/// @notice Record kind 9: the members of a result whose handoff PoP miss a root quorum certified; it follows the result's Expired
+/// OutputRejected and precedes its SessionClosed.
+struct PoPMissedData {
+    bytes32 resultID; // nonzero
+    uint64 deadline;
+    uint16 missedBitmap; // nonzero; bit i is the i-th frozen member (ascending staking id)
+}
+
 /// @notice Identity position (roles, current/staged root key, open generation). Custody storage.
 struct Position {
     address owner;
@@ -266,6 +275,27 @@ struct Exposure {
     bool referencesReleased;
     uint32 sessionLocks;
     uint256[] lotIDs;
+}
+
+/// @notice Immutable binding loaded by one packed slate row.
+struct SeatBinding {
+    uint64 id;
+    uint64 generation;
+    bytes32 rootNode;
+    bytes32 rootKeyHash;
+    bytes32 evmNode;
+    bytes32 evmKeyHash;
+    address payee;
+}
+
+struct AssignmentSeat {
+    SeatBinding binding;
+    uint64 weight;
+    uint64 rawWeight;
+    bytes32 bindingHash;
+    bytes32 exposureID;
+    bytes32 memberDigest;
+    uint256 lotID;
 }
 
 /// @notice Assignment-level liability record. state: 0 none, 1 Reserved, 2 Active, 3 Aborted.

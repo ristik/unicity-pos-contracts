@@ -54,3 +54,10 @@ fixture manifest and consumed by `EvidenceDigest.t.sol` (contracts #46,
 digests, native signatures, vote/seal separation and real equivocating pairs.
 It replaces the old root fixture digest; it does not define the EVM-domain
 consensus message or prove a network evidence-retention/submission service.
+
+# post-term-corpus-go-v1.json, post-term-corpus-v1.json
+`post-term-corpus-go-v1.json` is bft-core's `s1ref/s1gen/testdata/post-term-corpus-go-v1.json` verbatim (`s1gen.BuildPostTermCorpus`, format
+`p85-post-term-seal/1` with the opaque-PreviousHash vectors; bft-core PR #1302, 9c20068318). `script/post-term-corpus-convert.py` writes the forge-shaped
+`post-term-corpus-v1.json` from it (CI checks the conversion); `PostTermCorpus.t.sol` replays every submission through the real modules
+(#1297): the rebuilt seal digests, the strict-rule signature verdicts, each accept and refusal, and one case per offence label.
+The statement is the seal fields with the opaque PreviousHash; the two `statement` refusals are asserted with this verifier's lineage errors (`SuccessorUnknown`, `NotPostTerm`).

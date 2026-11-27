@@ -73,7 +73,9 @@ contract VRRecordsFacet is VRShared {
             _anomaly(index, kind, AN_MALFORMED);
             return 0;
         }
-        if (kind == VRC.REC_CLOSURE || kind == VRC.REC_RETIREMENT) return 0; // holders' and modules' records
+        if (kind == VRC.REC_CLOSURE || kind == VRC.REC_RETIREMENT || kind == VRC.REC_POP_MISSED) {
+            return 0; // holders' and modules' records
+        }
         if (kind == VRC.REC_HOLDER_RETIREMENT) {
             uint8 h = uint8(_w(d, 0));
             uint64 id = uint64(_w(d, 1));

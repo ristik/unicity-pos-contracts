@@ -19,7 +19,34 @@ library PolicyBounds {
     uint64 internal constant MIN_HOLD = 400;
     uint64 internal constant MAX_HOLD = 20_000;
     uint64 internal constant MIN_FLOOR = 3_600;
-    uint64 internal constant MAX_FLOOR = 604_800;
+    /// @dev 8 days: the production W of 7 days, 12 hours of reporting and inclusion margin and 12 hours of settlement margin (#1298).
+    uint64 internal constant MAX_FLOOR = 691_200;
+    /// @dev The report window (W plus the reporting and inclusion margin, UC seconds): testnet 1,800 (900 + 900), production 648,000 (7 d + 12 h).
+    uint64 internal constant MIN_REPORT_WINDOW = 1_800;
+    uint64 internal constant MAX_REPORT_WINDOW = 648_000;
+    /// @dev The settlement margin a timely report keeps after the report window (UC seconds): testnet 1,800, production 43,200.
+    uint64 internal constant MIN_SETTLEMENT_MARGIN = 1_800;
+    uint64 internal constant MAX_SETTLEMENT_MARGIN = 43_200;
+
+    /// @notice The deployment immutables of the post-term report deadline (#1297, #1298).
+    function validateWindows(uint64 reportWindow, uint64 settlementMargin) internal pure {
+        if (reportWindow < MIN_REPORT_WINDOW || reportWindow > MAX_REPORT_WINDOW) {
+            revert PolicyOutOfBounds("reportWindow");
+        }
+        if (settlementMargin < MIN_SETTLEMENT_MARGIN || settlementMargin > MAX_SETTLEMENT_MARGIN) {
+            revert PolicyOutOfBounds("settlementMargin");
+        }
+    }
+
+    /// @notice A policy snapshot under the deployment's report window and settlement margin: every field in its bounds, and the time
+    /// floor keeps every lot in custody until a timely report can land and settle (`timeFloor >= reportWindow + settlementMargin`).
+    function validate(Policy memory p, uint64 reportWindow, uint64 settlementMargin) internal pure {
+        validate(p);
+        validateWindows(reportWindow, settlementMargin);
+        if (p.timeFloor < reportWindow + settlementMargin) {
+            revert PolicyOutOfBounds("timeFloor<report+settlement");
+        }
+    }
 
     function validate(Policy memory p) internal pure {
         if (p.penaltyBps > MAX_PENALTY_BPS) revert PolicyOutOfBounds("penaltyBps");

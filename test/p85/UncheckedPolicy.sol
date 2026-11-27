@@ -8,6 +8,9 @@ import {Policy} from "../../src/p85/P85Types.sol";
 /// the bounded FixedPolicy makes redundant (and to model a later, laxer policy snapshot).
 contract UncheckedPolicy is IPolicySource {
     Policy[] internal _snapshots;
+    /// @dev The resettable-testnet report window and settlement margin.
+    uint64 public reportWindow = 1_800;
+    uint64 public settlementMargin = 1_800;
 
     constructor(Policy memory first) {
         _snapshots.push(first);

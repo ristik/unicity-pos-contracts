@@ -45,7 +45,7 @@ contract VRSchemaVectorsTest is Test {
 
     uint256 internal constant MAX_CHANGE_PAYLOAD = 16 * 1024;
     uint8 internal constant CHANGE_KINDS = 10;
-    uint8 internal constant RECORD_KINDS = 8;
+    uint8 internal constant RECORD_KINDS = 9;
     uint8 internal constant MAX_HOLDERS = 8;
     uint8 internal constant REJ_EXPIRED = 1;
     uint8 internal constant REJ_INVALID = 3;
@@ -448,7 +448,11 @@ contract VRSchemaVectorsTest is Test {
         }
         assertGt(accepted, 0, "no accepted record.decode vectors");
         assertGt(refused, 0, "no refused record.decode vectors");
-        assertEq(newKinds, (1 << 6) | (1 << 7) | (1 << 8), "a kind 6 to 8 has no accepted vector");
+        assertEq(
+            newKinds,
+            (1 << 6) | (1 << 7) | (1 << 8) | (1 << 9),
+            "a kind 6 to 9 has no accepted vector"
+        );
     }
 
     /// The Solidity verdict on one root-record payload (external so a strict abi.decode revert is a
@@ -509,11 +513,16 @@ contract VRSchemaVectorsTest is Test {
             }
             if (memberId != 0 && reason != REJ_INVALID) return false;
             if (readyBitmap != 0 && reason != REJ_EXPIRED) return false;
-        } else {
+        } else if (kind == 8) {
             (uint8 holder, uint64 id, uint64 generation, bytes32 refDigest) =
                 abi.decode(data, (uint8, uint64, uint64, bytes32));
             back = abi.encode(holder, id, generation, refDigest);
             if (holder >= MAX_HOLDERS) return false;
+        } else {
+            (bytes32 resultId, uint64 deadline, uint16 missedBitmap) =
+                abi.decode(data, (bytes32, uint64, uint16));
+            back = abi.encode(resultId, deadline, missedBitmap);
+            if (resultId == bytes32(0) || missedBitmap == 0) return false;
         }
         return keccak256(back) == keccak256(data);
     }
@@ -658,6 +667,7 @@ contract VRSchemaVectorsTest is Test {
         if (kind == 6) return "bytes32,uint64,uint64,uint64,uint64,bool,uint16";
         if (kind == 7) return "bytes32,uint8,uint64,uint16";
         if (kind == 8) return "uint8,uint64,uint64,bytes32";
+        if (kind == 9) return "bytes32,uint64,uint16";
         revert("unknown record kind");
     }
 
@@ -670,6 +680,7 @@ contract VRSchemaVectorsTest is Test {
         if (kind == 6) return 224;
         if (kind == 7) return 128;
         if (kind == 8) return 128;
+        if (kind == 9) return 96;
         revert("unknown record kind");
     }
 

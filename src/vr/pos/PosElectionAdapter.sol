@@ -5,10 +5,11 @@ pragma solidity 0.8.37;
 // through contained steps (design section 3.3); the adapter calls the fixed, immutable P85 modules it is constructed with.
 // forge-lint: disable-start(calls-loop, unsafe-typecast, unused-return)
 
+import {AssignmentSeat} from "../../p85/P85Types.sol";
 import {VRC} from "../VRConstants.sol";
 import {VRCodec} from "../VRCodec.sol";
-import {Member, IVR, IElectionModule} from "../VRTypes.sol";
-import {ElectionPolicy} from "../../p85/ElectionPolicy.sol";
+import {Member, IVR, IElectionModule, IVRRecordSource, VRRecord} from "../VRTypes.sol";
+import {ElectionPolicy, ElectionStorage} from "../../p85/ElectionPolicy.sol";
 import {IStakeCustody, IPosAdapter} from "../../p85/IP85.sol";
 
 /// @notice The two custody calls the adapter makes that `IStakeCustody` does not carry.
@@ -26,15 +27,16 @@ interface IPosCustody is IStakeCustody {
 /// |---|---|
 /// | `elect` | maps P85's outcome; Reserved returns P85's own result id with `ready = false` |
 /// | `outputOf` | Pending until P85 publishes (`finalizeCandidate`), NotMine for a foreign or lost result, Ready for a published, not lost, Reserved result: `frozenMembers`, custody's exposures and the frozen node words, with custody's exposure digest per member |
-/// | `onRecords` | `custody.applyRootRecords(n)` (custody pulls from the SealRegistry itself) |
+/// | `onRecords` | parks the non-provers of an Expired `OutputRejected` in VR's own segment (`ElectionPolicy.parkExpired`, #1303), and a kind-9 `PoPMissed` to `ElectionPolicy.parkMissed` (#1319), then `custody.applyRootRecords(n)` (custody pulls from the SealRegistry itself) |
 /// | `onResolved`, `onGovernance` | no-ops: the economic policy stays in `GovernanceParams` under the multisig |
 /// | `outputLost` | `ElectionPolicy` only, at the one place its `lost` bit is first set: `VR.invalidate(resultID, LOST)`, no try/catch |
 ///
 /// **Liability holder.** The holder is custody itself (holder 0 of the generation): it writes the generic facts (design 3.9.2) in its own
 /// storage in the same function as every liability mutation, so the adapter has nothing to mirror.
 ///
-/// **Alignment (testnet prototype).** A member word is VR's binding word and the custody generation is the member generation: the prototype
-/// requires an identity's VR binding (words, generation) to equal its P85 delegation. A result whose member does not match VR's current or
+/// **Alignment (testnet prototype).** A member word is VR's binding word and the custody generation (the bond cycle) is the member
+/// generation (#1286): the prototype requires an identity's VR binding words (current, or nonzero staged) to equal its P85 delegation; VR's
+/// own binding-version counter is not compared. A result whose member does not match VR's current or
 /// staged binding is never served (NotMine) and expires, so a misaligned identity cannot Fault the registry. Carry-over (native) boundaries
 /// break custody's liability continuity; the adapter is then Faulted by its own records, which is the prototype's stated limit.
 ///
@@ -45,9 +47,9 @@ interface IPosCustody is IStakeCustody {
 /// Acknowledged. The committed outcome is the same (a committed H always wins); only the intermediate VR state depends on who imported
 /// first (both orders are tested: PosLifecycle).
 ///
-/// **Eligibility (astra, #92).** `ElectionPolicy` skips an identity whose delegation is not its VR binding (words and generation), so a
-/// misaligned identity is never selected; at publication the adapter compares VR's complete candidate binding (generation, node words,
-/// keys, payee) with the frozen binding hash and takes the words from VR, so a later `admitDelegation` cannot make an aligned frozen
+/// **Eligibility (astra, #92, #1286).** `ElectionPolicy` skips an identity whose delegation is not its VR binding words, so a
+/// misaligned identity is never selected; at publication the adapter compares VR's complete candidate binding (node words, keys, payee)
+/// under the frozen custody generation with the frozen binding hash, takes the words from VR and outputs the frozen custody generation, so a later `admitDelegation` cannot make an aligned frozen
 /// snapshot unservable and a staged VR binding replaced at the same generation is not served.
 ///
 /// **Measured limit (sol and astra, #92).** The PoS-capable VR build (callback caps 5.0 / 1.5 / 2.5 M) carries the P85 election, publication
@@ -62,7 +64,7 @@ contract PosElectionAdapter is IElectionModule, IPosAdapter {
     bytes32 internal constant BINDING_DOMAIN = keccak256("unicity.p85.delegation-binding");
 
     // ---- gas bounds: the measured worst case x 5/4, below VR's caps (test/vr/pos/PosGas.t.sol) ----
-    uint64 internal constant GAS_ELECT = 5_000_000;
+    uint64 internal constant GAS_ELECT = 7_000_000;
     uint64 internal constant GAS_OUTPUT = 1_500_000;
     uint64 internal constant GAS_RECORD = 2_500_000;
     uint64 internal constant GAS_RESOLVED = 10_000;
@@ -74,6 +76,10 @@ contract PosElectionAdapter is IElectionModule, IPosAdapter {
     address public immutable VR;
     ElectionPolicy public immutable ELECTION;
     IPosCustody public immutable CUSTODY;
+
+    /// @dev The park of an Expired result failed (bft-core#1303 review P3-1): VR never redelivers a segment, so the result stays unparked.
+    /// Parking only delays future eligibility, so the records still reach custody; the event makes the skip visible.
+    event ParkSkipped(bytes32 indexed resultID);
 
     error NotVR();
     error NotElection();
@@ -156,14 +162,14 @@ contract PosElectionAdapter is IElectionModule, IPosAdapter {
     function elect(bytes calldata context) external onlyVR returns (bytes memory) {
         (uint8 err, VRCodec.Context memory c) = VRCodec.decodeContext(context);
         if (err != VRCodec.OK) revert BadArgument();
-        ElectionPolicy.Outcome o = ELECTION.elect(c.origin);
-        if (o == ElectionPolicy.Outcome.Reserved) {
+        ElectionStorage.Outcome o = ELECTION.elect(c.origin);
+        if (o == ElectionStorage.Outcome.Reserved) {
             return VRCodec.packElect(VRC.ELECT_RESERVED, false, ELECTION.lastAttemptResult());
         }
-        if (o == ElectionPolicy.Outcome.NotDue) {
+        if (o == ElectionStorage.Outcome.NotDue) {
             return VRCodec.packElect(VRC.ELECT_NOT_DUE, false, 0);
         }
-        if (o == ElectionPolicy.Outcome.NoCandidateRecorded) {
+        if (o == ElectionStorage.Outcome.NoCandidateRecorded) {
             return VRCodec.packElect(VRC.ELECT_NO_CANDIDATE, false, 0);
         }
         return VRCodec.packElect(VRC.ELECT_DISABLED, false, 0);
@@ -173,24 +179,36 @@ contract PosElectionAdapter is IElectionModule, IPosAdapter {
     /// names a member VR does not hold as P85 does), Ready for a published, not lost, Reserved result.
     function outputOf(bytes32 resultId) external view returns (bytes memory) {
         if (resultId == bytes32(0)) return VRCodec.packStatus(VRC.STATUS_NOT_MINE);
-        ElectionPolicy.Result memory r = ELECTION.result(resultId);
-        if (r.state != ElectionPolicy.ResultState.Reserved) {
+        ElectionStorage.Result memory r = ELECTION.result(resultId);
+        if (r.state != ElectionStorage.ResultState.Reserved) {
             return VRCodec.packStatus(VRC.STATUS_NOT_MINE);
         }
-        ElectionPolicy.Publication memory p = ELECTION.publication(resultId);
+        ElectionStorage.Publication memory p = ELECTION.publication(resultId);
         if (p.lost) return VRCodec.packStatus(VRC.STATUS_NOT_MINE);
         if (!p.published) return VRCodec.packStatus(VRC.STATUS_PENDING);
 
-        ElectionPolicy.Frozen[] memory f = ELECTION.frozenMembers(resultId);
-        bytes32[] memory eids = CUSTODY.assignmentExposures(r.assignmentID);
-        if (f.length == 0 || f.length > VRC.MAX_COMMITTEE || eids.length != f.length) {
-            return VRCodec.packStatus(VRC.STATUS_NOT_MINE);
-        }
-        Member[] memory ms = new Member[](f.length);
-        for (uint256 i = 0; i < f.length; ++i) {
-            Member memory m = _member(f[i], eids[i]);
-            if (m.id == 0) return VRCodec.packStatus(VRC.STATUS_NOT_MINE);
-            ms[i] = m;
+        uint256 count = CUSTODY.assignmentSeatCount(r.assignmentID);
+        Member[] memory ms;
+        if (count != 0) {
+            ms = new Member[](count);
+            for (uint256 i = 0; i < count; ++i) {
+                AssignmentSeat memory seat = CUSTODY.assignmentSeat(r.assignmentID, i);
+                Member memory m = _compactMember(seat);
+                if (m.id == 0) return VRCodec.packStatus(VRC.STATUS_NOT_MINE);
+                ms[i] = m;
+            }
+        } else {
+            ElectionStorage.Frozen[] memory f = ELECTION.frozenMembers(resultId);
+            bytes32[] memory eids = CUSTODY.assignmentExposures(r.assignmentID);
+            if (f.length == 0 || f.length > VRC.MAX_COMMITTEE || eids.length != f.length) {
+                return VRCodec.packStatus(VRC.STATUS_NOT_MINE);
+            }
+            ms = new Member[](f.length);
+            for (uint256 i = 0; i < f.length; ++i) {
+                Member memory m = _member(f[i], eids[i]);
+                if (m.id == 0) return VRCodec.packStatus(VRC.STATUS_NOT_MINE);
+                ms[i] = m;
+            }
         }
         VRCodec.OutputHeader memory h;
         h.resultId = resultId;
@@ -201,11 +219,28 @@ contract PosElectionAdapter is IElectionModule, IPosAdapter {
         return VRCodec.packOutput(h, ms);
     }
 
+    function _compactMember(AssignmentSeat memory seat) private view returns (Member memory m) {
+        ElectionStorage.Frozen memory f = ElectionStorage.Frozen(
+            seat.binding.id, seat.binding.generation, seat.weight, seat.rawWeight, seat.bindingHash
+        );
+        Member memory b = IVR(VR).bindingOf(f.id, false);
+        if (!_matches(b, f)) {
+            b = IVR(VR).bindingOf(f.id, true);
+            if (!_matches(b, f)) return m;
+        }
+        // #1286: the member generation is the frozen seat's custody generation, never VR's binding-version word
+        b.generation = f.generation;
+        b.weight = seat.weight;
+        b.rawWeight = seat.rawWeight;
+        b.exposureDigest = seat.memberDigest;
+        return b;
+    }
+
     /// @dev One frozen member as VR's member words: the quantized and raw weights and the exposure's frozen key hashes and operator payee
-    /// (custody), the generation, and the node words of the VR binding those frozen keys, payee and generation identify (current, or
-    /// staged at g + 1). VR is the authority for the words, so a later `admitDelegation` cannot make an aligned frozen member
+    /// (custody), the frozen custody generation, and the node words of the VR binding those frozen keys and payee identify under that
+    /// generation (current, or nonzero staged). VR is the authority for the words, so a later `admitDelegation` cannot make an aligned frozen member
     /// unservable. A member VR does not hold as frozen is returned with id 0 (the caller serves nothing).
-    function _member(ElectionPolicy.Frozen memory f, bytes32 exposureId)
+    function _member(ElectionStorage.Frozen memory f, bytes32 exposureId)
         internal
         view
         returns (Member memory m)
@@ -231,11 +266,15 @@ contract PosElectionAdapter is IElectionModule, IPosAdapter {
             md != bytes32(0) ? md : keccak256(abi.encode(CUSTODY.exposureLots(exposureId)));
     }
 
-    /// @dev The candidate VR binding is the one P85 froze: the same generation, and the complete binding (node words, keys, payee) hashes to
-    /// the frozen `bindingHash` (ElectionPolicy's formula). So a staged VR binding replaced at the same prospective generation, with other
-    /// node words and the same keys and payee, is not served.
-    function _matches(Member memory b, ElectionPolicy.Frozen memory f) private pure returns (bool) {
-        if (b.generation == 0 || b.generation != f.generation) return false;
+    /// @dev The candidate VR binding is the one P85 froze: a binding is present (VR's version word is nonzero; #1286: it is not compared
+    /// with the custody generation), and the complete binding (node words, keys, payee) under the frozen custody generation hashes to the
+    /// frozen `bindingHash` (ElectionPolicy's formula). So a staged VR binding replaced with other node words, keys or payee is not served.
+    function _matches(Member memory b, ElectionStorage.Frozen memory f)
+        private
+        pure
+        returns (bool)
+    {
+        if (b.generation == 0) return false;
         return keccak256(
             abi.encode(
             BINDING_DOMAIN,
@@ -252,8 +291,36 @@ contract PosElectionAdapter is IElectionModule, IPosAdapter {
 
     /// @notice Root records (design 3.8): custody pulls them from the SealRegistry itself, from its own cursor, up to the end of this
     /// segment (a custody that is ahead has nothing to do; one that is behind catches up, within its batch limit).
+    ///
+    /// **Parking (design 3.7.4 on the PoS stack, #1303).** First, every Expired `OutputRejected` of VR's own segment `[fromIndex, end)` is
+    /// handed to `ElectionPolicy.parkExpired` with its ordered ready bitmap and record progress. The segment is VR's, never custody's
+    /// cursor: custody's `applyRootRecords` is permissionless, so a custody that was front-run past the record still parks. P85 applies
+    /// each result once and ignores foreign ones. Parking only delays future eligibility, so a failed call is contained here (and
+    /// reported as `ParkSkipped`) and the records still reach custody.
     function onRecords(uint64 fromIndex, uint32 count) external onlyVR {
         uint64 end = fromIndex + count;
+        IVRRecordSource seal = IVRRecordSource(VRC.SEAL_REGISTRY);
+        for (uint64 i = fromIndex; i < end; ++i) {
+            VRRecord memory r = seal.recordAt(i);
+            if (
+                (r.kind != VRC.REC_POP_MISSED && r.kind != VRC.REC_OUTPUT_REJECTED)
+                    || !VRCodec.recordWellFormed(r.kind, r.data)
+            ) continue;
+            bytes32 rid = bytes32(VRCodec.wordAt(r.data, 0));
+            if (r.kind == VRC.REC_POP_MISSED) {
+                try ELECTION.parkMissed(rid, uint16(VRCodec.wordAt(r.data, 2)), r.progress) {}
+                catch {
+                    emit ParkSkipped(rid);
+                }
+            } else if (
+                r.kind == VRC.REC_OUTPUT_REJECTED && VRCodec.wordAt(r.data, 1) == VRC.REJ_EXPIRED
+            ) {
+                try ELECTION.parkExpired(rid, uint16(VRCodec.wordAt(r.data, 3)), r.progress) {}
+                catch {
+                    emit ParkSkipped(rid);
+                }
+            }
+        }
         uint64 cursor = CUSTODY.recordCursor();
         if (cursor >= end) return;
         (,,, uint32 maxBatch) = CUSTODY.limits();

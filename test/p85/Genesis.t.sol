@@ -6,7 +6,7 @@ import {PosFactory} from "../../src/p85/PosFactory.sol";
 import {StakeCustody} from "../../src/p85/StakeCustody.sol";
 import {CustodyStorage} from "../../src/p85/CustodyStorage.sol";
 import {CustodyGenesis} from "../../src/p85/CustodyGenesis.sol";
-import {ElectionPolicy} from "../../src/p85/ElectionPolicy.sol";
+import {ElectionPolicy, ElectionStorage} from "../../src/p85/ElectionPolicy.sol";
 import {Evidence} from "../../src/p85/Evidence.sol";
 import {SelectionEngine} from "../../src/p85/SelectionEngine.sol";
 import {EligibilityReader} from "../../src/p85/EligibilityReader.sol";
@@ -52,7 +52,15 @@ contract Deployer {
 
     function policy(Policy calldata p) external returns (address) {
         nonce += 1;
-        return address(new FixedPolicy(p));
+        return address(new FixedPolicy(p, 1_800, 1_800));
+    }
+
+    function policyWith(Policy calldata p, uint64 reportWindow, uint64 settlementMargin)
+        external
+        returns (address)
+    {
+        nonce += 1;
+        return address(new FixedPolicy(p, reportWindow, settlementMargin));
     }
 }
 
@@ -123,13 +131,13 @@ contract GenesisTest is P85Base {
 
     function test_seedGenesisOnlyByFactory() public {
         vm.expectRevert(CustodyStorage.NotFactory.selector);
-        custody.seedGenesis(address(1), address(2), "", "", address(3));
+        custody.seedGenesis(address(1), address(2), "", "", address(3), bytes32(0), bytes32(0));
     }
 
     function test_seedGenesisAfterSealReverts() public {
         vm.prank(address(factory));
         vm.expectRevert(CustodyStorage.NotInitialized.selector);
-        custody.seedGenesis(address(1), address(2), "", "", address(3));
+        custody.seedGenesis(address(1), address(2), "", "", address(3), bytes32(0), bytes32(0));
     }
 
     function test_sealGenesisOnlyByFactoryAndOnce() public {
@@ -144,12 +152,12 @@ contract GenesisTest is P85Base {
         Manifest memory m;
         m.election = address(election);
         m.evidence = address(evidence);
-        vm.expectRevert(ElectionPolicy.NotFactory.selector);
+        vm.expectRevert(ElectionStorage.NotFactory.selector);
         election.initialize(bytes32(0), m);
         vm.expectRevert(Evidence.NotFactory.selector);
         evidence.initialize(bytes32(0), m);
         vm.startPrank(address(factory));
-        vm.expectRevert(ElectionPolicy.AlreadyInitialized.selector);
+        vm.expectRevert(ElectionStorage.AlreadyInitialized.selector);
         election.initialize(bytes32(0), m);
         vm.expectRevert(Evidence.AlreadyInitialized.selector);
         evidence.initialize(bytes32(0), m);
@@ -159,7 +167,7 @@ contract GenesisTest is P85Base {
     function test_electionInitializeRejectsForeignManifest() public {
         ElectionPolicy fresh = new ElectionPolicy(address(this));
         Manifest memory m; // m.election is not this contract
-        vm.expectRevert(ElectionPolicy.ManifestMismatch.selector);
+        vm.expectRevert(ElectionStorage.ManifestMismatch.selector);
         fresh.initialize(bytes32(0), m);
     }
 
@@ -174,16 +182,16 @@ contract GenesisTest is P85Base {
         m.electionParams = _electionParams();
         m.limits = Limits({vMax: 128, lMax: 8, rMax: 4, maxBatch: 32});
         m.reader = address(new EligibilityReader(address(evidence), address(custody))); // swapped
-        vm.expectRevert(ElectionPolicy.InvalidParams.selector);
+        vm.expectRevert(ElectionStorage.InvalidParams.selector);
         fresh.initialize(bytes32(0), m);
         m.reader = address(new EligibilityReader(address(custody), address(roots))); // swapped evidence
-        vm.expectRevert(ElectionPolicy.InvalidParams.selector);
+        vm.expectRevert(ElectionStorage.InvalidParams.selector);
         fresh.initialize(bytes32(0), m);
         m.reader = address(new EligibilityReader(address(roots), address(evidence))); // swapped custody only
-        vm.expectRevert(ElectionPolicy.InvalidParams.selector);
+        vm.expectRevert(ElectionStorage.InvalidParams.selector);
         fresh.initialize(bytes32(0), m);
         m.reader = address(0xdead); // no code
-        vm.expectRevert(ElectionPolicy.InvalidParams.selector);
+        vm.expectRevert(ElectionStorage.InvalidParams.selector);
         fresh.initialize(bytes32(0), m);
     }
 
@@ -202,7 +210,7 @@ contract GenesisTest is P85Base {
         m.electionParams = _electionParams();
         m.electionParams.nTarget = 16;
         m.electionParams.nMax = 17; // the only thing wrong with this manifest (16 is accepted below)
-        vm.expectRevert(ElectionPolicy.InvalidParams.selector);
+        vm.expectRevert(ElectionStorage.InvalidParams.selector);
         fresh.initialize(bytes32(0), m);
         m.electionParams.nMax = 16;
         fresh.initialize(bytes32(0), m);
@@ -214,6 +222,7 @@ contract GenesisTest is P85Base {
         Evidence fresh = new Evidence(address(this));
         Manifest memory m;
         m.evidence = address(fresh);
+        m.policySource = address(new FixedPolicy(_defaultPolicy(), 1_800, 1_800));
         m.rootNetwork = uint64(type(uint16).max) + 1;
         m.rootGenesis = keccak256("g");
         vm.expectRevert(Evidence.BadRootConfig.selector);
@@ -245,7 +254,7 @@ contract GenesisTest is P85Base {
         vm.expectRevert(CustodyStorage.NotInitialized.selector);
         raw.register("", "", address(1));
         ElectionPolicy rawElection = new ElectionPolicy(address(this));
-        vm.expectRevert(ElectionPolicy.NotInitialized.selector);
+        vm.expectRevert(ElectionStorage.NotInitialized.selector);
         rawElection.syncLiveIndex(1);
         Evidence rawEvidence = new Evidence(address(this));
         uint256[] memory none = new uint256[](0);
@@ -512,6 +521,8 @@ contract GenesisTest is P85Base {
                 firstRound: 1
             }),
             policy: _defaultPolicy(),
+            reportWindow: 1_800,
+            settlementMargin: 1_800,
             rewardRate: DEFAULT_REWARD_RATE,
             governanceAuthority: governanceAuthority,
             rewardFunding: 0,
@@ -628,7 +639,7 @@ contract GenesisTest is P85Base {
         );
         deployer.policy(p);
         p = _defaultPolicy();
-        p.timeFloor = 604_801;
+        p.timeFloor = 691_201;
         vm.expectRevert(
             abi.encodeWithSelector(PolicyBounds.PolicyOutOfBounds.selector, bytes32("timeFloor"))
         );
@@ -676,11 +687,56 @@ contract GenesisTest is P85Base {
         p.holdNormal = 400;
         p.holdSuffix = 10_001;
         p.holdRetirement = 10_001;
-        p.timeFloor = 604_800;
+        p.timeFloor = 691_200;
         FixedPolicy f = FixedPolicy(deployer.policy(p));
         assertEq(f.currentPolicyID(), 1);
-        assertEq(f.policyAt(1).timeFloor, 604_800);
+        assertEq(f.policyAt(1).timeFloor, 691_200);
         vm.expectRevert(FixedPolicy.UnknownPolicy.selector);
         f.policyAt(2);
+    }
+
+    // --- #1297/#1298: the report window and settlement margin ----------------------------------------
+
+    function _refusedWith(Policy memory p, uint64 w, uint64 m, bytes32 field) internal {
+        vm.expectRevert(abi.encodeWithSelector(PolicyBounds.PolicyOutOfBounds.selector, field));
+        deployer.policyWith(p, w, m);
+    }
+
+    function test_bothReportProfilesAreValidPolicies() public {
+        Policy memory p = _defaultPolicy();
+        p.timeFloor = 3_600;
+        FixedPolicy t = FixedPolicy(deployer.policyWith(p, 1_800, 1_800));
+        assertEq(t.reportWindow(), 1_800);
+        assertEq(t.settlementMargin(), 1_800);
+        p.timeFloor = 691_200;
+        FixedPolicy prod = FixedPolicy(deployer.policyWith(p, 648_000, 43_200));
+        assertEq(prod.reportWindow(), 648_000);
+        assertEq(prod.settlementMargin(), 43_200);
+        assertEq(prod.policy().timeFloor, PolicyBounds.MAX_FLOOR);
+    }
+
+    function test_theTimeFloorMustCoverTheReportWindowAndTheMargin() public {
+        Policy memory p = _defaultPolicy();
+        p.timeFloor = 3_600;
+        _refusedWith(p, 1_800, 1_801, "timeFloor<report+settlement");
+        _refusedWith(p, 1_801, 1_800, "timeFloor<report+settlement");
+        p.timeFloor = 691_199;
+        _refusedWith(p, 648_000, 43_200, "timeFloor<report+settlement");
+        p.timeFloor = 604_800; // the old 7-day ceiling cannot carry the production window
+        _refusedWith(p, 648_000, 43_200, "timeFloor<report+settlement");
+    }
+
+    function test_theReportWindowAndMarginAreBounded() public {
+        Policy memory p = _defaultPolicy();
+        p.timeFloor = 691_200;
+        _refusedWith(p, 1_799, 1_800, "reportWindow");
+        _refusedWith(p, 648_001, 1_800, "reportWindow");
+        _refusedWith(p, 1_800, 1_799, "settlementMargin");
+        _refusedWith(p, 1_800, 43_201, "settlementMargin");
+    }
+
+    function test_evidenceTakesTheReportWindowOfItsPolicySource() public view {
+        assertEq(evidence.reportWindow(), factory.POLICY().reportWindow());
+        assertEq(factory.POLICY().reportWindow(), 1_800);
     }
 }

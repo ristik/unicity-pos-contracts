@@ -4,6 +4,7 @@ pragma solidity 0.8.37;
 import {Script} from "forge-std/Script.sol";
 import {MockRootRecords} from "../test/p85/MockRootRecords.sol";
 import {PosFactory} from "../src/p85/PosFactory.sol";
+import {P85ReportProfile} from "./P85ReportProfile.sol";
 import {StakeCustody} from "../src/p85/StakeCustody.sol";
 import {CustodyGenesis} from "../src/p85/CustodyGenesis.sol";
 import {ElectionPolicy} from "../src/p85/ElectionPolicy.sol";
@@ -23,7 +24,8 @@ import {
 ///
 /// Inputs (environment): P85_GENESIS_JSON (the genesis plan bft-core's `ubft pos-relayer genesis --out-contracts` writes), P85_NETWORK_WORD, P85_ROOT_NETWORK (the root consensus' numeric network N), P85_ROOT_GENESIS (its genesis identity G),
 /// P85_CHAIN_ID, P85_ROOTS (the registry that serves the root records), P85_TREASURY, P85_GOVERNANCE_AUTHORITY, P85_V_MAX, P85_L_MAX, P85_N_MAX (the caps the election
-/// price was measured at), P85_CADENCE_ROUNDS, P85_CADENCE_SECONDS, P85_OUT (a directory under ./script/genesis-out); optional P85_DIST_NUM / P85_DIST_DEN: the election's weight-distance bound D <= num/den. THIS genesis script is the devnet/testnet
+/// price was measured at), P85_CADENCE_ROUNDS, P85_CADENCE_SECONDS, P85_OUT (a directory under ./script/genesis-out); optional P85_PROFILE (testnet or production: the
+/// retirement report window and time floor, #1298); optional P85_DIST_NUM / P85_DIST_DEN: the election's weight-distance bound D <= num/den. THIS genesis script is the devnet/testnet
 /// profile, whose small committees (4 -> 5 is D = 2/5, one replacement in four D = 1/2) need 1/2 (default 1/2, range-checked 0 < num <= den); the contracts have no built-in
 /// bound, so a PRODUCTION genesis must set P85_DIST_NUM/P85_DIST_DEN explicitly (1/4 is the production policy) and never rely on the default (briefs/p85-churn-bound-note.md). The roots' installed EVM configuration must commit the same bound
 /// (`continuity_max_distance`).
@@ -49,6 +51,15 @@ contract P85Genesis is Script {
         return (uint64(num), uint64(den));
     }
 
+    /// @dev The #1297/#1298 retirement report profile named by P85_PROFILE (default testnet; P85ReportProfile).
+    function _reportProfile()
+        internal
+        view
+        returns (uint64 timeFloor, uint64 reportWindow, uint64 settlementMargin)
+    {
+        return P85ReportProfile.named(vm.envOr("P85_PROFILE", string("testnet")));
+    }
+
     function run() external {
         vm.chainId(vm.envUint("P85_CHAIN_ID"));
         string memory json = vm.envString("P85_GENESIS_JSON");
@@ -61,6 +72,7 @@ contract P85Genesis is Script {
         }
         uint32 nMax = uint32(vm.envUint("P85_N_MAX"));
         (uint64 distNum, uint64 distDen) = _distanceBound();
+        (uint64 timeFloor, uint64 reportWindow, uint64 settlementMargin) = _reportProfile();
         PosFactory.Config memory c = PosFactory.Config({
             custody: address(0),
             election: address(0),
@@ -107,8 +119,10 @@ contract P85Genesis is Script {
                 holdNormal: 2_000,
                 holdSuffix: 2_000,
                 holdRetirement: 2_000,
-                timeFloor: 3_600
+                timeFloor: timeFloor
             }),
+            reportWindow: reportWindow,
+            settlementMargin: settlementMargin,
             rewardRate: uint128(vm.envOr("P85_REWARD_RATE", uint256(1 ether))),
             governanceAuthority: vm.envAddress("P85_GOVERNANCE_AUTHORITY"),
             rewardFunding: vm.envOr("P85_REWARD_FUNDING", uint256(10_000 ether)),
@@ -147,6 +161,10 @@ contract P85Genesis is Script {
         vm.serializeAddress(d, "custody", address(factory.CUSTODY()));
         vm.serializeAddress(d, "genesisImpl", genesisImpl);
         vm.serializeAddress(d, "election", address(factory.ELECTION()));
+        // the publication implementation the election's constructor creates and delegatecalls (PoPs, finalization): part of the alloc
+        address publicationImpl = factory.ELECTION().PUBLICATION_IMPL();
+        vm.serializeAddress(d, "electionPublication", publicationImpl);
+        vm.serializeBytes32(d, "electionPublicationCodeHash", publicationImpl.codehash);
         vm.serializeAddress(d, "evidence", address(factory.EVIDENCE()));
         vm.serializeAddress(d, "selection", address(factory.ELECTION().selection()));
         vm.serializeAddress(d, "reader", address(factory.ELECTION().reader()));

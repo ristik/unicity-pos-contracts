@@ -178,6 +178,23 @@ abstract contract CorpusBase is Test {
             );
     }
 
+    /// @dev The corpus' seal and timeout signatures are in the 64-byte form; the strict native rule (#1297) needs the 65-byte one with
+    /// the signer's recovery parity, which exactly one parity provides.
+    function _complete(bytes memory sig64, bytes32 digest, address signer)
+        internal
+        pure
+        returns (bytes memory)
+    {
+        bytes32 r;
+        bytes32 s;
+        assembly ("memory-safe") {
+            r := mload(add(sig64, 0x20))
+            s := mload(add(sig64, 0x40))
+        }
+        uint8 v = ecrecover(digest, 27, r, s) == signer ? 0 : 1;
+        return bytes.concat(sig64, bytes1(v));
+    }
+
     function _key(string memory id) internal view returns (bytes memory) {
         return vm.parseJsonBytes(_json(), string.concat(".keys.", id));
     }
@@ -185,6 +202,11 @@ abstract contract CorpusBase is Test {
 
 contract EvidenceDigestCorpusTest is CorpusBase {
     CodecHarness internal h;
+
+    function _flipParity(bytes memory sig) internal pure returns (bytes memory out) {
+        out = bytes.concat(sig);
+        out[64] = bytes1(uint8(out[64]) ^ 1);
+    }
 
     function setUp() public {
         h = new CodecHarness();
@@ -248,17 +270,26 @@ contract EvidenceDigestCorpusTest is CorpusBase {
                 VoteJ memory v = x.votes[i];
                 address signer = h.toAddress(v.key);
                 bytes32 digest = v.digest;
-                assertTrue(h.verifyNative(signer, digest, v.sig64), string.concat("sig64 ", v.id));
+                // the strict native rule (#1297): exactly 65 bytes with the signer's recovery parity; the 64-byte form is ineligible
+                assertFalse(h.verifyNative(signer, digest, v.sig64), string.concat("sig64 ", v.id));
                 assertTrue(h.verifyNative(signer, digest, v.sig65), string.concat("sig65 ", v.id));
+                assertFalse(
+                    h.verifyNative(signer, digest, _flipParity(v.sig65)),
+                    string.concat("parity ", v.id)
+                );
                 assertFalse(
                     h.verifyNative(signer, digest, v.sigHighS), string.concat("high s ", v.id)
                 );
                 if (v.committing) {
                     bytes32 sd = sha256(v.seal.sigBytes);
-                    assertTrue(h.verifyNative(signer, sd, v.seal.signature), v.id);
+                    // the corpus' 64-byte seal signature is ineligible as it is, and verifies with the signer's parity
+                    assertFalse(h.verifyNative(signer, sd, v.seal.signature), v.id);
+                    assertTrue(
+                        h.verifyNative(signer, sd, _complete(v.seal.signature, sd, signer)), v.id
+                    );
                     // neither signature stands in for the other
                     assertFalse(h.verifyNative(signer, digest, v.seal.signature), v.id);
-                    assertFalse(h.verifyNative(signer, sd, v.sig64), v.id);
+                    assertFalse(h.verifyNative(signer, sd, v.sig65), v.id);
                 }
             }
         }
@@ -287,7 +318,13 @@ contract EvidenceDigestCorpusTest is CorpusBase {
                 assertEq(pt, t.preimage, string.concat("PT ", t.id));
                 bytes32 d = sha256(pt);
                 assertEq(d, t.digest, t.id);
-                assertTrue(h.verifyNative(h.toAddress(t.key), d, t.sig64), t.id);
+                // the corpus carries the 64-byte form of timeouts: exactly one recovery parity completes it
+                address ts = h.toAddress(t.key);
+                assertTrue(
+                    h.verifyNative(ts, d, bytes.concat(t.sig64, hex"00"))
+                        != h.verifyNative(ts, d, bytes.concat(t.sig64, hex"01")),
+                    t.id
+                );
             }
         }
         assertGe(total, 25);
@@ -298,7 +335,7 @@ contract EvidenceDigestCorpusTest is CorpusBase {
         CtxJ memory x = _ctx(0);
         address signer = h.toAddress(x.votes[0].key);
         for (uint256 i; i < x.timeouts.length; ++i) {
-            assertFalse(h.verifyNative(signer, x.timeouts[i].digest, x.votes[0].sig64));
+            assertFalse(h.verifyNative(signer, x.timeouts[i].digest, x.votes[0].sig65));
         }
     }
 
@@ -370,18 +407,19 @@ abstract contract GoSignedBase is P85Flow, CorpusBase {
     }
 
     /// @dev The corpus vote as the contract takes it, with the Go signatures.
-    function _vote(VoteJ memory j) internal pure returns (Evidence.SignedVote memory v) {
+    function _vote(VoteJ memory j) internal view returns (Evidence.SignedVote memory v) {
         v.parent = uint64(j.parent);
         v.exec = j.exec;
         v.timestamp = uint64(j.timestamp);
-        v.signature = j.sig64;
+        v.signature = j.sig65;
         if (j.committing) {
             v.committing = true;
             v.commitHash = j.seal.commitHash;
             v.commitRound = uint64(j.seal.commitRound);
             v.commitEpoch = uint64(j.seal.commitEpoch);
             v.commitTimestamp = uint64(j.seal.timestamp);
-            v.sealSignature = j.seal.signature;
+            v.sealSignature =
+                _complete(j.seal.signature, sha256(j.seal.sigBytes), KeyLib.toAddress(j.key));
         }
     }
 
@@ -438,42 +476,44 @@ contract EvidenceGoSignedTest is GoSignedBase {
 
     // --- what is not an offence or does not verify -----------------------------------------------------
 
-    function test_theSameStatementIsNotAnOffenceWhateverTheSignatureForm() public {
+    function test_theSameStatementIsNotAnOffence() public {
         VoteJ memory ia = _idx("eq.a");
         Evidence.SignedVote memory a = _vote(ia);
-        Evidence.SignedVote memory withV = _vote(ia);
-        withV.signature = ia.sig65; // the same statement, 65-byte form with the true recovery id
         Evidence.VoteHeader memory hdr = _header(ia);
         vm.expectRevert(Evidence.IdenticalStatements.selector);
-        evidence.submitEvidence(hdr, a, withV, genesisExposure(0));
-        vm.expectRevert(Evidence.IdenticalStatements.selector);
         evidence.submitEvidence(hdr, a, a, genesisExposure(0));
+        // its 64-byte form is no signature under the strict rule
+        Evidence.SignedVote memory short = _vote(ia);
+        short.signature = ia.sig64;
+        vm.expectRevert(Evidence.BadSignature.selector);
+        evidence.submitEvidence(hdr, a, short, genesisExposure(0));
     }
 
-    function test_aRecoveryByteOfEitherParityIsDiscardedAndOthersAreRefused() public {
+    /// The strict native rule (#1297, upstream seal rule): exactly 65 bytes and a single recovery with the given parity. The Go signer's
+    /// own recovery byte passes, the opposite parity, the ineligible native IDs 2/3, 27/28 and every other width are refused.
+    function test_onlyTheTrueRecoveryParityIsAccepted() public {
         VoteJ memory ia = _idx("eq.a");
         VoteJ memory ib = _idx("eq.b");
         Evidence.VoteHeader memory hdr = _header(ia);
         Evidence.SignedVote memory a = _vote(ia);
         Evidence.SignedVote memory b = _vote(ib);
-        bytes memory sig = a.signature;
-        // v = 0 and v = 1 both pass whatever the true parity (the roots never match it)
-        for (uint8 v = 0; v <= 1; ++v) {
-            uint256 snap = vm.snapshotState();
-            a.signature = abi.encodePacked(sig, v);
-            evidence.submitEvidence(hdr, a, b, genesisExposure(0));
-            vm.revertToState(snap);
-        }
-        for (
-            uint8 v = 2; // 2 and 28: any other recovery byte is refused (27/28 included)
-            v <= 28;
-            v += 26
-        ) {
-            a.signature = abi.encodePacked(sig, v);
+        bytes memory sig = ia.sig64;
+        uint8 parity = uint8(ia.sig65[64]);
+        assertLe(parity, 1, "the Go signer writes the recovery parity");
+        uint256 snap = vm.snapshotState();
+        a.signature = abi.encodePacked(sig, parity);
+        evidence.submitEvidence(hdr, a, b, genesisExposure(0));
+        vm.revertToState(snap);
+        uint8[5] memory refused = [1 - parity, parity + 2, 3 - parity, 27, 28];
+        for (uint256 i; i < refused.length; ++i) {
+            a.signature = abi.encodePacked(sig, refused[i]);
             vm.expectRevert(Evidence.BadSignature.selector);
             evidence.submitEvidence(hdr, a, b, genesisExposure(0));
         }
-        a.signature = abi.encodePacked(sig, uint8(0), uint8(0)); // 66 bytes
+        a.signature = abi.encodePacked(sig, parity, uint8(0)); // 66 bytes
+        vm.expectRevert(Evidence.BadSignature.selector);
+        evidence.submitEvidence(hdr, a, b, genesisExposure(0));
+        a.signature = sig; // 64 bytes
         vm.expectRevert(Evidence.BadSignature.selector);
         evidence.submitEvidence(hdr, a, b, genesisExposure(0));
         a.signature = new bytes(63);
@@ -611,8 +651,9 @@ contract EvidenceGoSignedTest is GoSignedBase {
         VoteJ memory ic = _idx("eq.nc-cm");
         Evidence.SignedVote memory plain = _vote(ic);
         plain.sealSignature = vs;
+        Evidence.SignedVote memory committing = _vote(ia); // (built first: completing the seal signature calls the key precompile)
         vm.expectRevert(Evidence.SealSignatureForbidden.selector);
-        evidence.submitEvidence(hdr, _vote(ia), plain, genesisExposure(1));
+        evidence.submitEvidence(hdr, committing, plain, genesisExposure(1));
         // a seal that names another timestamp or commit epoch is another message
         a = _vote(ia);
         a.commitTimestamp += 1;

@@ -133,6 +133,7 @@ library VRC {
     uint8 internal constant REC_BOUNDARY = 6;
     uint8 internal constant REC_OUTPUT_REJECTED = 7;
     uint8 internal constant REC_HOLDER_RETIREMENT = 8;
+    uint8 internal constant REC_POP_MISSED = 9;
 
     function rootSide(uint8 kind) internal pure returns (bool) {
         return kind == K_REPLACE_AGGREGATOR || kind == K_ADD_PARTITION || kind == K_UPDATE_PARTITION

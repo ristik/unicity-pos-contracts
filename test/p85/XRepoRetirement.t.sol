@@ -4,10 +4,16 @@ pragma solidity 0.8.37;
 import {P85Flow} from "./P85Flow.sol";
 import {RegistryDriver} from "./RegistryDriver.sol";
 import {SealRegistry} from "../../src/SealRegistry.sol";
-import {ElectionPolicy} from "../../src/p85/ElectionPolicy.sol";
+import {ElectionPolicy, ElectionStorage} from "../../src/p85/ElectionPolicy.sol";
 import {Evidence} from "../../src/p85/Evidence.sol";
 import {CustodyStorage} from "../../src/p85/CustodyStorage.sol";
-import {ElectionParams, RootRecord, RecordKind, RetirementData} from "../../src/p85/P85Types.sol";
+import {
+    ElectionParams,
+    RootRecord,
+    RecordKind,
+    RetirementData,
+    ClosureData
+} from "../../src/p85/P85Types.sol";
 
 /// @notice The cross-repository retirement and evidence case, contracts half (bft-core: `xrepo/retirement_test.go`).
 ///
@@ -110,11 +116,11 @@ contract XRepoRetirementTest is P85Flow {
         vm.prank(sys);
         election.elect(ORIGIN);
         resultID = election.openResult();
-        ElectionPolicy.PoPInput[] memory inputs =
-            new ElectionPolicy.PoPInput[](election.frozenMembers(resultID).length);
+        ElectionStorage.PoPInput[] memory inputs =
+            new ElectionStorage.PoPInput[](election.frozenMembers(resultID).length);
         for (uint256 i; i < inputs.length; ++i) {
             bytes memory key = compressed(evmPk(i));
-            inputs[i] = ElectionPolicy.PoPInput(
+            inputs[i] = ElectionStorage.PoPInput(
                 gid(i), key, _sig(evmPk(i), election.popDigest(resultID, gid(i), keccak256(key)))
             );
         }
@@ -149,7 +155,7 @@ contract XRepoRetirementTest is P85Flow {
 
     function test_aGoRetirementMaturesAndClaimsAndAGoSignedOffenceHoldsTheRetiredLot() public {
         bytes32 result = _publish();
-        ElectionPolicy.Result memory res = election.result(result);
+        ElectionStorage.Result memory res = election.result(result);
         assertEq(result, vm.parseJsonBytes32(_json, ".resultId"), "the records are for this result");
         assertEq(
             result,
@@ -164,9 +170,16 @@ contract XRepoRetirementTest is P85Flow {
         assertEq(evidence.rootNetwork(), vm.parseJsonUint(_json, _ev("rootNetwork")));
         assertEq(evidence.rootGenesis(), vm.parseJsonBytes32(_json, _ev("rootGenesis")));
 
+        // the registry installs root epochs 2 and 3, the successors of G's and J's terms, so custody anchors both closed terms (#1297)
+        driver.advanceEpochs(2);
         // the acknowledged history: Closure of G, Ack of J, Closure of J; every exposure of identities 1 and 2 is then released
         for (uint256 i; i < 3; ++i) {
             _importAndApply(i);
+        }
+        // anyone captures the two closed terms' report anchors, opening each Closure's key with its own words
+        for (uint256 i; i < 3; i += 2) {
+            ClosureData memory c = abi.decode(_load(i).record.data, (ClosureData));
+            custody.anchorTerm(c.assignmentID, c.hRecordID, c.terminalRoot);
         }
         uint256[2] memory lot;
         for (uint256 k; k < 2; ++k) {

@@ -109,8 +109,8 @@ abstract contract NB2VaultBase {
     /// @param gamma the exact Γ bytes (section 4.1)
     /// @param kSet the build's admitted K values as a bit mask (bit k set: K = k admitted)
     /// @param bSet the build's admitted B values as a bit mask
-    constructor(bytes memory gamma, uint256 kSet, uint256 bSet) {
-        NB2Config.Config memory c = NB2Config.decode(gamma, kSet, bSet);
+    constructor(bytes memory gamma, uint256 kSet, uint256 bSet, uint256 version) {
+        NB2Config.Config memory c = NB2Config.decode(gamma, kSet, bSet, version);
         NB2Config.checkEnvironment(c, address(this));
         uint256 logk = 0;
         while ((1 << logk) < c.k) logk++;
@@ -276,9 +276,25 @@ abstract contract NB2VaultBase {
         // 5, 6. The verifier and the verdict.
         uint256 q = acc & Q_MASK;
         (address recipient, uint256 amount) = _verify(evidence, eta, a, q);
-        // 7. Effects: record eta at position m with its tag, debit Q, emit Paid, seal a full segment.
+        // 7, 8. Effects and payout, shared with every other route.
+        _finish(acc, c, m, p, bucket, eta, recipient, amount);
+    }
+
+    /// @dev Steps 7 and 8 of section 11.1, the one payment routine every route ends in: record eta at position m with its
+    ///      tag, debit Q, emit Paid, seal a full segment, store A, pay the signed recipient (any failure reverts everything,
+    ///      the seal and the logs included) and leave the guard. `acc`, `c`, `m` and `p = c & 1` are the loaded state.
+    function _finish(
+        uint256 acc,
+        uint256 c,
+        uint256 m,
+        uint256 p,
+        uint256 bucket,
+        uint256 eta,
+        address recipient,
+        uint256 amount
+    ) internal {
+        uint256 q = (acc & Q_MASK) - amount;
         _insert(p, m, bucket, eta);
-        q -= amount;
         _emitPaid(eta, recipient, amount);
         m += 1;
         if (m == K) {
@@ -291,7 +307,6 @@ abstract contract NB2VaultBase {
         assembly ("memory-safe") {
             sstore(SLOT_A, acc)
         }
-        // 8. Payout to the signed recipient; any failure reverts everything, the seal and the logs included.
         _pay(recipient, amount);
         _exit();
     }
@@ -456,10 +471,23 @@ abstract contract NB2VaultBase {
             amount := mload(add(ptr, 0xa0))
         }
         if (vmin >> 64 != 0 || vrec >> 160 != 0) revert VerifierBadReturn();
+        recipient = _checkVerdict(vdom, vasset, veta != eta || vmin != a, vrec, amount, q);
+    }
+
+    /// @dev The verdict checks of section 11.1 step 6, in order, shared by every route: domain, asset, a claimed field that
+    ///      differs (`claimBad`; routes without a claimed header pass false), recipient, amount and liability.
+    function _checkVerdict(
+        bytes32 vdom,
+        bytes32 vasset,
+        bool claimBad,
+        uint256 vrec,
+        uint256 amount,
+        uint256 q
+    ) internal view returns (address recipient) {
         if (vdom != D) revert DomainMismatch();
         if (vasset != ASSET_UCT) revert AssetMismatch();
-        if (veta != eta || vmin != a) revert ClaimMismatch();
-        // vrec >> 160 == 0 was checked above
+        if (claimBad) revert ClaimMismatch();
+        // the callers check vrec >> 160 == 0
         // forge-lint: disable-next-line(unsafe-typecast)
         recipient = address(uint160(vrec));
         if (recipient == address(0) || recipient == address(this)) revert BadRecipient();

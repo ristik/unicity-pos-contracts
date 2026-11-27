@@ -53,7 +53,7 @@ contract VRHookStateTest is PoaBase {
     /// @dev The identity of the root origin the ureth test block carries (`RootInputV2::origin_identity` of `input(1, 1, genesis)`);
     /// the Rust test asserts it.
     bytes32 internal constant ORIGIN =
-        0xb1a70288ef0aefa92b9d12c38fcef6957ca94ddb29eee251d2afa7da67ac5b04;
+        0xe2985dec0bf560e5d8ab34d7a83d35304a315be39bb95bd6d56d7bf4a66b9990;
     /// @dev The ureth block's number (its first block over the genesis).
     uint256 internal constant BLOCK_NUMBER = 1;
 
@@ -119,7 +119,7 @@ contract VRHookStateTest is PoaBase {
         H = uint32(vm.envOr("VR_HOOK_H", isPos ? uint256(16) : uint256(32)));
         require(H >= 3 && H <= 32, "H is 3..32");
         if (isPos) {
-            CAP_ELECT = 5_000_000;
+            CAP_ELECT = 7_000_000;
             CAP_OUTPUT = 1_500_000;
             CAP_RECORD = 2_500_000;
         } else {

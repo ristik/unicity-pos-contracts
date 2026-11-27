@@ -55,13 +55,13 @@ contract PosGenesisTest is Test {
         _refuse(
             vm.replace(_input(), "\"nMax\": 5", "\"nMax\": 6"),
             string.concat(OUT, "-nmax"),
-            bytes("VR PoS genesis: nMax and nTarget above the measured limit")
+            bytes("VR PoS genesis: large committee requires compact custody")
         );
     }
 
     function test_theGenesisRefusesAVMaxAboveTheMeasuredLimit() public {
         _refuse(
-            vm.replace(_input(), "\"vMax\": 8", "\"vMax\": 9"),
+            vm.replace(_input(), "\"vMax\": 8", "\"vMax\": 21"),
             string.concat(OUT, "-vmax"),
             bytes("VR PoS genesis: vMax and lMax above the measured limit")
         );

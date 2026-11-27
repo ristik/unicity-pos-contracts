@@ -22,9 +22,14 @@ contract FixedPolicy is IPolicySource {
     uint64 internal immutable HOLD_SUFFIX;
     uint64 internal immutable HOLD_RETIREMENT;
     uint64 internal immutable TIME_FLOOR;
+    /// @notice The post-term report window and its settlement margin (UC seconds, deployment immutables, IPolicySource).
+    uint64 public immutable reportWindow;
+    uint64 public immutable settlementMargin;
 
-    constructor(Policy memory p) {
-        PolicyBounds.validate(p);
+    constructor(Policy memory p, uint64 reportWindow_, uint64 settlementMargin_) {
+        PolicyBounds.validate(p, reportWindow_, settlementMargin_);
+        reportWindow = reportWindow_;
+        settlementMargin = settlementMargin_;
         PENALTY_BPS = p.penaltyBps;
         LIFETIME_CAP_BPS = p.lifetimeCapBps;
         BOUNTY_BPS = p.bountyBps;

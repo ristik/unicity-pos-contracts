@@ -4,7 +4,7 @@ pragma solidity 0.8.37;
 import {P85Base} from "./P85Base.sol";
 import {StakeCustody} from "../../src/p85/StakeCustody.sol";
 import {CustodyStorage} from "../../src/p85/CustodyStorage.sol";
-import {ElectionPolicy} from "../../src/p85/ElectionPolicy.sol";
+import {ElectionPolicy, ElectionStorage} from "../../src/p85/ElectionPolicy.sol";
 import {KeyLib} from "../../src/p85/KeyLib.sol";
 import {FixedPolicy} from "../../src/p85/FixedPolicy.sol";
 import {Limits} from "../../src/p85/P85Types.sol";
@@ -182,7 +182,7 @@ contract IdentityTest is P85Base {
         // vMax = 5: four genesis identities plus one more fit; the next first bond does not.
         roots = new MockRootRecordsHolder().roots();
         _deployManual(
-            address(new FixedPolicy(_defaultPolicy())),
+            address(new FixedPolicy(_defaultPolicy(), 1_800, 1_800)),
             Limits({vMax: 5, lMax: 8, rMax: 4, maxBatch: 32})
         );
         uint64 fifth = register(0x9001, 0x9101, vm.addr(0x9201));
@@ -191,7 +191,7 @@ contract IdentityTest is P85Base {
         uint64 sixth = register(0x9002, 0x9102, vm.addr(0x9202));
         vm.deal(vm.addr(0x9002), 100 * UCT);
         vm.prank(vm.addr(0x9002));
-        vm.expectRevert(ElectionPolicy.IndexFull.selector);
+        vm.expectRevert(ElectionStorage.IndexFull.selector);
         custody.bond{value: 100 * UCT}(sixth);
         // a second lot for an already-indexed identity is not a new index member
         bondFor(fifth, 1 ether);

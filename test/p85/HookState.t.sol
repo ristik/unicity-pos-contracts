@@ -4,7 +4,7 @@ pragma solidity 0.8.37;
 import {P85Flow} from "./P85Flow.sol";
 import {MockRootRecords} from "./MockRootRecords.sol";
 import {StakeCustody} from "../../src/p85/StakeCustody.sol";
-import {ElectionPolicy} from "../../src/p85/ElectionPolicy.sol";
+import {ElectionPolicy, ElectionStorage} from "../../src/p85/ElectionPolicy.sol";
 import {RecordKind, RecoveryAckData, RootRecord, ElectionParams} from "../../src/p85/P85Types.sol";
 
 /// @notice Generates the custody states the ureth records hook is tested against: the real `StakeCustody` runtime and its storage
@@ -45,6 +45,8 @@ abstract contract HookStateBase is P85Flow {
         + address(evidence).code.length;
         touched += address(election.reader()).code.length
         + address(election.selection()).code.length;
+        // custody delegates its genesis and anchor steps to its fixed implementation (GENESIS_IMPL): the hook runs it too
+        touched += custody.GENESIS_IMPL().code.length;
         assertGt(touched, 0);
         address mock = address(roots);
         vm.store(address(custody), bytes32(ROOTS_SLOT), bytes32(uint256(uint160(REGISTRY))));
@@ -88,6 +90,7 @@ abstract contract HookStateBase is P85Flow {
         vm.serializeAddress(m, "reader", address(election.reader()));
         vm.serializeAddress(m, "selection", address(election.selection()));
         vm.serializeAddress(m, "policySource", address(election.policySource()));
+        vm.serializeAddress(m, "genesisImpl", custody.GENESIS_IMPL());
         vm.serializeAddress(m, "registry", REGISTRY);
         vm.serializeBytes32(m, "rolesNote", bytes32(0));
         vm.serializeUint(m, "recordCount", n);
@@ -142,7 +145,7 @@ contract HookStateElectTest is HookStateBase {
     address internal constant SYS = address(0xff00000000000000000000000000000000000001);
     /// @dev The identity of the root origin the ureth test world carries (`RootInputV2::origin_identity`); the Rust test asserts it.
     bytes32 internal constant ORIGIN =
-        0xb1a70288ef0aefa92b9d12c38fcef6957ca94ddb29eee251d2afa7da67ac5b04;
+        0xe2985dec0bf560e5d8ab34d7a83d35304a315be39bb95bd6d56d7bf4a66b9990;
 
     function _electionParams() internal pure override returns (ElectionParams memory) {
         return ElectionParams({
@@ -177,8 +180,8 @@ contract HookStateElectTest is HookStateBase {
         pushRecord(RecordKind.Ack, ackData(RES_J, H_ROUND, 100, 101));
         applyAll();
         vm.prank(SYS);
-        ElectionPolicy.Outcome out = election.elect(ORIGIN);
-        assertEq(uint8(out), uint8(ElectionPolicy.Outcome.Reserved));
+        ElectionStorage.Outcome out = election.elect(ORIGIN);
+        assertEq(uint8(out), uint8(ElectionStorage.Outcome.Reserved));
         _dumpElect(dir, "elect.post");
         _meta(dir, "elect", 1);
         string memory e = "elect";
