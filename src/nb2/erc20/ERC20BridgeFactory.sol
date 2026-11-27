@@ -85,7 +85,8 @@ contract ERC20BridgeFactory is IERC20ActivationContext {
         );
         _prefix = ERC20Config.prefix(chain, CHAIN_ID);
         _suffix = ERC20Config.suffix(PROFILE, address(ORDINARY), ORDINARY_HASH, chain.qmax);
-        // Validate the canonical configuration and chain/graph settings before publishing the factory.
+        // Invalid configuration or graph settings abort construction through readConfig's revert.
+        // forge-lint: disable-next-line(unused-return)
         ORDINARY.readConfig(config(address(1)));
     }
 
@@ -98,6 +99,8 @@ contract ERC20BridgeFactory is IERC20ActivationContext {
         (address vault,) = predict(token);
         (bytes32 asset, bytes32 coin, bytes32 tokenType) =
             ERC20Config.identities(CHAIN_ID, token, EXECUTION_GENESIS);
+        // These canonical CBOR items encode their own lengths. Prefix and suffix are item sequences.
+        // forge-lint: disable-start(encode-packed-collision)
         return abi.encodePacked(
             _prefix,
             hex"54",
@@ -116,6 +119,7 @@ contract ERC20BridgeFactory is IERC20ActivationContext {
             hex"5820",
             PINS
         );
+        // forge-lint: disable-end(encode-packed-collision)
     }
 
     function activate(address token, bytes calldata vaultInitcode, bytes calldata recoveryInitcode)

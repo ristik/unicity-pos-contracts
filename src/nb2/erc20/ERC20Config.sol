@@ -64,9 +64,10 @@ library ERC20Config {
     function checkEnvironment(Config memory c, address self) internal view {
         NB2Config.Config memory b = c.base;
         // The native decoder bounds the chain ID to uint64.
-        // forge-lint: disable-next-line(unsafe-typecast)
+        // forge-lint: disable-start(unsafe-typecast)
         (bytes32 asset, bytes32 coin, bytes32 tokenType) =
             identities(uint64(b.chainId), c.token, b.executionGenesis);
+        // forge-lint: disable-end(unsafe-typecast)
         if (b.asset != asset) revert NB2Config.BadConfig(10);
         if (b.ty != tokenType) revert NB2Config.BadConfig(11);
         if (b.aid != coin) revert NB2Config.BadConfig(12);
@@ -82,6 +83,8 @@ library ERC20Config {
                 || chain.aggPartition == chain.evmPartition || chain.qmax == 0
                 || chain.evmShard.length == 0 || chain.evmShard.length > 33 || chainId == 0
         ) revert NB2Config.BadConfig(22);
+        // Canonical CBOR gives each integer its own width and prefixes the shard with its length.
+        // forge-lint: disable-start(encode-packed-collision)
         return abi.encodePacked(
             hex"964f",
             "UNICITY_NB2_CFG",
@@ -97,6 +100,7 @@ library ERC20Config {
             chain.evmShard,
             uintItem(chain.aggPartition)
         );
+        // forge-lint: disable-end(encode-packed-collision)
     }
 
     function suffix(bytes32 profile, address ordinary, bytes32 runtimeHash, uint144 qmax)
@@ -114,6 +118,8 @@ library ERC20Config {
         assembly ("memory-safe") {
             mcopy(add(boundedAmount, 32), add(amount, sub(50, width)), width)
         }
+        // The CBOR byte-string head encodes the amount's width.
+        // forge-lint: disable-start(encode-packed-collision)
         return abi.encodePacked(
             hex"5820",
             profile,
@@ -125,6 +131,7 @@ library ERC20Config {
             head,
             boundedAmount
         );
+        // forge-lint: disable-end(encode-packed-collision)
     }
 
     // Each narrowed value is bounded by the preceding condition or its uint64 input.
