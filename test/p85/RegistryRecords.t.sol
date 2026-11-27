@@ -95,6 +95,7 @@ contract RegistryRecordsTest is RewardsBase {
         );
         pushRecord(RecordKind.HolderRetirement, _holderRetirement(3, gid(0), 1, keccak256("ref")));
         pushRecord(RecordKind.HolderRetirement, _holderRetirement(7, gid(1), 1, bytes32(0)));
+        pushRecord(RecordKind.PoPMissed, abi.encode(keccak256("popmiss"), uint64(100), uint256(3)));
         uint64 n = roots.recordCount();
         applyAll();
         assertEq(custody.recordCursor(), n, "custody consumed every record");

@@ -27,7 +27,7 @@ interface IPosCustody is IStakeCustody {
 /// |---|---|
 /// | `elect` | maps P85's outcome; Reserved returns P85's own result id with `ready = false` |
 /// | `outputOf` | Pending until P85 publishes (`finalizeCandidate`), NotMine for a foreign or lost result, Ready for a published, not lost, Reserved result: `frozenMembers`, custody's exposures and the frozen node words, with custody's exposure digest per member |
-/// | `onRecords` | parks the non-provers of an Expired `OutputRejected` in VR's own segment (`ElectionPolicy.parkExpired`, #1303), then `custody.applyRootRecords(n)` (custody pulls from the SealRegistry itself) |
+/// | `onRecords` | parks the non-provers of an Expired `OutputRejected` in VR's own segment (`ElectionPolicy.parkExpired`, #1303), and a kind-9 `PoPMissed` to `ElectionPolicy.parkMissed` (#1319), then `custody.applyRootRecords(n)` (custody pulls from the SealRegistry itself) |
 /// | `onResolved`, `onGovernance` | no-ops: the economic policy stays in `GovernanceParams` under the multisig |
 /// | `outputLost` | `ElectionPolicy` only, at the one place its `lost` bit is first set: `VR.invalidate(resultID, LOST)`, no try/catch |
 ///
@@ -303,13 +303,22 @@ contract PosElectionAdapter is IElectionModule, IPosAdapter {
         for (uint64 i = fromIndex; i < end; ++i) {
             VRRecord memory r = seal.recordAt(i);
             if (
-                r.kind != VRC.REC_OUTPUT_REJECTED || !VRCodec.recordWellFormed(r.kind, r.data)
-                    || VRCodec.wordAt(r.data, 1) != VRC.REJ_EXPIRED
+                (r.kind != VRC.REC_POP_MISSED && r.kind != VRC.REC_OUTPUT_REJECTED)
+                    || !VRCodec.recordWellFormed(r.kind, r.data)
             ) continue;
             bytes32 rid = bytes32(VRCodec.wordAt(r.data, 0));
-            try ELECTION.parkExpired(rid, uint16(VRCodec.wordAt(r.data, 3)), r.progress) {}
-            catch {
-                emit ParkSkipped(rid);
+            if (r.kind == VRC.REC_POP_MISSED) {
+                try ELECTION.parkMissed(rid, uint16(VRCodec.wordAt(r.data, 2)), r.progress) {}
+                catch {
+                    emit ParkSkipped(rid);
+                }
+            } else if (
+                r.kind == VRC.REC_OUTPUT_REJECTED && VRCodec.wordAt(r.data, 1) == VRC.REJ_EXPIRED
+            ) {
+                try ELECTION.parkExpired(rid, uint16(VRCodec.wordAt(r.data, 3)), r.progress) {}
+                catch {
+                    emit ParkSkipped(rid);
+                }
             }
         }
         uint64 cursor = CUSTODY.recordCursor();

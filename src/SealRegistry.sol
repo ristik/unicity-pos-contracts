@@ -459,6 +459,8 @@ contract SealRegistry is IRootRecords, ISealHistory {
             (words, u64Mask) = (4, 0x4);
         } else if (kind == uint8(RecordKind.HolderRetirement)) {
             (words, u64Mask) = (4, 0x6);
+        } else if (kind == uint8(RecordKind.PoPMissed)) {
+            (words, u64Mask) = (3, 0x2);
         } else {
             revert RecordInvalid();
         }
@@ -488,6 +490,12 @@ contract SealRegistry is IRootRecords, ISealHistory {
                 _word(d, 0) == 0 || reason == 0 || reason > 3 || ready > type(uint16).max
                     || (_word(d, 2) != 0 && reason != 3) || (ready != 0 && reason != 1)
             ) revert RecordInvalid();
+        } else if (kind == uint8(RecordKind.PoPMissed)) {
+            // nonzero result; a nonzero 16-bit bitmap; no dedup key
+            uint256 bitmap = _word(d, 2);
+            if (_word(d, 0) == 0 || bitmap == 0 || bitmap > type(uint16).max) {
+                revert RecordInvalid();
+            }
         } else if (kind == uint8(RecordKind.HolderRetirement)) {
             // holder < MAX_HOLDERS (8); keyed by (holder, id, generation)
             uint256 holder = _word(d, 0);

@@ -397,6 +397,7 @@ library VRCodec {
         else if (kind == VRC.REC_RETIREMENT) words = 3;
         else if (kind == VRC.REC_BOUNDARY) words = 7;
         else if (kind == VRC.REC_HOLDER_RETIREMENT) words = 4;
+        else if (kind == VRC.REC_POP_MISSED) words = 3;
         else return false;
         if (d.length != 32 * words) return false;
         uint64 max = type(uint64).max;
@@ -432,6 +433,10 @@ library VRCodec {
         }
         if (kind == VRC.REC_HOLDER_RETIREMENT) {
             return wordAt(d, 0) < VRC.MAX_HOLDERS && (wordAt(d, 1) | wordAt(d, 2)) <= max;
+        }
+        if (kind == VRC.REC_POP_MISSED) {
+            return wordAt(d, 0) != 0 && wordAt(d, 1) <= max && wordAt(d, 2) != 0
+                && wordAt(d, 2) <= type(uint16).max;
         }
         return true;
     }

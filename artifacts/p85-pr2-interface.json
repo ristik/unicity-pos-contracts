@@ -82,6 +82,7 @@
       "openResult()": "5552dcb8",
       "params()": "cff0ab96",
       "parkExpired(bytes32,uint16,uint64)": "0b029278",
+      "parkMissed(bytes32,uint16,uint64)": "c3b781c2",
       "parkedUntil(uint64)": "cb22f153",
       "policySource()": "b5e5f633",
       "popDigest(bytes32,uint64,bytes32)": "d9d6b15a",
