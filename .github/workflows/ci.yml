@@ -76,6 +76,7 @@ jobs:
         env:
           FOUNDRY_OUT: out-p85-publication
           FOUNDRY_CACHE_PATH: cache-p85-publication
+          FOUNDRY_SKIP: '["**/nb2/erc20/**"]'
         run: forge test --match-path "test/p85/PublicationFixture.t.sol" -vvv
       - name: The VR hook fixture is the generator's output
         # test/vr/fixtures/vr-hook.json (copied into ureth's crates/unicity/execution/testdata) is regenerated from a clean raw
