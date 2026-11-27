@@ -21,10 +21,14 @@ contract HostileToken {
         NoReturn,
         FalseReturn,
         OversizedReturn,
-        Callback
+        Callback,
+        InvalidBalanceLength,
+        ExhaustedGas,
+        NoncanonicalBool,
+        PropagatedCallback
     }
 
-    mapping(address => uint256) public balanceOf;
+    mapping(address => uint256) private balances;
     mapping(address => mapping(address => uint256)) public allowance;
     Mode public mode;
     bool public paused;
@@ -40,7 +44,18 @@ contract HostileToken {
 
     // A positive/negative rebase of one account in the fixture.
     function rebase(address account, uint256 amount) external {
-        balanceOf[account] = amount;
+        balances[account] = amount;
+    }
+
+    function balanceOf(address account) external view returns (uint256) {
+        uint256 value = balances[account];
+        if (mode == Mode.InvalidBalanceLength) {
+            assembly ("memory-safe") {
+                mstore(0, value)
+                return(1, 31)
+            }
+        }
+        return value;
     }
 
     function approve(address to, uint256 value) external returns (bool) {
@@ -60,8 +75,8 @@ contract HostileToken {
     function _move(address from, address to, uint256 amount) internal virtual returns (bool) {
         if (paused || from == blocked || to == blocked) revert Blocked();
         Mode m = mode;
-        balanceOf[from] -= amount + (m == Mode.FeeFromSender ? 1 : 0);
-        balanceOf[to] += amount - (m == Mode.FeeFromCredit ? 1 : 0);
+        balances[from] -= amount + (m == Mode.FeeFromSender ? 1 : 0);
+        balances[to] += amount - (m == Mode.FeeFromCredit ? 1 : 0);
         if (m == Mode.Callback) {
             (bool ok, bytes memory reason) = msg.sender
                 .call(abi.encodeCall(ERC20BridgeVault.depositERC20, (1, 1, "", bytes32(0))));
@@ -73,6 +88,18 @@ contract HostileToken {
         if (m == Mode.OversizedReturn) {
             assembly ("memory-safe") { return(0, 64) }
         }
+        if (m == Mode.ExhaustedGas) {
+            assembly ("memory-safe") { for {} 1 {} {} }
+        }
+        if (m == Mode.NoncanonicalBool) {
+            assembly ("memory-safe") {
+                mstore(0, 2)
+                return(0, 32)
+            }
+        }
+        if (m == Mode.PropagatedCallback) {
+            ERC20BridgeVault(msg.sender).depositERC20(1, 1, "", bytes32(0));
+        }
         return m != Mode.FalseReturn;
     }
 }
@@ -80,6 +107,19 @@ contract HostileToken {
 contract TaxAfterUpgrade is HostileToken {
     function _move(address from, address to, uint256 amount) internal override returns (bool) {
         return super._move(from, to, amount - 1);
+    }
+}
+
+contract ERC20ActivationBatch {
+    constructor(
+        ERC20BridgeFactory factory,
+        address tokenA,
+        address tokenB,
+        bytes memory vaultInit,
+        bytes memory recoveryInit
+    ) {
+        factory.activate(tokenA, vaultInit, recoveryInit);
+        factory.activate(tokenB, vaultInit, recoveryInit);
     }
 }
 
@@ -366,6 +406,53 @@ contract ERC20BridgeTest is Test {
         token.rebase(address(vault), 13);
         _ordinary(vault, _verdict(vault, 1, 10));
         assertEq(token.balanceOf(address(vault)), 3);
+    }
+
+    function testBoundedCallsRejectMalformedAndHostileTokenBehavior() public {
+        HostileToken token = new HostileToken();
+        ERC20BridgeVault vault = _activate(token);
+        _deposit(vault, 10, 10);
+        FlatVerdict memory vd = _verdict(vault, 1, 10);
+        HostileToken.Mode[4] memory modes = [
+            HostileToken.Mode.InvalidBalanceLength,
+            HostileToken.Mode.ExhaustedGas,
+            HostileToken.Mode.NoncanonicalBool,
+            HostileToken.Mode.PropagatedCallback
+        ];
+        for (uint256 i; i < modes.length; ++i) {
+            token.configure(modes[i], false, address(0));
+            vm.expectRevert(ERC20BridgeVault.TokenCallFailed.selector);
+            _deposit(vault, 10, 10);
+            _ordinary(vault, vd, abi.encodeWithSelector(ERC20BridgeVault.TokenCallFailed.selector));
+            token.configure(HostileToken.Mode.Standard, false, address(0));
+            (uint64 n, uint64 c, uint16 m, uint256 q) = _state(vault);
+            assertEq(n, 1);
+            assertEq(c, 0);
+            assertEq(m, 0);
+            assertEq(q, 10);
+            assertEq(token.balanceOf(address(vault)), 10);
+            assertEq(token.balanceOf(RECIPIENT), 0);
+        }
+        _ordinary(vault, vd);
+        assertEq(token.balanceOf(RECIPIENT), 10);
+    }
+
+    function testPayoutPreviewChecksExactCreditAndRollsBack() public {
+        HostileToken token = new HostileToken();
+        ERC20BridgeVault vault = _activate(token);
+        _deposit(vault, 10, 10);
+        vm.expectRevert(ERC20BridgeVault.PayoutPreviewPassed.selector);
+        vault.previewPayout(RECIPIENT, 10);
+        assertEq(token.balanceOf(RECIPIENT), 0);
+        assertEq(token.balanceOf(address(vault)), 10);
+        (,,, uint256 q) = _state(vault);
+        assertEq(q, 10);
+        token.configure(HostileToken.Mode.FeeFromCredit, false, address(0));
+        vm.expectRevert(ERC20VaultBase.PayoutFailed.selector);
+        vault.previewPayout(RECIPIENT, 10);
+        token.configure(HostileToken.Mode.Standard, false, RECIPIENT);
+        vm.expectRevert(ERC20BridgeVault.TokenCallFailed.selector);
+        vault.previewPayout(RECIPIENT, 10);
     }
 
     function testBlockedSealRollsBackAndAnotherPayerRetries() public {

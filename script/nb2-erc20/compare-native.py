@@ -24,6 +24,13 @@ def hashes(checkout, contract):
 
 def main():
     base, candidate = map(Path, sys.argv[1:])
+    for checkout in (base, candidate):
+        subprocess.run(
+            ["forge", "build", "--force", "src/nb2/NativeBridgeVault11.sol"],
+            cwd=checkout,
+            check=True,
+            stdout=sys.stderr,
+        )
     result = {}
     for name in NATIVE:
         result[name] = hashes(candidate, name)

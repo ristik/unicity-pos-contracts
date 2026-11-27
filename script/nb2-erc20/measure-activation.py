@@ -16,6 +16,7 @@ USER_BLOCK_GAS = 60_000_000
 POOL_INPUT_BYTES = 4_194_304
 WALLET_BYTES = 524_288
 CHAIN_ID = 1038
+ERC20_PROFILE = "0x99773bbdfde2fa77cf43e029b61086a7eb121adfe57097872fc6ea9f0497e4d9"
 
 
 def cast(*args):
@@ -23,8 +24,10 @@ def cast(*args):
 
 
 def artifact(name, field):
-    source = "ERC20Bridge.t.sol" if name == "HostileToken" else f"{name}.sol"
-    path = ROOT / "out" / source / f"{name}.json"
+    fixture = name in ("HostileToken", "ERC20ActivationBatch")
+    source = "ERC20Bridge.t.sol" if fixture else f"{name}.sol"
+    build = "out-fixture" if fixture and (ROOT / "out-fixture").exists() else "out"
+    path = ROOT / build / source / f"{name}.json"
     return json.loads(path.read_text())[field]["object"]
 
 
@@ -49,7 +52,7 @@ def deploy(endpoint, sender, name, constructor=""):
     return r["contractAddress"]
 
 
-def run(node, chain_id, widest):
+def run(node, chain_id, widest, sdk_root):
     for line in node.stdout:
         match = re.fullmatch(r"Listening on (127\.0\.0\.1:\d+)\s*", line)
         if match:
@@ -67,7 +70,7 @@ def run(node, chain_id, widest):
     sender, other, *_ = rpc("eth_accounts")
     genesis = rpc("eth_getBlockByNumber", "0x0", "false")["hash"]
     rpc("anvil_setCode", REGISTRY, "0x600200")
-    profile = cast("keccak", "erc20 activation measurement")
+    profile = ERC20_PROFILE if sdk_root else cast("keccak", "erc20 activation measurement")
     generation = cast("keccak", "erc20 activation generation")
     receipts = deploy(endpoint, sender, "FlatReceipts")
     lineage = deploy(endpoint, sender, "ERC20FlatLineage", encode("f(address)", receipts))
@@ -84,12 +87,37 @@ def run(node, chain_id, widest):
     factory_args = encode(
         "f((uint16,bytes32,bytes32,uint32,bytes,uint32,uint144),"
         "(address,bytes32,bytes32,bytes32,bytes32,bytes32,(bytes32,bytes32,bytes32,bytes32,bytes32,bytes32)))",
-        f"({network},{zero},{genesis},{evm},{shard},{agg},{qmax})",
+        f"({network},{sdk_root or zero},{genesis},{evm},{shard},{agg},{qmax})",
         "(" + ",".join([ordinary, codehash(ordinary), profile, generation,
             cast("keccak", vault), cast("keccak", recovery), "(" + ",".join([zero] * 6) + ")"]) + ")",
     )
     factory = deploy(endpoint, sender, "ERC20BridgeFactory", factory_args)
     token = deploy(endpoint, sender, "HostileToken")
+    if sdk_root:
+        token_b = deploy(endpoint, sender, "HostileToken")
+        batch = send(endpoint, sender, "--create", artifact("ERC20ActivationBatch", "bytecode") + encode(
+            "f(address,address,address,bytes,bytes)", factory, token, token_b, vault, recovery,
+        ))
+        status(batch)
+        assert len(batch["logs"]) == 2
+        assets = []
+        for token_address, log in zip((token, token_b), batch["logs"], strict=True):
+            assert log["address"].lower() == factory.lower()
+            assert "0x" + log["topics"][1][-40:] == token_address.lower()
+            vault_address, recovery_address = ("0x" + topic[-40:] for topic in log["topics"][2:])
+            data = cast("calldata", "config(address)", token_address)
+            config = rpc("eth_call", json.dumps({"to": factory, "data": data}), "latest")
+            actual = rpc("eth_call", json.dumps({"to": vault_address, "data": cast("calldata", "config()")}), "latest")
+            assert actual == config
+            assets.append({"token": token_address, "vault": vault_address, "recovery": recovery_address, "config": config})
+        graph = [receipts, lineage, ordinary, factory] + [a[k] for a in assets for k in ("vault", "recovery")]
+        print(json.dumps({
+            "factory": factory, "ordinary": ordinary, "lineage": lineage, "receipts": receipts, "generation": generation,
+            "genesis": rpc("eth_getBlockByNumber", "0x0", "false"), "assets": assets, "activation": batch,
+            "vaultInitcodeHash": cast("keccak", vault), "recoveryInitcodeHash": cast("keccak", recovery),
+            "code": {address.lower(): rpc("eth_getCode", address, "latest") for address in graph},
+        }, separators=(",", ":")))
+        return
     call = ["activate(address,bytes,bytes)", token, vault, recovery]
     data = cast("calldata", *call)
     rpc("evm_setAutomine", "false")
@@ -132,16 +160,19 @@ def run(node, chain_id, widest):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--max-config", action="store_true", help="use the largest legal configuration widths")
-    widest = parser.parse_args().max_config
-    chain_id = 2 ** 64 - 1 if widest else CHAIN_ID
+    mode = parser.add_mutually_exclusive_group()
+    mode.add_argument("--max-config", action="store_true", help="use the largest legal configuration widths")
+    mode.add_argument("--sdk-root", help="export a deployed ERC20-profile graph and batched activation for this fixture root trust pin")
+    args = parser.parse_args()
+    chain_id = 2 ** 64 - 1 if args.max_config else (31337 if args.sdk_root else CHAIN_ID)
     node = subprocess.Popen(
         ["anvil", "--host", "127.0.0.1", "--port", "0", "--hardfork", "cancun", "--chain-id",
-         str(chain_id), "--gas-limit", str(BLOCK_GAS), "--disable-console-log"],
+         str(chain_id), "--gas-limit", str(BLOCK_GAS), "--disable-console-log",
+         *(["--timestamp", "1700000000"] if args.sdk_root else [])],
         text=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
     )
     try:
-        run(node, chain_id, widest)
+        run(node, chain_id, args.max_config, args.sdk_root)
     finally:
         node.terminate()
         try:

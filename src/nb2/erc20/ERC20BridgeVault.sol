@@ -19,6 +19,7 @@ contract ERC20BridgeVault is ERC20VaultActivation {
     error ExcessDebit();
     error InsufficientBacking();
     error TokenCallFailed();
+    error PayoutPreviewPassed();
 
     event ERC20Deposited(
         uint64 indexed nonce,
@@ -81,9 +82,26 @@ contract ERC20BridgeVault is ERC20VaultActivation {
         if (credit < minCredit || credit > requested) revert BadCredit();
     }
 
+    /// @notice Simulates the bounded payout. The success marker always rolls back the transfer.
+    function previewPayout(address recipient, uint256 amount) external {
+        _enter();
+        uint256 liability = _loadA() & Q_MASK;
+        if (
+            recipient == address(0) || recipient == address(this) || amount == 0
+                || amount > liability
+        ) {
+            revert PayoutFailed();
+        }
+        _payout(recipient, amount, liability);
+        revert PayoutPreviewPassed();
+    }
+
     function _pay(address recipient, uint256 amount) internal override {
-        // The shared settlement core has debited Q. A failure reverts that debit and any seal.
-        uint256 previousLiability = (_loadA() & Q_MASK) + amount;
+        // The shared settlement core has already debited Q.
+        _payout(recipient, amount, (_loadA() & Q_MASK) + amount);
+    }
+
+    function _payout(address recipient, uint256 amount, uint256 previousLiability) private {
         uint256 beforeVault = _balance(address(this));
         if (beforeVault < previousLiability) revert InsufficientBacking();
         uint256 beforeRecipient = _balance(recipient);
