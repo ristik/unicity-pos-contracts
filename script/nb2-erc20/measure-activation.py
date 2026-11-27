@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Measure signed ERC20 activation transactions on a disposable loopback Cancun node."""
 
+import argparse
 import json
 import re
 import subprocess
@@ -48,7 +49,7 @@ def deploy(endpoint, sender, name, constructor=""):
     return r["contractAddress"]
 
 
-def run(node):
+def run(node, chain_id, widest):
     for line in node.stdout:
         match = re.fullmatch(r"Listening on (127\.0\.0\.1:\d+)\s*", line)
         if match:
@@ -77,10 +78,13 @@ def run(node):
     vault = artifact("ERC20BridgeVault", "bytecode")
     recovery = artifact("ERC20BridgeRecovery", "bytecode")
     zero = "0x" + "11" * 32
+    network, evm, shard, agg, qmax = 3, 8, "0x80", 7, 10 ** 27
+    if widest:
+        network, evm, shard, agg, qmax = 65535, 2 ** 32 - 1, "0x" + "ff" * 32 + "80", 2 ** 32 - 2, 2 ** 144 - 1
     factory_args = encode(
         "f((uint16,bytes32,bytes32,uint32,bytes,uint32,uint144),"
         "(address,bytes32,bytes32,bytes32,bytes32,bytes32,(bytes32,bytes32,bytes32,bytes32,bytes32,bytes32)))",
-        f"(3,{zero},{genesis},8,0x80,7,1000000000000000000000000000)",
+        f"({network},{zero},{genesis},{evm},{shard},{agg},{qmax})",
         "(" + ",".join([ordinary, codehash(ordinary), profile, generation,
             cast("keccak", vault), cast("keccak", recovery), "(" + ",".join([zero] * 6) + ")"]) + ")",
     )
@@ -116,7 +120,7 @@ def run(node):
         }
     assert [entries[key]["logs"] for key in ("activation", "racedDuplicate", "duplicate")] == [1, 0, 0]
     print(json.dumps({
-        "network": {"chainId": CHAIN_ID, "genesis": genesis, "gasBid": TX_GAS, "blockGas": BLOCK_GAS},
+        "network": {"chainId": chain_id, "maximumConfigWidths": widest, "genesis": genesis, "gasBid": TX_GAS, "blockGas": BLOCK_GAS},
         "comparisonLimits": {"lanePoolInputBytes": POOL_INPUT_BYTES, "walletSignedBytes": WALLET_BYTES,
             "laneTransactionGas": USER_BLOCK_GAS, "laneUserBlockGas": USER_BLOCK_GAS},
         "factoryInitcodeBytes": len(bytes.fromhex(artifact("ERC20BridgeFactory", "bytecode")[2:] + factory_args)),
@@ -127,13 +131,17 @@ def run(node):
 
 
 def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--max-config", action="store_true", help="use the largest legal configuration widths")
+    widest = parser.parse_args().max_config
+    chain_id = 2 ** 64 - 1 if widest else CHAIN_ID
     node = subprocess.Popen(
         ["anvil", "--host", "127.0.0.1", "--port", "0", "--hardfork", "cancun", "--chain-id",
-         str(CHAIN_ID), "--gas-limit", str(BLOCK_GAS), "--disable-console-log"],
+         str(chain_id), "--gas-limit", str(BLOCK_GAS), "--disable-console-log"],
         text=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
     )
     try:
-        run(node)
+        run(node, chain_id, widest)
     finally:
         node.terminate()
         try:
